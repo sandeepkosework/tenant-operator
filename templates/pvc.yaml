@@ -1,0 +1,35 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaimName) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "tenant-operator.fullname" . }}-git-cache
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenant-operator.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+{{- if .Values.persistence.storageClassName }}
+  storageClassName: {{ .Values.persistence.storageClassName }}
+{{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}
+{{- if and .Values.sqlitePersistence.enabled (not .Values.sqlitePersistence.existingClaimName) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "tenant-operator.fullname" . }}-db
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenant-operator.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+{{- if .Values.sqlitePersistence.storageClassName }}
+  storageClassName: {{ .Values.sqlitePersistence.storageClassName }}
+{{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.sqlitePersistence.size }}
+{{- end }}

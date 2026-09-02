@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tenant-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenant-operator.labels" . | nindent 4 }}
+spec:
+  # Keep at 1 -- see values.yaml's replicaCount comment.
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    # Recreate, not RollingUpdate: this operator's PVCs are ReadWriteOnce
+    # and a surge pod briefly coexisting with the old one during a normal
+    # rolling update can deadlock on volume attachment, especially on
+    # single-worker-node clusters.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "tenant-operator.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tenant-operator.labels" . | nindent 8 }}
+      annotations:
+        {{- if .Values.vault.enabled }}
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: {{ .Values.vault.role | quote }}
+        vault.hashicorp.com/agent-inject-token: "true"
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "tenant-operator.fullname" . }}
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range .Values.imagePullSecrets }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: {{ include "tenant-operator.name" . }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8000
+          env:
+            # Matches the mount path below regardless of whether
+            # clustersConfig overrides the image's baked-in default --
+            # both live at this same path.
+            - name: CLUSTERS_CONFIG_PATH
+              value: /app/clusters.yaml
+            {{- if .Values.vault.enabled }}
+            - name: VAULT_TOKEN_FILE
+              value: /vault/secrets/token
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "tenant-operator.secretName" . }}
+            - configMapRef:
+                name: {{ include "tenant-operator.fullname" . }}-config
+          {{- if .Values.resources }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- if .Values.git.sshKey.existingSecretName }}
+            - name: git-ssh-key
+              mountPath: /secrets/git
+              readOnly: true
+            {{- end }}
+            {{- if .Values.kubeconfig.existingSecretName }}
+            - name: kubeconfig
+              mountPath: /secrets/kube
+              readOnly: true
+            {{- end }}
+            {{- if .Values.persistence.enabled }}
+            - name: git-repo-cache
+              mountPath: /data/tenant-config
+            {{- end }}
+            {{- if .Values.sqlitePersistence.enabled }}
+            - name: db-data
+              mountPath: {{ .Values.sqlitePersistence.mountPath }}
+            {{- end }}
+            - name: clusters-config
+              mountPath: /app/clusters.yaml
+              subPath: clusters.yaml
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+      volumes:
+        {{- if .Values.git.sshKey.existingSecretName }}
+        - name: git-ssh-key
+          secret:
+            secretName: {{ .Values.git.sshKey.existingSecretName }}
+            # 0440 (group-read), not 0400 -- combined with podSecurityContext's
+            # fsGroup, this is what lets the non-root container user read
+            # its own mounted SSH key.
+            defaultMode: 0440
+        {{- end }}
+        {{- if .Values.kubeconfig.existingSecretName }}
+        - name: kubeconfig
+          secret:
+            secretName: {{ .Values.kubeconfig.existingSecretName }}
+        {{- end }}
+        {{- if .Values.persistence.enabled }}
+        - name: git-repo-cache
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaimName | default (printf "%s-git-cache" (include "tenant-operator.fullname" .)) }}
+        {{- end }}
+        {{- if .Values.sqlitePersistence.enabled }}
+        - name: db-data
+          persistentVolumeClaim:
+            claimName: {{ .Values.sqlitePersistence.existingClaimName | default (printf "%s-db" (include "tenant-operator.fullname" .)) }}
+        {{- end }}
+        - name: clusters-config
+          configMap:
+            name: {{ .Values.clustersConfig.existingConfigMapName | default (printf "%s-clusters" (include "tenant-operator.fullname" .)) }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

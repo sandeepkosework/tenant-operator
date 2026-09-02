@@ -1,0 +1,18 @@
+tenant-operator ({{ .Values.environment }}) deployed as {{ include "tenant-operator.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+Check it's healthy:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "tenant-operator.name" . }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "tenant-operator.fullname" . }} 8000:{{ .Values.service.port }}
+  curl http://localhost:8000/health
+
+Create a tenant:
+  curl -X POST http://localhost:8000/api/v1/tenant -H "Content-Type: application/json" -d '{
+    "tenantId": "example",
+    "displayName": "Example",
+    "email": "ops@example.com",
+    "password": "changeme123",
+    "domain": "example.your-domain.com",
+    "appType": "qraie-bridge",
+    "services": {"bridge": true, "qraie-redis-shared": true},
+    "onlyListedServices": true
+  }'

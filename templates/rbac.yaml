@@ -1,0 +1,65 @@
+{{- if .Values.rbac.create }}
+# Cluster-scoped (not namespaced) because tenant namespaces are created
+# dynamically -- mostly read-only (get/list/watch), plus the one
+# deliberate `delete` verb on namespaces: Argo CD's CreateNamespace=true
+# sync option creates a tenant's namespace but never tracks/prunes it, so
+# delete_tenant() deletes it directly (see kubernetes_service.py).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "tenant-operator.fullname" . }}-spoke-readonly
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "tenant-operator.fullname" . }}-spoke-readonly
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tenant-operator.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "tenant-operator.fullname" . }}-spoke-readonly
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- if .Values.rbac.crossplane.enabled }}
+---
+# Prod-only: grants create/get/list/watch on exactly one Crossplane claim
+# CRD in exactly one namespace -- never broadened beyond that.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "tenant-operator.fullname" . }}-crossplane
+  namespace: {{ .Values.rbac.crossplane.namespace | default .Release.Namespace }}
+rules:
+  - apiGroups: [{{ .Values.rbac.crossplane.apiGroup | quote }}]
+    resources: [{{ .Values.rbac.crossplane.resource | quote }}]
+    verbs: ["create", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "tenant-operator.fullname" . }}-crossplane
+  namespace: {{ .Values.rbac.crossplane.namespace | default .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tenant-operator.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "tenant-operator.fullname" . }}-crossplane
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

@@ -1,0 +1,103 @@
+# Pinned at 1 by design -- git_service.py's write lock and status_bus.py's
+# Socket.IO pub/sub are both in-process only, safe for exactly one replica.
+# Don't raise this without first moving the git lock to a Postgres advisory
+# lock and the status bus to Redis pub/sub.
+replicaCount: 1
+
+image:
+  repository: sandeepkosework/tenant-operator
+  tag: "0.1.3"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Which environment this deployment serves -- "stage" or "prod". One
+# release == one environment; run a second release (its own namespace/
+# config/secrets) for the other one.
+environment: stage
+
+# Any Settings field, UPPER_SNAKE -> ConfigMap -> envFrom. Non-secret
+# config only (git repo URL, Argo CD server address, Vault address, DB
+# URL, cluster registry path, etc).
+config: {}
+
+# Secret-shaped config (git/GHCR/Vault/Argo CD tokens) -> Secret -> envFrom.
+# Prefer existingSecretName for anything real -- inline values here end up
+# in this release's Helm history in plaintext.
+secret: {}
+existingSecretName: ""
+
+# Vault Agent Injector sidecar for the operator's *own* config bootstrap
+# (secret/tenant-operator/config) -- separate from vault_service.py's
+# runtime tenant-secret writes, which always go through VAULT_TOKEN/
+# VAULT_TOKEN_FILE in config/secret above regardless of this setting.
+vault:
+  enabled: false
+  role: tenant-operator
+
+# SSH deploy key for git, if using git@... over SSH instead of an HTTPS
+# token (GIT_HTTPS_TOKEN in `secret` above).
+git:
+  sshKey:
+    existingSecretName: ""
+    privateKey: ""
+    keyName: id_rsa
+
+# Only needed when this release's target cluster(s) for tenant workloads
+# are NOT the cluster this operator itself runs on (KUBECONFIG_PATH stays
+# unset / in-cluster otherwise).
+kubeconfig:
+  existingSecretName: ""
+  content: ""
+
+# Overrides the clusters.yaml baked into the image at build time --
+# mount this release's real cluster registry instead, so the same image
+# works across environments without rebuilding.
+clustersConfig:
+  existingConfigMapName: ""
+  inline: ""
+
+# Backs GIT_LOCAL_PATH (the operator's local clone of the GitOps repo).
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClassName: ""
+  existingClaimName: ""
+
+# Backs DATABASE_URL when using the sqlite:////data/db/... option (set
+# DATABASE_URL in `config` accordingly) -- not needed if DATABASE_URL
+# points at a real external Postgres instead.
+sqlitePersistence:
+  enabled: true
+  size: 256Mi
+  storageClassName: ""
+  existingClaimName: ""
+  mountPath: /data/db
+
+rbac:
+  # Baseline ClusterRole -- read-only spoke-fleet health checks, plus the
+  # one deliberate `delete` verb on namespaces (Argo CD's CreateNamespace=
+  # true creates a tenant namespace but never tracks/prunes it).
+  create: true
+  # Prod-only, off by default: namespaced Role for Crossplane OKE claims.
+  crossplane:
+    enabled: false
+    apiGroup: oke.platform.example.com
+    resource: okeclusterclaims
+    namespace: ""
+
+# Paired with the image's non-root uid 1000 -- without this, mounted
+# Secret volumes (git key, kubeconfig) are root-owned and unreadable.
+podSecurityContext:
+  fsGroup: 1000
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
