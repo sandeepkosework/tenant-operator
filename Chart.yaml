@@ -2,7 +2,7 @@ apiVersion: v2
 name: tenant-operator
 description: Deploys the tenant-operator service (automated tenant onboarding via GitOps)
 type: application
-version: 0.1.1
-appVersion: "0.1.3"
+version: 0.1.2
+appVersion: "0.1.8"
 annotations:
   org.opencontainers.image.source: https://github.com/sandeepkosework/tenant-operator

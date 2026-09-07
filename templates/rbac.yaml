@@ -35,6 +35,32 @@ roleRef:
   name: {{ include "tenant-operator.fullname" . }}-spoke-readonly
   apiGroup: rbac.authorization.k8s.io
 {{- end }}
+# Namespaced (tenant-operator's own namespace on the hub): lets it submit
+# and poll the meta-builder DB-seeding Job it creates for each tenant --
+# see meta_builder_job.py. Scoped to batch/v1 Jobs only, never broadened.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "tenant-operator.fullname" . }}-meta-builder
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "tenant-operator.fullname" . }}-meta-builder
+  namespace: {{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tenant-operator.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "tenant-operator.fullname" . }}-meta-builder
+  apiGroup: rbac.authorization.k8s.io
 {{- if .Values.rbac.crossplane.enabled }}
 ---
 # Prod-only: grants create/get/list/watch on exactly one Crossplane claim
