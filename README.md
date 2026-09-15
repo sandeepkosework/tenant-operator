@@ -1,175 +1,205 @@
 # Tenant Operator
 
-Single entry point for onboarding tenants onto the hub-and-spoke Kubernetes
-platform. UI/API/automation talk only to this service; it is the only thing
-that writes to the GitOps repo, and it never calls `kubectl apply` directly
-against a spoke.
+Single entry point for onboarding tenants onto a hub-and-spoke Kubernetes
+platform, entirely through GitOps. UI/API/automation talk only to this
+FastAPI service; it is the only thing that writes to the GitOps repo, and it
+never calls `kubectl apply`/`create`/`patch` against a **spoke** cluster
+directly — Argo CD does the actual deploying, reacting to files this
+operator commits. (The one deliberate write exception, and the one real,
+non-echoed Kubernetes Job submission, are both called out explicitly below.)
 
 ```
-POST /api/v1/tenant { tenantId, displayName, email, password, domain }
+POST /api/v1/tenant { tenantId, displayName, email, password, domain, services?, onlyListedServices? }
         │
         ▼
 Validate → select spoke (sequential fill; capacity check/scale-out per env)
         │
-Create Tenant CR on hub (intent record, continuously updated as status changes)
+Create Tenant CR on hub (intent record, echoed/logged -- see "Known limitations")
         │
-Render values.yaml → commit to Git ──────► Argo CD ApplicationSet detects file
-        │                                             │
-        ▼                                             ▼
-Poll Argo CD + K8s for health               Application created/synced automatically
-        │
-Tenant RUNNING → trigger meta-builder Job (Mongo/Postgres seeding)
+Write per-tenant secrets to Vault (+ mirror to MongoDB) → render values.yaml → commit to Git
+        │                                                            │
+        ▼                                                            ▼
+Poll Argo CD + Kubernetes for health                       ApplicationSet detects the file,
+        │                                                   creates/syncs the Application
+        ▼                                                   automatically
+Tenant RUNNING → trigger meta-builder Job (real MSSQL DB/login seeding, when configured)
 ```
 
 Each spoke also gets a `SpokeCluster` CR on the hub, kept current with the
-list of tenants placed there and counts against capacity -- see
+list of tenants placed there and counts against capacity — see
 `GET /api/v1/cluster`.
+
+## What this service actually does (and does not do)
+
+- It is a **control-plane orchestrator**, not a workload. It never runs
+  tenant application code itself.
+- It writes exactly one artifact per tenant into a separate GitOps repo
+  (`{GIT_REPO_URL}`, e.g. `k8s-infra-setup-testing`): a rendered
+  `values.yaml` for the **qraie-bridge** Helm chart, under
+  `{GIT_TENANTS_DIR}/{tenant.slug}.yaml` (default directory `tenants/`).
+  An Argo CD `ApplicationSet` (applied once, by hand — see
+  `templates/qraie-bridge-applicationset.example.yaml`) watches that
+  directory and creates/syncs/prunes the per-tenant Argo CD `Application`
+  automatically. This operator never talks to that `Application` object
+  except to *read* its status back.
+- Every tenant is provisioned onto **one chart**: qraie-bridge, a ~32-service
+  conversion of a prototype docker-compose stack (redis, several API
+  gateways/backends/UIs, IoT broker services, a scheduler, a calendar
+  server, etc.). There is no second chart choice any more — see "The
+  retired `workplace` chart" below.
+- It owns its own small bookkeeping database (`tenants` table — see
+  `app/models/tenant.py`), a Vault KV tree (`secret/tenants/<slug>/<service>`),
+  and — optionally — a read-only-for-humans MongoDB mirror of that same
+  Vault data, one database per tenant.
 
 ## Repo layout
 
 ```
 tenant-operator/
-├── app/                              the deployable application
-│   ├── main.py                       FastAPI app, startup, CORS, mounts Socket.IO
-│   ├── config.py                     all settings, env-var driven
+├── app/                              the deployable FastAPI application
+│   ├── main.py                       FastAPI app, CORS, mounts Socket.IO, creates DB tables on startup
+│   ├── config.py                     all settings (pydantic-settings), env-var driven
 │   ├── vault_bootstrap.py            loads this operator's OWN config from Vault, pre-Settings
 │   ├── socketio_app.py               Socket.IO transport for tenant status push
-│   ├── database.py                   SQLAlchemy engine/session
+│   ├── database.py                   SQLAlchemy engine/session (works against SQLite or Postgres)
 │   ├── api/
 │   │   ├── tenant.py                 POST/GET/PUT/DELETE /api/v1/tenant + GET .../{id}/vault
 │   │   ├── cluster.py                GET /api/v1/cluster[/{name}] -- SpokeCluster CR view
-│   │   ├── vault.py                  PUT/GET /api/v1/vault/common -- shared config across all tenants
-│   │   └── health.py                 GET /health
+│   │   ├── vault.py                  PUT/GET /api/v1/vault/qraie-bridge-defaults -- shared per-service config
+│   │   └── health.py                 GET /health (checks DB connectivity)
 │   ├── models/
-│   │   ├── tenant.py                 ORM model + status enum + STATUS_PROGRESS map
-│   │   └── schemas.py                Pydantic request/response models
+│   │   ├── tenant.py                 ORM model + TenantStatus enum + STATUS_PROGRESS map
+│   │   └── schemas.py                Pydantic request/response models (TenantCreateRequest, etc.)
 │   └── services/
-│       ├── validation.py             request validation (400s)
-│       ├── cluster_selector.py       sequential-fill spoke placement + capacity
+│       ├── validation.py             request validation (400s) -- duplicate tenantId, environment sanity
+│       ├── cluster_selector.py       sequential-fill spoke placement + capacity accounting
 │       ├── spoke_scaler.py           capacity threshold -> new-spoke job (prod) / notify (stage)
-│       ├── crossplane_service.py     prod-only: applies/watches the Crossplane OKE claim on the hub
+│       ├── crossplane_service.py     prod-only: applies/watches a Crossplane OKE claim on the hub
 │       ├── notifications.py          notification sink (log-only for now)
 │       ├── status_bus.py             in-process pub/sub feeding the Socket.IO status push
-│       ├── vault_service.py          common config (shared) + per-tenant secrets (generated) in Vault
-│       ├── tenant_cr.py              builds/echoes the per-tenant Tenant CR on the hub
-│       ├── spoke_cr.py               builds/echoes the per-spoke SpokeCluster CR on the hub
-│       ├── meta_builder_job.py       triggers the Mongo/Postgres seeding Job once RUNNING
-│       ├── helm_values.py            renders tenants/{name}.yaml from Jinja2
-│       ├── git_service.py            clone/commit/push to the GitOps repo
+│       ├── vault_service.py          qraie-bridge Vault schema: platform defaults + per-tenant secrets
+│       ├── mongo_service.py          mirrors the same resolved env config into a per-tenant MongoDB database
+│       ├── tenant_cr.py              builds/echoes the per-tenant Tenant CR on the hub (NOT applied for real)
+│       ├── spoke_cr.py               builds/echoes the per-spoke SpokeCluster CR on the hub (NOT applied for real)
+│       ├── meta_builder_job.py       submits the REAL MSSQL DB/login-seeding Job once a tenant is RUNNING
+│       ├── helm_values.py            renders tenants/{slug}.yaml from the Jinja2 template + service allow/deny logic
+│       ├── git_service.py            clone/commit/push to the GitOps repo (process-wide lock, single replica)
 │       ├── argocd_service.py         read-only Argo CD status polling + failure classification
-│       ├── kubernetes_service.py     read-only namespace/deploy/pvc/ingress checks
-│       └── provisioner.py            the async state machine tying it together
+│       ├── kubernetes_service.py     read-only namespace/deployment/pod/pvc/ingress checks on spokes
+│       └── provisioner.py            the async state machine tying all of the above together
 ├── templates/
-│   ├── values.yaml.j2                per-tenant Helm values template
-│   └── applicationset.example.yaml   one-time platform setup (see below)
-├── clusters.yaml                     default/example registry, baked into the image -- see below
-├── Dockerfile                        builds the operator image (app/, templates/, clusters.yaml only)
+│   ├── qraie_bridge_values.yaml.j2              per-tenant Helm values template (the ONLY tenant chart now)
+│   └── qraie-bridge-applicationset.example.yaml one-time Argo CD ApplicationSet, applied by hand/CI
+├── clusters.yaml                     default/example spoke registry, baked into the image -- see below
+├── Dockerfile                        builds the operator image (app/, templates/, clusters.yaml, requirements.txt only)
 ├── requirements.txt
-├── .env.example
-├── .gitignore
-├── .dockerignore
-├── deploy/                           manifests to run the operator itself, on the Hub
-│   ├── deployment.yaml               Namespace/Deployment/Service/PVC/ServiceAccount ref
-│   ├── crossplane-rbac.yaml          Role/RoleBinding for the Crossplane claim CRD (prod only)
-│   ├── clusters-configmap.stage.example.yaml  stage's real spoke registry (mounted, overrides the baked-in one)
+├── .env.example                      local-dev config template (not fully in sync with app/config.py -- see below)
+├── .gitignore / .dockerignore
+├── deploy/                           raw Kubernetes manifests to run the operator itself (secondary path -- see below)
+│   ├── deployment.yaml                Namespace/Deployment/Service/PVC
+│   ├── spoke-readonly-rbac.yaml       baseline ServiceAccount/ClusterRole (every deployment)
+│   ├── crossplane-rbac.yaml           Role/RoleBinding for the Crossplane claim CRD (prod only)
+│   ├── clusters-configmap.stage.example.yaml  stage's real spoke registry
 │   ├── clusters-configmap.prod.example.yaml   prod's real spoke registry (entirely separate spokes)
-│   ├── configmap.example.yaml        non-secret config template
-│   └── secret.example.yaml           secret config template (fill in, never commit)
-└── poc/                              local dev/testing tooling -- NOT part of the deployment
-    ├── run_local_no_cluster.py       run the API with Argo CD/K8s calls faked, no cluster needed
-    ├── onboard.py / onboard.sh       CLI to onboard tenants + watch status transitions live
-    ├── .env.nocluster.example        config for the above
-    ├── clusters.nocluster.yaml       fake 2-spoke registry for local logic testing
-    ├── init_local_gitops_repo.sh     seeds a local bare git repo as a GitHub stand-in
-    └── POC.md / kind-config.yaml / docker-compose.yml / chart-workplace/
-                                      full local walkthrough using kind + real Argo CD
+│   ├── configmap.example.yaml         non-secret config template
+│   └── secret.example.yaml            secret config template (fill in, never commit)
+└── helm/                             THE deployment Helm chart actually used in production -- see helm/README.md
 ```
 
-`poc/` is guaranteed to never end up in the deployed image or affect a real
-deployment: the Dockerfile only ever `COPY`s `app/`, `templates/`,
-`clusters.yaml`, and `requirements.txt` by name (never `COPY . .`), and
-`.dockerignore` is a second guardrail against that changing by accident.
-Use it freely for local testing/demos without worrying about it leaking
-into what you ship to the hub cluster.
+`poc/` (a local no-cluster test harness) and the old generic `workplace`
+tenant chart's own values template/ApplicationSet example
+(`templates/values.yaml.j2`, `templates/applicationset.example.yaml`) have
+been removed as part of this repo's dead-code cleanup — see "The retired
+`workplace` chart" below.
 
-## One-time platform setup (do this before the operator's first request)
+## How it's written
 
-1. **Git repo**: create the `tenant-config` repo with `tenants/`, `charts/`,
-   `applicationsets/` directories (matches the layout in the design doc).
-2. **ApplicationSet**: apply `templates/applicationset.example.yaml` to Argo CD
-   once, by hand or via your platform CI. This is what makes the operator's
-   job simple -- it only ever commits/deletes a file under `tenants/`, and
-   the ApplicationSet's git-directory generator creates/removes the Argo CD
-   `Application` automatically.
-3. **Register spoke clusters with Argo CD** (`argocd cluster add <context>`)
-   so the ApplicationSet can target them by server URL, and list them in
-   your environment's clusters ConfigMap (name/context/region/environments/
-   max_tenants) -- see `deploy/clusters-configmap.stage.example.yaml` and
-   `deploy/clusters-configmap.prod.example.yaml`. **Stage and prod are
-   entirely separate hub-and-spoke fleets and must never share a spoke** --
-   each ConfigMap should only ever list that one environment.
-4. **Argo CD API token**: create a project-scoped token with permission to
-   read Application status (the operator only needs read access).
-5. **Kubeconfig**: build one kubeconfig with a context per spoke cluster
-   (`spoke-1`, `spoke-2`, ...), scoped to a ServiceAccount with **read-only**
-   RBAC on Deployments/Pods/PVCs/Ingresses/Namespaces -- the operator never
-   writes to Kubernetes directly.
-6. **Git deploy key**: an SSH deploy key (or HTTPS PAT) with write access
-   to `tenant-config`, mounted into the operator's pod.
-7. **PostgreSQL**: create a database + user on the Database VM
-   (`tenant_operator` in the examples).
-8. **Meta-builder image**: build/push the `bridge-meta-builder` image
-   referenced by `META_BUILDER_JOB_IMAGE`, and make sure the operator's
-   ServiceAccount (or whichever identity submits the Job) can create Jobs in
-   `META_BUILDER_JOB_NAMESPACE`.
-9. **Crossplane (prod only)**: install Crossplane on the hub cluster along
-   with an OKE provider and a Composition/XRD that accepts the parameters
-   `crossplane_service.build_oke_claim()` sends (region, nodeCount by
-   default -- adjust both the claim shape and your XRD to match each
-   other). Create the `CROSSPLANE_CLAIM_NAMESPACE` namespace (default
-   `platform-infra`), apply `deploy/crossplane-rbac.yaml`, and only then set
-   `CROSSPLANE_ENABLED=true` in the prod ConfigMap. Leave it `false` for
-   stage.
-10. **Vault**: create a Vault token (or Agent-injected token file) with
-    write access to `VAULT_KV_MOUNT`/`VAULT_TENANT_SECRET_PREFIX`
-    (default `secret/tenants/*`), set `VAULT_ADDR`/`VAULT_TOKEN` in the
-    Secret and `VAULT_ENABLED=true` in the ConfigMap. Also confirm
-    `TENANT_POSTGRES_HOST`/`TENANT_MONGO_HOST`/`TENANT_REDIS_HOST` point at
-    your real shared infra endpoints -- these are written into every new
-    tenant's Vault secrets alongside a generated credential. Optional: if
-    you'd rather manage this operator's own config in Vault too (instead of
-    the ConfigMap/Secret), put it at `VAULT_CONFIG_PATH`
-    (default `secret/tenant-operator/config`) -- see `app/vault_bootstrap.py`.
+- **FastAPI** (`app/main.py`) for the REST API, with **python-socketio**
+  mounted alongside it at `/socket.io` (same host/port, no separate
+  process) for push-based status updates — see "Live status" below.
+- **SQLAlchemy 2.x**, engine URL fully driven by `DATABASE_URL` — works
+  against either SQLite (`sqlite:////data/db/tenant_operator.db`, what the
+  current hub deployment actually runs — see `helm/README.md`) or
+  PostgreSQL (`postgresql+psycopg2://...`, the config default and what
+  `requirements.txt`'s `psycopg2-binary` is there for). `Base.metadata.create_all()`
+  runs on every startup (`app/main.py`'s `on_startup` hook) — fine for this
+  scale of bookkeeping table; swap for real Alembic migrations if the schema
+  starts changing under live data (`alembic` is already a pinned dependency,
+  unused so far).
+- **Pydantic v2 + pydantic-settings** (`app/config.py`) for typed,
+  env-var-driven configuration — one `Settings` class, ~50 fields, every one
+  overridable by a real environment variable, `.env` file, or (see below) a
+  value pulled from Vault at process startup.
+- **Jinja2** (`app/services/helm_values.py`) to render each tenant's
+  `values.yaml` from `templates/qraie_bridge_values.yaml.j2` — a small
+  template; qraie-bridge's own chart `values.yaml` already carries every
+  service's image/env/volume defaults, so the per-tenant override only needs
+  tenant identity, placement, and which services are disabled.
+- **GitPython** (`app/services/git_service.py`) for all writes to the
+  separate GitOps repo — clone-once, hard-reset-to-origin before every
+  write (never a real merge, since this operator is the only writer),
+  commit, push, all behind a process-wide `threading.Lock`.
+- **The official `kubernetes` Python client**, used in three distinct,
+  differently-scoped ways: read-only health checks against spoke clusters
+  (`kubernetes_service.py`), a real `BatchV1Api.create_namespaced_job` call
+  against the operator's own (hub) namespace (`meta_builder_job.py`), and a
+  real `CustomObjectsApi` call against the hub for Crossplane OKE claims
+  (`crossplane_service.py`, prod-only, opt-in).
+- **httpx** for read-only Argo CD REST API polling (`argocd_service.py`).
+- **hvac** for Vault KV v2 reads/writes (`vault_service.py`,
+  `vault_bootstrap.py`) — both optional; the whole app runs with Vault fully
+  disabled (the default) for local development.
+- **pymongo** for the optional per-tenant env-config mirror
+  (`mongo_service.py`) — also disabled by default.
+- Non-root container: `Dockerfile` builds on `python:3.12-slim`, creates a
+  `tenantop` user (uid 1000; not `operator`, which collides with a system
+  group already baked into the base image), and only ever `COPY`s `app/`,
+  `templates/`, `clusters.yaml`, and `requirements.txt` — `.dockerignore` is
+  a second, redundant guardrail against `poc/`, `deploy/`, and this
+  `README.md` ever leaking into the image even if the `Dockerfile` is later
+  changed to `COPY . .`.
 
-## Local development
+## Data model / state machine
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # fill in real values
-uvicorn app.main:app --reload
-```
+One row per tenant in the operator's own database (`app/models/tenant.py`).
+Key fields:
 
-To test the full onboarding/capacity logic **without any of the above
-infra** (no cluster, no Argo CD, no kind), see `poc/README` usage in
-`poc/POC.md` for the kind-based walkthrough, or for a zero-infra option:
+- `tenant_name` — the caller-supplied `tenantId`, human-chosen, **not**
+  DB-unique (a `DELETED` tenant's name is reusable — soft delete via
+  `deleted_at`, not a hard delete).
+- `tenant_seq` — an operator-allocated sequential integer (`SELECT MAX()+1`
+  at creation), combined with `tenant_name` to form `slug` (the
+  `@property`, e.g. `acme-corp-42`) — the **one** identifier used for the
+  Kubernetes namespace (`tenant-<slug>`), the Vault path prefix, the git
+  filename, the Argo CD Application/Helm release name, the Tenant CR name,
+  and the meta-builder Job name. `slug` is deliberately never used for
+  anything customer-facing (the tenant's own domain, its seeded database's
+  display name) — a customer never sees an internal sequence number.
+- `app_type` — always `"qraie-bridge"` now (`server_default="qraie-bridge"`);
+  kept as a real column only for API/DB back-compat, not settable per
+  request any more. See "The retired `workplace` chart".
+- `application` / `version` — vestigial NOT NULL columns seeded from
+  `settings.default_application`/`default_version` at creation; not read
+  anywhere in the qraie-bridge path (every service's image tag comes from
+  that chart's own defaults).
+- `disabled_services` — a JSON list of qraie-bridge service names this
+  tenant does **not** get, computed from the request's `services`/
+  `onlyListedServices` fields (see "Selecting which services a tenant
+  gets" below) and rendered into the tenant's `values.yaml` as
+  `disabledServices:`.
+- `status` — a `TenantStatus` enum driving the whole workflow:
 
-```bash
-cp poc/.env.nocluster.example .env
-python poc/run_local_no_cluster.py       # fakes Argo CD/K8s health checks only
-./poc/onboard.sh --tenant-id acme --display-name "Acme Corp" \
-  --email admin@acme.com --password StrongPassword123 --domain acme.example.com
-```
+  ```
+  PENDING -> VALIDATING -> GIT_COMMITTED -> SYNCING -> RUNNING
+  any step -> FAILED (error_message set)
+  RUNNING -> DELETING -> DELETED
+  RUNNING -> UPDATING -> SYNCING -> RUNNING
+  ```
 
-`Base.metadata.create_all()` runs on startup for convenience. For anything
-beyond local dev, switch to Alembic migrations:
-
-```bash
-pip install alembic
-alembic init migrations
-# point migrations/env.py at app.database.Base.metadata and DATABASE_URL,
-# then: alembic revision --autogenerate -m "init" && alembic upgrade head
-```
+  `STATUS_PROGRESS` maps each status to a rough 0–100 heuristic used by both
+  the plain `GET` response's `progress` field and every status-push event
+  (not meant to be precise — `SYNCING` alone can take anywhere from seconds
+  to the full provisioning timeout).
 
 ## API
 
@@ -177,37 +207,23 @@ alembic init migrations
 POST   /api/v1/tenant            -> 202 Accepted, { tenantId, status: PENDING }
 GET    /api/v1/tenant/{id}       -> current tenant record incl. status + progress
 GET    /api/v1/tenant            -> list, filterable by ?environment=&status_filter=
-PUT    /api/v1/tenant/{id}       -> update version/users/db size (only when RUNNING/FAILED)
-DELETE /api/v1/tenant/{id}       -> 202 Accepted, tears down via git delete + Argo CD prune
-GET    /api/v1/tenant/{id}/vault -> this tenant's current Vault secrets (redis/database/mongo/jwt)
-GET    /api/v1/cluster           -> SpokeCluster CR for every registered spoke
-GET    /api/v1/cluster/{name}    -> SpokeCluster CR for one spoke
-GET    /api/v1/vault/common      -> current common config (shared across every tenant)
-PUT    /api/v1/vault/common      -> overwrite the common config
+PUT    /api/v1/tenant/{id}       -> update version/users/db size/services (only when RUNNING/FAILED)
+DELETE /api/v1/tenant/{id}       -> 202 Accepted, tears down via git delete + Argo CD prune + namespace delete
+GET    /api/v1/tenant/{id}/vault -> this tenant's current Vault secrets (one path per qraie-bridge service)
+GET    /api/v1/cluster           -> SpokeCluster CR content for every registered spoke
+GET    /api/v1/cluster/{name}    -> SpokeCluster CR content for one spoke
 GET    /api/v1/vault/qraie-bridge-defaults           -> current shared config for every qraie-bridge service
 PUT    /api/v1/vault/qraie-bridge-defaults/{service} -> overwrite one qraie-bridge service's shared config
-GET    /health                   -> liveness/readiness (checks DB connectivity)
-/socket.io                       -> Socket.IO status push (see below)
+GET    /health                   -> liveness/readiness (checks DB connectivity via `SELECT 1`)
+/socket.io                       -> Socket.IO status push (see "Live status" below)
 ```
 
-`POST /api/v1/tenant`'s `appType` field selects which chart/Vault schema a
-tenant uses: `"workplace"` (default) is the original single-image chart,
-using the generic Vault shape described above. `"qraie-bridge"` is the
-~30-service [`helm-chart-bridge`](../helm-chart-bridge) chart, which has its
-own, much wider Vault schema — see "qraie-bridge Vault integration" below.
-For `appType="qraie-bridge"`, the request's `services` map (service name ->
-`true`/`false`) and `onlyListedServices` flag control which of the chart's
-services get disabled (`app/services/helm_values.py::compute_disabled_services()`),
-rendered into the tenant's values file as `disabledServices:` — never as a
-`services:` override, since Helm replaces lists wholesale rather than
-merging them (see that chart's README for the full reasoning).
+There is **no** `GET /api/v1/tenant/{id}/events` SSE endpoint any more —
+some in-repo comments are stale on this point (leftover from before the
+Socket.IO migration); Socket.IO at `/socket.io` is the only push transport
+today.
 
-Which environment (`prod`/`stage`) a tenant lands in is **not** part of the
-request -- it's set once per operator deployment via the `ENVIRONMENT` env
-var (see `deploy/configmap.example.yaml`). Run one Deployment per
-environment.
-
-Example create request:
+### Creating a tenant
 
 ```json
 POST /api/v1/tenant
@@ -216,20 +232,58 @@ POST /api/v1/tenant
   "displayName": "Acme Corporation",
   "email": "admin@acme.com",
   "password": "StrongPassword123",
-  "domain": "acme.example.com"
+  "domain": "acme.example.com",
+  "services": {"voxflow": false, "mcp-server": false},
+  "onlyListedServices": false
 }
 ```
 
-Poll `GET /api/v1/tenant/{id}` for status transitions:
-`PENDING → VALIDATING → GIT_COMMITTED → SYNCING → RUNNING` (or `FAILED`).
-Tenants are not monitored after reaching `RUNNING` -- see "Argo CD failure
-monitoring" below for exactly what's covered. Every response also includes
-a `progress` field (0-100, see `STATUS_PROGRESS` in `app/models/tenant.py`)
-for a simple loading bar even without using the Socket.IO push below.
+Notes on the request shape (`app/models/schemas.py::TenantCreateRequest`):
 
-**For a live loading bar without polling**, use Socket.IO instead
-(`app/socketio_app.py`, mounted at `/socket.io`, same host/port as the REST
-API):
+- **No `appType`, `application`, or `version` fields exist any more.**
+  Every tenant is provisioned onto qraie-bridge; there is nothing left to
+  select. (See "The retired `workplace` chart".)
+- **No `environment` field** — which environment (`prod`/`stage`) a tenant
+  lands in is a deployment-time fact (`ENVIRONMENT` env var on *this*
+  operator instance), not a per-request choice. One operator
+  Deployment/release == one environment.
+- `tenantId` becomes a Kubernetes namespace suffix — lowercase alphanumeric
+  with optional hyphens (RFC-1123 label), max 50 chars (so
+  `tenant-<tenantId>-<seq>` stays under Kubernetes' 63-char namespace cap).
+- `services` (`dict[str, bool]`) + `onlyListedServices` (`bool`) control
+  which of qraie-bridge's ~32 services this tenant gets — see next section.
+- `password` is used only in-memory, to pass an admin credential through to
+  the meta-builder DB-seeding Job trigger later in the flow. **It is never
+  persisted** to the tenant row.
+
+### Selecting which services a tenant gets
+
+Two modes, both validated against the fixed set of ~32 known service names
+(`helm_values.QRAIE_BRIDGE_SERVICE_NAMES` — an unknown name in `services`
+is a 400, not a silent no-op):
+
+- **Opt-out (default, `onlyListedServices=false`)** — `services` is sparse;
+  only entries set to `false` do anything. `{"voxflow": false}` disables
+  just voxflow; everything else stays enabled.
+- **Opt-in / allowlist (`onlyListedServices=true`)** — every service **not**
+  explicitly set to `true` is disabled. `{"services": {"bridge": true,
+  "qraie-redis-shared": true}, "onlyListedServices": true}` runs only those
+  two, without spelling out the other ~30 as `false`. Setting
+  `onlyListedServices=true` with no service set to `true` is rejected (it
+  would disable every service).
+
+`helm_values.compute_disabled_services()` turns this into the flat list
+rendered as the chart's `disabledServices:` key — **never** as a `services:`
+override, because Helm replaces an entire list wholesale rather than
+merging it; a per-tenant `services:` override would have to repeat the
+chart's whole ~32-entry array just to skip a couple.
+
+### Polling and live status
+
+Poll `GET /api/v1/tenant/{id}` for status transitions — every response
+includes a `progress` field (0–100) even without using the push transport.
+For a live loading bar without polling, use Socket.IO
+(`app/socketio_app.py`, mounted at `/socket.io`):
 
 ```js
 import { io } from "socket.io-client";
@@ -244,240 +298,404 @@ socket.on("error", ({ message }) => console.error(message));
 ```
 
 It emits the current status immediately after `subscribe`, then one event
-per subsequent transition, and stops emitting once a terminal status
-(`RUNNING`/`FAILED`/`DELETED`) is reached (the subscription is cleaned up
-server-side at that point, or on disconnect, whichever comes first).
+per subsequent transition, and stops once a terminal status
+(`RUNNING`/`FAILED`/`DELETED`) is reached — the server-side subscription
+(`status_bus.py`'s in-process pub/sub) is cleaned up at that point, or on
+client disconnect, whichever comes first. This is **single-replica, in-memory
+only** — see "Known limitations".
+
+## The provisioning workflow (`app/services/provisioner.py`)
+
+Runs as a plain FastAPI `BackgroundTask` today (swap-in point for a real
+task queue is called out below). For a fresh `POST /api/v1/tenant`:
+
+1. **VALIDATING** — `validation.py` rejects a duplicate active `tenantId`
+   and confirms this deployment's own `ENVIRONMENT` is in
+   `allowed_environments`.
+2. **Cluster selection** — `cluster_selector.select_cluster()` picks a
+   spoke via **sequential fill**: clusters are tried in the order they
+   appear in `clusters.yaml`/`clustersConfig`, and a tenant lands on the
+   first one not yet at capacity for its environment — spoke-1 fills
+   completely before spoke-2 ever gets a tenant. Live counts come from this
+   operator's own database (`ACTIVE_STATUSES` — everything except
+   `DELETED`/`FAILED`), not from Kubernetes.
+3. **Capacity check** (`spoke_scaler.maybe_trigger_spoke_scale`) — fires a
+   parallel, non-blocking new-spoke job in prod once a spoke crosses its
+   scale-out threshold, or a notification in stage (no autoscaling there).
+4. **SpokeCluster CR upsert** (`spoke_cr.py`) — echoed/logged, not applied
+   for real (see "Known limitations").
+5. **Tenant CR creation** (`tenant_cr.py`) — echoed/logged, not applied for
+   real either; returns a synthetic `(name, uid)` pair the way a real API
+   server would.
+6. **Vault secrets written** (`vault_service.write_initial_qraie_bridge_tenant_secrets`)
+   — deliberately **before** the GitOps handoff, not after `RUNNING`: the
+   tenant workload's own Vault Agent/VSO sidecar blocks its pod from
+   starting until these paths exist, so writing them late would be a
+   chicken-and-egg deadlock. The same resolved data is mirrored into
+   MongoDB right after (`mongo_service.write_tenant_env_config`).
+7. **Render + commit `values.yaml`** (`helm_values.py` + `git_service.py`)
+   → **GIT_COMMITTED**.
+8. **SYNCING** — poll Argo CD + Kubernetes until healthy or timeout (see
+   "Argo CD failure monitoring" below) → **RUNNING** or **FAILED**.
+9. **Meta-builder Job** — only on reaching `RUNNING`: submits the real
+   MSSQL DB/login-seeding Job (see below).
+
+`PUT /api/v1/tenant/{id}` (only accepted from `RUNNING`/`FAILED`) re-renders
+and re-commits `values.yaml` with the updated version/users/db size/service
+selection, then re-runs the same Argo CD/Kubernetes wait loop.
+`DELETE /api/v1/tenant/{id}` removes the tenant's manifest from git, deletes
+its namespace directly (the one deliberate write exception — see below),
+and polls until the namespace is gone.
 
 ## Argo CD failure monitoring
 
-Scoped entirely to **a tenant's own rollout** (`provisioner._wait_for_argocd_and_k8s`,
-runs for new onboarding and for `PUT` updates) -- tenants are not monitored
-after they reach `RUNNING`. Built on `argocd_service.classify()`, this fails
-fast instead of silently retrying for the full `PROVISIONING_TIMEOUT_SECONDS`:
-- Argo CD reports a **definitive failure** (Degraded health, or the last
-  sync operation itself Failed/Error) → the tenant goes straight to
-  `FAILED` with Argo's own message as the error, on the very next poll.
-- Argo CD itself is **unreachable** for `ARGOCD_UNREACHABLE_FAIL_AFTER`
-  (default 5) consecutive polls → `FAILED`, and a notification fires on the
-  *first* unreachable poll (so you find out immediately, not just when the
-  tenant eventually gives up).
-- Anything else (Progressing, Suspended, a transient blip) → keeps polling
-  as before.
+Scoped entirely to **a tenant's own rollout**
+(`provisioner._wait_for_argocd_and_k8s`, runs for both onboarding and
+`PUT` updates) — tenants are **not** monitored after reaching `RUNNING`.
+Built on `argocd_service.classify()`, which fails fast instead of silently
+retrying for the full `PROVISIONING_TIMEOUT_SECONDS` (default 900s):
 
-Calls the same `notifications.notify()` sink used elsewhere (log-only for
-now -- see `app/services/notifications.py` to wire in Slack/PagerDuty/email)
-and pushes through `status_bus`/Socket.IO, so anything watching that
-tenant live sees the failure too.
-
-## Vault: common vs. tenant-specific variables
-
-Every tenant's Vault secrets are two kinds of variable merged together
-(`vault_service.build_initial_tenant_secrets()`):
-
-- **Common** -- shared infra config, identical for every tenant in this
-  environment: Redis/Postgres/Mongo hosts+ports, JWT signing config. Lives
-  at `secret/{VAULT_COMMON_SECRET_PATH}` (default `common/config`), a
-  single object, not per-tenant. Managed via:
-  ```
-  GET /api/v1/vault/common
-  PUT /api/v1/vault/common   { "redis_host": "...", "postgres_host": "...", "jwt_issuer": "...", ... }
-  ```
-  Falls back to the `TENANT_POSTGRES_HOST`/etc. Settings fields if Vault is
-  disabled or nothing's been pushed yet -- those are seed/fallback values,
-  not the source of truth once you're actually using this.
-
-- **Tenant-specific** -- generated fresh per tenant at onboarding time:
-  `db_username`/`root_username` (the tenant's own id), and freshly random
-  `password`/`jwt_secret` values. These can never come from the common
-  config since they must be unique per tenant. Written to
-  `secret/{VAULT_TENANT_SECRET_PREFIX}/{tenantId}/{redis,database,mongo,jwt}`
-  -- the exact paths/fields `bridge-meta-builder`'s `safeVault()` calls
-  expect. Inspect what's currently stored for a tenant via:
-  ```
-  GET /api/v1/tenant/{id}/vault
-  ```
-
-Both only write for real when `VAULT_ENABLED=true`; otherwise every call
-logs/echoes what it would have done (same pattern as `crossplane_service.py`)
-and `read_common_config()` just returns the Settings-derived fallback.
-
-**Local/dev Vault**: `poc/vault-dev.yaml` runs Vault in dev mode (in-memory,
-auto-unsealed, fixed root token `"root"`) for testing this against a real
-Vault server without any production setup -- `kubectl apply -f
-poc/vault-dev.yaml`, then point `VAULT_ADDR` at
-`http://vault.vault.svc.cluster.local:8200` and `VAULT_TOKEN=root`. **Not**
-for anything resembling production -- see that file's header comment for
-what a real deployment needs instead (persistent raft storage, auto-unseal,
-real auth).
+- Argo CD reports a **definitive failure** (the last sync operation itself
+  `Failed`/`Error`) → straight to `FAILED` with Argo's own message, on the
+  very next poll. Note: **Degraded health alone is *not* treated as
+  definitive** — Argo CD commonly reports a resource as transiently
+  Degraded while an already-succeeded sync is still settling (e.g. an
+  `ExternalSecret` not yet caught up); only a failed/errored *operation*
+  short-circuits the wait.
+- Argo CD itself is **unreachable** (network error, 5xx, timeout) for
+  `ARGOCD_UNREACHABLE_FAIL_AFTER` (default 5) consecutive polls → `FAILED`,
+  with a notification firing on the *first* unreachable poll so an operator
+  finds out immediately rather than only once the tenant gives up.
+- Anything else (Progressing, Suspended, a transient blip, or Argo reporting
+  Healthy+Synced while this operator's own `kubernetes_service.is_fully_ready`
+  check still disagrees — e.g. an ingress LB not provisioned yet) → keeps
+  polling.
 
 ## qraie-bridge Vault integration
 
-`appType="qraie-bridge"` tenants use a completely different Vault layout
-from the generic `redis/database/mongo/jwt` shape above -- one path per
-chart service, since [`helm-chart-bridge`](../helm-chart-bridge) delivers
-secrets via a 3-layer `envFrom` (see that chart's README), not a handful of
-Vault-Agent-injected files. All of this lives in
-`app/services/vault_service.py`, below the generic functions.
+`app/services/vault_service.py` writes one Vault KV v2 path per chart
+service: `secret/tenants/<tenant-slug>/<service>` (plus one extra
+tenant-wide `secret/tenants/<tenant-slug>/common` path for shared
+Redis/gateway config), consumed by the qraie-bridge chart's per-service
+`envFrom`. `QRAIE_BRIDGE_SERVICE_KEYS` (in code, not just ad-hoc `vault kv
+put` commands) lists, per service, exactly which env keys its Vault path
+holds — currently ~32 services' worth, each expanded and cross-checked
+against the original docker-compose stack this chart was converted from.
+**Read that dict directly for the authoritative, current key list per
+service** — it's too large and too likely to drift to usefully duplicate
+here; below is the mechanism, not the full schema.
 
-**Path taxonomy** (four distinct kinds of Vault data, easy to mix up):
+Every key falls into exactly one of three buckets when a new tenant's
+secrets are written (`write_initial_qraie_bridge_tenant_secrets`):
 
-| Path | Scope | Written by | Consumed via |
-|---|---|---|---|
-| `secret/k8s/tenant-common` | Every tenant, every environment | Manually (`vault kv put`), not this operator | Chart's `commonSecrets` -- read live, not copied |
-| `secret/qraie-bridge/platform-defaults/<service>` | Every tenant, this environment | `PUT /api/v1/vault/qraie-bridge-defaults/{service}` | Copied into new tenants' per-service secrets at creation time |
-| `secret/tenants/<slug>/common` | This tenant only, all its services | `write_initial_qraie_bridge_tenant_secrets()` (once, at creation) | Chart's `tenantSecrets` |
-| `secret/tenants/<slug>/<service>` | This tenant, this service only | `write_initial_qraie_bridge_tenant_secrets()` (once, at creation) | Chart's per-service `envFrom` (always wins) |
+1. **`QRAIE_BRIDGE_TENANT_DERIVED_KEYS`** (`TENANT_ID`, `TENANT_KEY`,
+   `TENANT_IDS`, `DB_USER`, `DB_NAME`, `DB_SCHEMA`) — set to the tenant's
+   own `slug`. Must be unique per tenant: a shared value here would mean
+   every tenant's seeding Job operates on the *same* database/login,
+   silently colliding.
+2. **`QRAIE_BRIDGE_GENERATED_KEYS`** (`REDIS_PASSWORD`, `DB_PASSWORD`,
+   `WORKPLACE_DM_PASSWORD`, `RADICALE_AGENT_PASS`, `JWT_SECRET`,
+   `G_JWT_SECRETKEY`, `G_RT_SECRETKEY`) — a fresh, random,
+   complexity-guaranteed value generated per tenant
+   (`_generate_secret()` guarantees at least one upper/lower/digit/symbol
+   character, since a uniform draw can otherwise land on a password MSSQL's
+   default complexity policy rejects). *`WORKPLACE_DM_*` here is an env key
+   name inherited from the `bridge-cp-conductor` service's own third-party
+   integration naming — it has nothing to do with the retired
+   `appType="workplace"` tenant chart discussed below; it just happens to
+   share the word.*
+3. **Two keys with their own dedicated derivation, not a platform default**:
+   - `VIRTUAL_HOST` → the tenant's own `domain` from the request, verbatim.
+     Safe to derive automatically (unlike every other self-referencing URL
+     key) because it never has a service-specific path suffix.
+   - `MONGODB_URI` → built from `mongo_env_config_uri` (the same shared
+     Mongo instance credentials `mongo_service.py` already uses) with the
+     tenant's own `slug` inserted as the database-name path segment
+     (`vault_service._tenant_mongodb_uri()`). This gives every service that
+     needs Mongo (`controlops-server`, `erep-server`, `tranops-backend`,
+     `iot-broker-config`, `iot-broker-data`) that tenant's own isolated
+     database rather than a value from platform defaults — the source
+     reference data this schema was built from showed some services
+     sharing one fixed database name across every tenant, which defeats
+     tenant isolation, so this was deliberately changed to derive per
+     tenant instead.
+4. **Everything else** — copied from that service's current
+   `secret/qraie-bridge/platform-defaults/<service>` entry (or `""` if
+   never configured). This is genuinely shared business/integration config
+   (external API URLs/credentials, hosts, flags) — the same for every
+   tenant in *this* environment, set once via:
 
-**Per-service key classification** (`QRAIE_BRIDGE_SERVICE_KEYS`, one entry
-per chart service, keeps the full schema in code instead of only existing as
-ad-hoc `vault kv put` commands) splits every key three ways when a new
-tenant's secrets are written:
+   ```
+   PUT /api/v1/vault/qraie-bridge-defaults/tranops-backend
+   {"SLM_API_URL": "...", "SLM_PASSWORD": "..."}
+   ```
 
-- **`QRAIE_BRIDGE_TENANT_DERIVED_KEYS`** (`TENANT_ID`, `TENANT_KEY`,
-  `TENANT_IDS`, `DB_USER`, `DB_NAME`) -- set to the tenant's own slug. Must
-  be unique per tenant; a shared platform default here would mean every
-  tenant's seeding Job operates on the same database/login.
-- **`QRAIE_BRIDGE_GENERATED_KEYS`** (`REDIS_PASSWORD`, `DB_PASSWORD`,
-  `WORKPLACE_DM_PASSWORD`, `RADICALE_AGENT_PASS`, `JWT_SECRET`) -- a fresh
-  random value per tenant, per service.
-- **Everything else** -- copied from that service's current
-  `secret/qraie-bridge/platform-defaults/<service>` entry (or `""` if never
-  configured yet). This is shared business/integration config (external API
-  URLs/creds, hosts, flags) that's genuinely the same for every tenant in
-  this environment, not a credential.
+   This only affects tenants provisioned **after** the call — an existing
+   tenant's `secret/tenants/<slug>/<service>` was written once at its own
+   creation and is not kept in sync with later platform-default changes.
 
-Set the shared half once per environment, before onboarding tenants that
-need it:
+Inspect what's currently stored for one tenant via
+`GET /api/v1/tenant/{id}/vault`. With `VAULT_ENABLED=false` (the default),
+every write above still runs, just logged/echoed instead of actually
+reaching a Vault server — this lets the whole onboarding flow be exercised
+locally with zero Vault setup.
+
+**Local/dev Vault**: Vault's own `--dev` mode (in-memory, auto-unsealed,
+fixed root token `"root"`) is enough to test this against a real Vault
+server — point `VAULT_ADDR` at it and `VAULT_TOKEN=root`. Not for anything
+resembling production (no persistence, no real auth).
+
+## MongoDB env-config mirror (`app/services/mongo_service.py`)
+
+A **read-only-for-humans mirror**, not a source of truth for anything — the
+qraie-bridge chart's own `envFrom` (reading Vault) is what pods actually
+consume at runtime. Disabled by default (`mongo_env_config_enabled=false`);
+when enabled, `write_tenant_env_config()` mirrors the *exact same* resolved
+env data `vault_service.write_initial_qraie_bridge_tenant_secrets()` just
+wrote (passed straight through, never re-derived or re-classified) into:
+
+- **One MongoDB database per tenant, named after the tenant's `slug`**
+  (e.g. `hbss-14`) — shared by every service belonging to that tenant, not
+  one database per service.
+- **One collection per "service group"** within that database
+  (`QRAIE_BRIDGE_SERVICE_GROUPS` — mirrors the chart's own ingress-path
+  prefixes where a service has one, e.g. `controlops`, `galaxy`,
+  `workplace` — this `workplace` is a service-group label for the
+  `qraie-api-gateway`/`qraie-ui`/`admin-panel`/`microservice-qraie` family,
+  also unrelated to the retired tenant chart of the same name — or grouped
+  by service-name family for internal services with no ingress path of
+  their own).
+- **One document per service**, `_id` = service name, `replace_one(...,
+  upsert=True)` so a later tenant update replaces rather than duplicates
+  that service's document.
+
+## The retired `workplace` chart
+
+Earlier, tenants could be provisioned onto **either** qraie-bridge, or a
+second, generic single-image "workplace" chart (`poc/chart-workplace`),
+selected via an `appType` request field, with `application`/`version`
+request fields mapping to that chart's `image.repository`/`image.tag`, and
+its own generic `redis`/`database`/`mongo`/`jwt` Vault shape
+(`PUT`/`GET /api/v1/vault/common`). That chart was only ever a demo/POC —
+never used for a real tenant — and has been fully retired as of this
+repo's dead-code cleanup:
+
+- `appType`, `application`, and `version` no longer exist as
+  `TenantCreateRequest` fields — every tenant is qraie-bridge, full stop.
+- `poc/` (the entire local no-cluster test harness, including
+  `poc/chart-workplace/`) has been deleted from the working tree.
+- `templates/values.yaml.j2` (the generic chart's values template) and
+  `templates/applicationset.example.yaml` (its ApplicationSet) have been
+  deleted — only `templates/qraie_bridge_values.yaml.j2` and
+  `templates/qraie-bridge-applicationset.example.yaml` remain.
+- `Tenant.app_type`/`.application`/`.version` remain as real, `NOT NULL`
+  DB columns (dropping them would need a migration this codebase doesn't
+  have yet) — always `"qraie-bridge"`/`settings.default_application`/
+  `settings.default_version` now, and still surfaced on `TenantResponse`
+  for API back-compat.
+- A stale reference survives in
+  `templates/qraie-bridge-applicationset.example.yaml`'s own comments
+  (mentions "the two appTypes'" and a counterpart
+  `templates/applicationset.example.yaml` that no longer exists) — cosmetic
+  only, doesn't affect behavior, but worth cleaning up next time that file
+  is touched.
+- `helm/templates/NOTES.txt`'s example `curl` still includes
+  `"appType": "qraie-bridge"` in its sample request body — also stale;
+  `TenantCreateRequest` will simply ignore that unknown field today (Pydantic
+  models here don't reject extra fields by default), but it should be
+  removed from the example.
+
+## Configuration reference
+
+Full source of truth: `app/config.py`'s `Settings` class (~50 fields,
+grouped and commented by subsystem). `.env.example` is a **local-dev
+template and is not fully in sync with it** — e.g. it references
+`META_BUILDER_JOB_IMAGE`, which is not a real `Settings` field any more
+(the seeding Job's image is now hardcoded to
+`mcr.microsoft.com/mssql/server:2022-latest` in `meta_builder_job.py`, not
+configurable), and it doesn't mention `MSSQL_ADMIN_HOST`/`MSSQL_ADMIN_PORT`/
+`MSSQL_ADMIN_USER`/`MSSQL_ADMIN_PASSWORD` or the `MONGO_ENV_CONFIG_*` keys
+at all. Treat `app/config.py` as authoritative; `.env.example` as a rough
+starting point.
+
+Selected settings worth knowing about explicitly:
+
+| Setting | Default | Notes |
+|---|---|---|
+| `ENVIRONMENT` | `stage` | Which environment *this* deployment serves — drives spoke capacity thresholds. One deployment = one environment. |
+| `DATABASE_URL` | `postgresql+psycopg2://...` | Also works as `sqlite:////data/db/tenant_operator.db` — what the current hub deployment actually runs (see `helm/README.md`). |
+| `VAULT_ENABLED` | `false` | Gates every real Vault write in `vault_service.py`; `false` means log/echo only. |
+| `MONGO_ENV_CONFIG_ENABLED` | `false` | Gates the read-only MongoDB mirror in `mongo_service.py`. |
+| `MONGO_ENV_CONFIG_URI` | unset | Full Mongo connection string, also the base for each tenant's derived `MONGODB_URI` (see above). |
+| `GIT_REPO_URL` / `GIT_BRANCH` / `GIT_TENANTS_DIR` | — | The GitOps repo and directory tenant manifests are committed into. |
+| `GIT_BRIDGE_TENANTS_DIR` | `bridge-tenants` | **Currently unused by any live code path** — `_tenants_dir_for()` in `provisioner.py` always returns `GIT_TENANTS_DIR` now that there's only one chart/one tenant flow. Kept because `git_service.py`'s functions already accept a `tenants_dir` override and nothing currently calls them with it; harmless to leave set. |
+| `MSSQL_ADMIN_HOST` / `..._PORT` / `..._USER` / `..._PASSWORD` | unset | Admin login the meta-builder Job uses to create each tenant's real MSSQL database + login. Both host and password must be set for the Job to actually run — otherwise it's skipped (logged, not failed). |
+| `ARGOCD_UNREACHABLE_FAIL_AFTER` | `5` | Consecutive unreachable polls before a rollout fails fast — see "Argo CD failure monitoring". |
+| `CROSSPLANE_ENABLED` | `false` | Prod-only; gates whether `spoke_scaler.py` applies a real Crossplane claim vs. a log-only simulation. |
+| `KUBECONFIG_PATH` | unset (in-cluster) | kubeconfig with one context per spoke, used **read-only** against every spoke. |
+| `HUB_KUBECONFIG_PATH` / `HUB_KUBE_CONTEXT` | unset (in-cluster) | Only for local/dev access to the hub from outside it — the real hub deployment leaves these unset since the operator already runs *on* the hub. |
+
+No `ARGOCD_APPSET_NAME` setting exists — it was found to be fully unused
+dead code and removed from `Settings` as part of this cleanup; if you see
+it referenced anywhere else, that reference is stale.
+
+## Local development
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # fill in real values (see caveats above)
+uvicorn app.main:app --reload
 ```
-PUT /api/v1/vault/qraie-bridge-defaults/tranops-backend
-{"SLM_API_URL": "...", "SLM_PASSWORD": "..."}
-```
-This only affects tenants provisioned *after* the call -- an existing
-tenant's `secret/tenants/<slug>/<service>` was already written once at its
-own creation time and is not kept in sync with later platform-default
-changes.
 
-**Filename in the GitOps repo**: `commit_tenant_manifest()`/
-`delete_tenant_manifest()` (`app/services/git_service.py`) key the file on
-`tenant.slug`, not `tenant.tenant_name` -- the latter has no DB uniqueness
-constraint, so two tenants sharing a display name would otherwise silently
-overwrite each other's file in
-[`k8s-infra-setup-testing`](../k8s-infra-setup-testing)/`tenants/`.
+With `VAULT_ENABLED=false`, `MONGO_ENV_CONFIG_ENABLED=false`,
+`CROSSPLANE_ENABLED=false` (all defaults) and `DATABASE_URL` pointed at a
+local SQLite file, the entire onboarding flow runs end-to-end with nothing
+external except a reachable git remote and (if you want the Argo CD wait
+loop to resolve) a reachable Argo CD/Kubernetes spoke. Every optional
+integration echoes/logs what it would have done instead of failing outright
+when disabled.
+
+`Base.metadata.create_all()` runs on startup for convenience. For anything
+beyond local dev, switch to Alembic migrations (already a pinned
+dependency, not yet wired up):
+
+```bash
+pip install alembic
+alembic init migrations
+# point migrations/env.py at app.database.Base.metadata and DATABASE_URL,
+# then: alembic revision --autogenerate -m "init" && alembic upgrade head
+```
 
 ## Deploying the operator itself
 
-One image, two Deployments -- one per environment, each in its own
-namespace/ConfigMaps/Secrets, on entirely separate hub-and-spoke fleets:
+Two paths exist in this repo; **the Helm chart under `helm/` is the primary,
+currently-used one** — it's what's actually deployed as the Argo CD
+`Application` named `tenant-operator` on the hub cluster. Full instructions,
+image versioning, and the live-deployment operational notes (including a
+real gotcha around `existingSecretName` and Secret patches) are in
+**`helm/README.md`** — read that for the real deployment story.
+
+`deploy/*.yaml` is a secondary, plain-manifest path — the same
+Namespace/Deployment/Service/PVC/RBAC objects the Helm chart also renders,
+written out by hand instead of templated. It's kept as a manual/reference
+alternative for anyone who'd rather not use Helm, but it is **not** what's
+currently running, and it has drifted slightly from the current code —
+e.g. `deploy/configmap.example.yaml`'s `META_BUILDER_JOB_IMAGE` key isn't
+consumed by any current `Settings` field (see "Configuration reference"
+above). If you use `deploy/` for a real deployment, double-check its
+ConfigMap/Secret keys against `app/config.py` first.
 
 ```bash
 docker build -t your-registry/tenant-operator:latest .
 docker push your-registry/tenant-operator:latest
 
-# fill in real values, then apply (never commit the filled-in copies):
-cp deploy/configmap.example.yaml deploy/tenant-operator-config.yaml
+cp deploy/configmap.example.yaml deploy/tenant-operator-config.yaml   # fill in, don't commit
 cp deploy/secret.example.yaml deploy/tenant-operator-secrets.secret.yaml
-
-# pick ONE, matching which environment this Deployment serves:
-cp deploy/clusters-configmap.stage.example.yaml deploy/tenant-operator-clusters.yaml
-# cp deploy/clusters-configmap.prod.example.yaml deploy/tenant-operator-clusters.yaml
+cp deploy/clusters-configmap.stage.example.yaml deploy/tenant-operator-clusters.yaml   # or the prod one
 
 kubectl apply -f deploy/tenant-operator-config.yaml
 kubectl apply -f deploy/tenant-operator-secrets.secret.yaml
 kubectl apply -f deploy/tenant-operator-clusters.yaml
-kubectl apply -f deploy/crossplane-rbac.yaml   # prod only -- needs the CROSSPLANE_CLAIM_NAMESPACE to already exist
-kubectl apply -f deploy/deployment.yaml   # against the Hub cluster
+kubectl apply -f deploy/spoke-readonly-rbac.yaml
+kubectl apply -f deploy/crossplane-rbac.yaml   # prod only
+kubectl apply -f deploy/deployment.yaml
 ```
 
-Repeat against the *other* hub-and-spoke fleet's cluster for the other
-environment (own namespace, own Secret, own `ENVIRONMENT` value in the
-ConfigMap, own clusters ConfigMap) -- same image, no rebuild needed.
+You'll also need to separately create `tenant-operator-git-ssh-key` and
+`tenant-operator-kubeconfig` Secrets — not templated here since their
+contents are environment-specific credentials.
 
-You'll also need to create `tenant-operator-git-ssh-key` and
-`tenant-operator-kubeconfig` as Kubernetes Secrets -- not templated here
-since their contents are environment-specific credentials, not config.
+## One-time platform setup (before the operator's first request)
 
-## Operational notes / known limits worth knowing before you go to prod
+1. **Git repo**: a separate GitOps repo (e.g. `k8s-infra-setup-testing`)
+   with a `tenants/` (or your configured `GIT_TENANTS_DIR`) directory and a
+   copy of the qraie-bridge chart under `charts/qraie-bridge`.
+2. **ApplicationSet**: apply
+   `templates/qraie-bridge-applicationset.example.yaml` to Argo CD once, by
+   hand or via platform CI — its git-directory generator creates/removes
+   the per-tenant Argo CD `Application` automatically whenever this
+   operator commits or deletes a file.
+3. **Register spoke clusters with Argo CD** (`argocd cluster add <context>`)
+   and list them in the environment's clusters registry (name/context/
+   region/environments/max_tenants — see `clusters.yaml` and
+   `deploy/clusters-configmap.*.example.yaml`). **Stage and prod must never
+   share a spoke.**
+4. **Argo CD API token** — read-only access to Application status is
+   sufficient.
+5. **Kubeconfig** with a context per spoke, scoped to **read-only** RBAC
+   (Deployments/Pods/PVCs/Ingresses/Namespaces) — the operator never writes
+   to a spoke directly.
+6. **Git deploy key** (SSH) or PAT (HTTPS) with write access to the GitOps
+   repo.
+7. **Database**: a Postgres database + user, or a persistent volume for a
+   SQLite file — either way, wired via `DATABASE_URL`.
+8. **MSSQL admin login** (optional but needed for real DB seeding): set
+   `MSSQL_ADMIN_HOST`/`..._PORT`/`..._USER`/`..._PASSWORD` and make sure the
+   operator's ServiceAccount can create `batch/v1` Jobs in its own
+   namespace (`meta_builder_job_namespace`).
+9. **Crossplane** (prod only, optional): install Crossplane + an OKE
+   provider/Composition on the hub, matching the shape
+   `crossplane_service.build_oke_claim()` sends, then set
+   `CROSSPLANE_ENABLED=true`.
+10. **Vault** (optional): a token (or Agent-injected token file) with write
+    access under `VAULT_KV_MOUNT`/`VAULT_TENANT_SECRET_PREFIX`, then
+    `VAULT_ENABLED=true`. Set the shared qraie-bridge platform defaults via
+    `PUT /api/v1/vault/qraie-bridge-defaults/{service}` before onboarding
+    tenants that need real values there.
 
-- **Single replica by design right now.** `git_service.py` uses an in-process
-  lock around the working tree, which only protects against concurrent
-  requests *within one pod*. Running >1 replica as-is can race on git
-  pushes. To scale out: either keep 1 replica (fine for most tenant-creation
-  volumes -- it's I/O-bound, not CPU-bound), or move the git critical section
-  behind a Postgres advisory lock (`pg_advisory_lock`) so multiple replicas
-  serialize correctly. `BackgroundTasks` also only runs in the process that
-  received the HTTP request, so it doesn't provide crash-recovery -- if the
-  pod restarts mid-provision, that tenant is stuck in whatever status it was
-  last in. Moving to Celery + Redis/RabbitMQ is the natural next step, and
-  `provisioner.py`'s functions are already structured as plain functions so
-  wrapping them as `@celery_app.task` is a small change.
-- **Socket.IO status push is also single-replica/in-memory.** `status_bus.py`'s
-  pub/sub (what `socketio_app.py` relays over the wire) is a plain
-  in-process `dict` of `queue.Queue`s -- a client connected to one pod won't
-  see events published by provisioning work running on another, and
-  `socketio.AsyncServer`'s own client<->sid session tracking is in-memory
-  too (pass a Redis-backed `client_manager` if you run >1 replica, so
-  clients can be routed to whichever pod they're actually connected to).
-  Fine at 1 replica; revisit alongside the Celery move above if you scale
-  out. A disconnected/never-connected client loses nothing permanently --
-  `GET /api/v1/tenant/{id}` (with its `progress` field) is always there as
-  a fallback, it just requires polling instead of being pushed to.
-- **Vault write is secrets-only, not account provisioning.** `vault_service.py`
-  generates and writes credentials to `secret/tenants/{tenantId}/{redis,database,mongo,jwt}`
-  so bridge-meta-builder's `safeVault()` calls succeed, but it does **not**
-  create the underlying Postgres/Mongo/Redis accounts those credentials
-  describe -- that's a separate provisioning step (either the meta-builder
-  Job itself, via its `ensureDatabaseExists()`, or your own infra
-  automation) that must actually honor whatever lands in Vault. If your
-  real setup uses a shared service account instead of a dedicated
-  per-tenant credential, replace the generated password in
-  `vault_service.build_initial_tenant_secrets()` accordingly.
-- **New-spoke provisioning: Crossplane for prod, notify-only for stage.**
-  When a prod spoke crosses its scale-out threshold, `spoke_scaler.py`
-  applies a Crossplane claim (`crossplane_service.py`, kind configurable via
-  `CROSSPLANE_KIND`/`CROSSPLANE_API_VERSION`/`CROSSPLANE_PLURAL`) on the hub
-  cluster requesting a new OKE cluster, then polls it until Crossplane
-  reports the claim Ready -- all on a background thread so it never blocks
-  the tenant currently being created. This only fires when
-  `CROSSPLANE_ENABLED=true` (see `deploy/configmap.example.yaml`); with it
-  false (the default, and what stage and local/no-cluster testing use) the
-  old log-only simulation runs instead. Either way, this stops at
-  "cluster exists and is Ready" -- registering it with Argo CD
-  (`argocd cluster add <context>`) and adding it to the prod clusters
-  ConfigMap are still separate, deliberate steps, logged clearly when the
-  claim goes Ready. New prod spokes are named `spoke-prod-<N>`
-  (`spoke_scaler._next_spoke_name()`), numbered independently from stage's
-  `spoke-<N>` spokes -- the two environments never share a name any more
-  than they share a cluster. The Crossplane claim's `spec.parameters` shape in
-  `crossplane_service.build_oke_claim()` is a generic placeholder -- adjust
-  it to match your actual OKE Composition/XRD schema before enabling this
-  in prod. Stage has no automation at all by design (per your requirement
-  that Crossplane is prod-only) -- it only emits a notification
-  (`notifications.py`) for a human to provision the next spoke manually. If
-  every spoke for an environment is genuinely full,
-  `NoAvailableClusterError` surfaces as a `FAILED` tenant with a clear error
-  message.
-- **Placement is sequential-fill, not load-balanced.** `cluster_selector.py`
-  fills spokes in the order they appear in the mounted clusters registry, so
-  spoke-1 is always full before spoke-2 receives a tenant. This is what
-  makes "spoke hits its capacity threshold" a meaningful, single-spoke
-  event. Combined with stage and prod each having their own registry, a
-  spoke is never shared across environments either.
-- **RBAC**: the kubeconfig the operator uses against each *spoke* should be
-  read-only (`kubernetes_service.py`) -- writes there only ever happen via
-  Argo CD reading git. The *hub* is the one exception: `crossplane_service.py`
-  needs write RBAC there (create/get on the Crossplane claim CRD) to apply
-  and poll claims. It defaults to in-cluster config (`HUB_KUBECONFIG_PATH`/
-  `HUB_KUBE_CONTEXT` unset) since the operator runs on the hub itself --
-  give its ServiceAccount a Role scoped to just that CRD, not cluster-admin.
-- **Namespace-per-tenant assumes single-tenant-per-namespace Helm charts**
-  labelled with `app.kubernetes.io/instance=<tenant_name>` -- adjust the
-  label selector in `kubernetes_service.py` if your charts label differently.
-- **Tenant CR / SpokeCluster CR are intent records, not real CRDs (yet).**
-  `tenant_cr.py` and `spoke_cr.py` build the objects and log/echo the
-  equivalent `kubectl apply` rather than calling the Kubernetes API --
-  install the actual CRDs on the hub and swap in a real API call in those
-  two modules when you're ready to make them authoritative instead of
-  advisory.
-- **Meta-builder Job is echoed too.** `meta_builder_job.py` builds the Job
-  manifest and logs/echoes it rather than submitting it -- swap in a real
-  `BatchV1Api.create_namespaced_job` call once the image and RBAC are ready.
+## Known limitations (read this before relying on anything below in prod)
+
+- **Single replica by design.** `git_service.py`'s write lock and
+  `status_bus.py`/Socket.IO's pub/sub are both plain in-process state —
+  correct for exactly one pod. `BackgroundTasks` also only runs in the
+  process that received the HTTP request, so there's no crash recovery: if
+  the pod restarts mid-provision, that tenant is stuck in whatever status
+  it was last in. `provisioner.py`'s functions are already plain functions,
+  so wrapping them as Celery tasks (with the git lock moved to a Postgres
+  advisory lock, and the status bus to Redis pub/sub) is the natural next
+  step, not a rewrite.
+- **Tenant CR and SpokeCluster CR are intent records, not real CRDs —
+  still true.** `tenant_cr.py` and `spoke_cr.py` build the objects and
+  `logger.info`/`print()` the equivalent `kubectl apply` rather than
+  calling the Kubernetes API. No CRDs are installed anywhere for this.
+- **The meta-builder Job is REAL now — this is a correction to older
+  documentation.** `meta_builder_job.py` submits an actual
+  `BatchV1Api.create_namespaced_job` call (in-cluster config, since the
+  operator runs on the hub where the Job also runs) once a tenant reaches
+  `RUNNING`, *if* `MSSQL_ADMIN_HOST`/`MSSQL_ADMIN_PASSWORD` are configured
+  and the tenant has a `controlops-server` Vault secret with a `DB_NAME`
+  (the one qraie-bridge service whose schema models a real DB connection).
+  It reuses the platform's own `mcr.microsoft.com/mssql/server` image
+  purely for its bundled `sqlcmd` — no separate image is built. If either
+  precondition is missing, it's skipped and logged, not treated as a
+  failure (a missing DB integration shouldn't fail an otherwise-successful
+  onboarding).
+- **Vault write is secrets-only for most services; MSSQL is the one
+  exception with real account provisioning.** `vault_service.py` generates
+  and writes credentials for every qraie-bridge service, but for most of
+  them (Redis passwords, JWT secrets, etc.) nothing in this codebase
+  creates the underlying account those credentials describe — the target
+  infra must already accept whatever lands in Vault, or you provision those
+  accounts separately. MSSQL is the exception: the meta-builder Job above
+  does create the real database + login matching `DB_NAME`/`DB_USER`/
+  `DB_PASSWORD`, closing that gap for the one service it's wired up for.
+- **New-spoke provisioning: Crossplane for prod, notify-only for stage** —
+  and even the Crossplane path stops at "cluster exists and is Ready";
+  registering it with Argo CD and adding it to the clusters registry are
+  still separate, deliberate steps, logged clearly when the claim goes
+  Ready.
+- **Placement is sequential-fill, not load-balanced** — spoke-1 always
+  fills before spoke-2 receives a tenant. This is what makes a scale-out
+  threshold a meaningful, single-spoke event.
+- **RBAC**: the kubeconfig used against each *spoke* should be read-only —
+  writes there only ever happen via Argo CD reading git. The *hub* is the
+  exception, with two narrowly-scoped real write paths: `batch/v1` Jobs in
+  the operator's own namespace (meta-builder), and one Crossplane claim CRD
+  in one namespace (prod only). The one write against a *spoke* directly is
+  namespace `delete` — Argo CD's `CreateNamespace=true` creates a tenant's
+  namespace but never tracks/prunes it, so `delete_tenant()` deletes it
+  directly or it would stay `Active` forever.
+- **Namespace-per-tenant assumes single-tenant-per-namespace charts**
+  labelled `app.kubernetes.io/instance=<tenant.slug>` — adjust the label
+  selector in `kubernetes_service.py` if a chart labels differently.
