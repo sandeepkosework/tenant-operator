@@ -1,0 +1,40 @@
+tenant:
+  id: placeholder
+  environment: dev
+  namespace: placeholder
+
+image:
+  repository: nginxdemos/hello  # stand-in "app image" -- swap for your real app
+  tag: "latest"
+
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "128Mi"
+
+# database/storage/ingress blocks are accepted (operator renders them) but
+# unused by this toy chart -- kept only so the real values.yaml.j2 output
+# from the operator doesn't need special-casing for the POC.
+database:
+  host: postgres.database.svc.cluster.local
+  name: placeholder
+storage:
+  size: 1Gi
+ingress:
+  enabled: false
+
+# Vault Agent Injector: pulls this tenant's secrets (written by
+# vault_service.write_initial_tenant_secrets(), see
+# secret/tenants/{{ tenant.id }}/{redis,database,mongo,jwt}) into the pod at
+# startup. Uses the "tenant-workload" Kubernetes auth role, bound to the
+# "default" ServiceAccount in any namespace -- fine for this POC since every
+# tenant namespace uses the default SA; a real deployment would want a
+# dedicated ServiceAccount per tenant instead.
+vault:
+  enabled: true
+  role: tenant-workload

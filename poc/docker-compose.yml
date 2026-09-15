@@ -1,0 +1,15 @@
+version: "3.8"
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tenant_operator
+      POSTGRES_PASSWORD: poc_password
+      POSTGRES_DB: tenant_operator
+    ports:
+      - "5432:5432"
+    volumes:
+      - poc_pg_data:/var/lib/postgresql/data
+
+volumes:
+  poc_pg_data:

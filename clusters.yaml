@@ -1,0 +1,7 @@
+clusters:
+  - name: spoke-1
+    context: kind-tenant-poc
+    argocd_cluster_server: https://kubernetes.default.svc
+    max_tenants: 1000
+    environments: ["stage"]
+    region: local

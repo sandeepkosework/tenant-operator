@@ -1,0 +1,21 @@
+# Stage's spoke registry, mounted over the image's baked-in clusters.yaml
+# (see deploy/deployment.yaml) so the same image works for both the stage
+# and prod Deployments. Copy, edit with your real stage spokes, apply as
+# `tenant-operator-clusters` in the STAGE Deployment's namespace only.
+#
+# Stage and prod never share a spoke -- list only stage-eligible clusters
+# here. See clusters.prod.example.yaml for prod's (separate) registry.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-operator-clusters
+  namespace: tenant-operator
+data:
+  clusters.yaml: |
+    clusters:
+      - name: spoke-1
+        context: spoke-1
+        argocd_cluster_server: https://spoke-1.internal:6443
+        max_tenants: 1000
+        environments: ["dev", "stage"]
+        region: us-east-1

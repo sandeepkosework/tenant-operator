@@ -1,1 +1,24 @@
+# Packaged Helm chart artifacts -- never commit a .tgz, publish to a
+# registry instead (see helm/README.md "Releasing" / OPERATIONS_RUNBOOK.md).
 *.tgz
+
+# Local environment / virtualenv
+.venv/
+venv/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local SQLite test artifacts (poc/run_local_no_cluster.py, etc.)
+*.db
+*.db-journal
+
+# Editor/OS cruft
+.DS_Store
+*Zone.Identifier
+
+# git-crypt/deploy secrets -- never commit real values, only *.example.yaml
+deploy/*.secret.yaml

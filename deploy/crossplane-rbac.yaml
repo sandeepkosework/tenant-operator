@@ -1,0 +1,39 @@
+# RBAC for the operator's real write path against the hub cluster: applying
+# and polling the Crossplane OKE claim (crossplane_service.py), used only
+# when CROSSPLANE_ENABLED=true (prod). No secrets here, safe to commit as-is
+# -- just double check the apiGroup/resource/namespace below match your
+# CROSSPLANE_API_VERSION/CROSSPLANE_PLURAL/CROSSPLANE_CLAIM_NAMESPACE
+# settings if you change them from the defaults in .env.example.
+#
+# Deliberately scoped to exactly this one CRD, in exactly this one
+# namespace -- never grant this ServiceAccount cluster-admin or broad write
+# access. The whole point of the architecture is that the operator only
+# writes to Kubernetes here, nowhere else (spokes stay read-only, tenant
+# workloads only ever change via Argo CD reading git).
+#
+# The tenant-operator ServiceAccount itself is defined in
+# spoke-readonly-rbac.yaml (applied to every deployment, not just prod) --
+# this file only adds to it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tenant-operator-crossplane
+  namespace: platform-infra   # must match CROSSPLANE_CLAIM_NAMESPACE
+rules:
+  - apiGroups: ["oke.platform.example.com"]   # must match the group half of CROSSPLANE_API_VERSION
+    resources: ["okeclusterclaims"]            # must match CROSSPLANE_PLURAL
+    verbs: ["get", "list", "watch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tenant-operator-crossplane
+  namespace: platform-infra   # must match CROSSPLANE_CLAIM_NAMESPACE
+subjects:
+  - kind: ServiceAccount
+    name: tenant-operator
+    namespace: tenant-operator
+roleRef:
+  kind: Role
+  name: tenant-operator-crossplane
+  apiGroup: rbac.authorization.k8s.io

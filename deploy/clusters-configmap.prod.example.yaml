@@ -1,0 +1,25 @@
+# Prod's spoke registry -- entirely separate spokes from stage's, on a
+# separate hub-and-spoke fleet. Mounted over the image's baked-in
+# clusters.yaml (see deploy/deployment.yaml) so the same image works for
+# both the stage and prod Deployments. Copy, edit with your real prod
+# spokes, apply as `tenant-operator-clusters` in the PROD Deployment's
+# namespace only.
+#
+# Names are just examples -- match whatever your real OKE clusters (and any
+# future ones Crossplane provisions, see spoke_scaler.py's
+# _next_spoke_name(), which names new prod spokes "spoke-prod-<N>") are
+# actually called.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-operator-clusters
+  namespace: tenant-operator
+data:
+  clusters.yaml: |
+    clusters:
+      - name: spoke-prod-1
+        context: spoke-prod-1
+        argocd_cluster_server: https://spoke-prod-1.internal:6443
+        max_tenants: 1000
+        environments: ["prod"]
+        region: us-ashburn-1

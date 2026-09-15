@@ -1,0 +1,121 @@
+# Runs the Tenant Operator on the Hub cluster, alongside Argo CD.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-operator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant-operator
+  namespace: tenant-operator
+spec:
+  replicas: 1  # keep at 1 while using the in-process file lock in git_service.py;
+               # see README "Scaling beyond one replica" before going higher
+  selector:
+    matchLabels:
+      app: tenant-operator
+  template:
+    metadata:
+      labels:
+        app: tenant-operator
+      annotations:
+        # Vault Agent Injector: authenticates as this pod's ServiceAccount via
+        # the Kubernetes auth method (role "tenant-operator", see the Vault
+        # policy/role setup docs) and writes its own session token to
+        # /vault/secrets/token -- exactly the VAULT_TOKEN_FILE convention
+        # app/vault_bootstrap.py and app/services/vault_service.py already
+        # support, so no application code needs to change.
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "tenant-operator"
+        vault.hashicorp.com/agent-inject-token: "true"
+    spec:
+      # Only needed for CROSSPLANE_ENABLED=true (prod) -- grants
+      # create/get/list/watch on the Crossplane claim CRD via in-cluster
+      # config. See crossplane-rbac.yaml. Harmless to leave set when
+      # Crossplane is disabled (stage) -- it just goes unused.
+      serviceAccountName: tenant-operator
+      # The image runs as non-root uid/gid 1000 ("tenantop", see Dockerfile).
+      # Without fsGroup, mounted Secret volumes (git-ssh-key, kubeconfig) are
+      # owned by root with no group access, so the container can't read its
+      # own SSH key ("Permission denied" from ssh, before it even reaches
+      # GitHub) -- fsGroup makes kubelet chown mounted volumes to this group.
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: tenant-operator
+          image: your-registry/tenant-operator:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: tenant-operator-secrets
+            - configMapRef:
+                name: tenant-operator-config
+          volumeMounts:
+            - name: git-ssh-key
+              mountPath: /secrets/git
+              readOnly: true
+            - name: kubeconfig
+              mountPath: /secrets/kube
+              readOnly: true
+            - name: git-repo-cache
+              mountPath: /data/tenant-config
+            # Overrides the clusters.yaml baked into the image at build time
+            # with this deployment's real registry -- stage and prod each
+            # mount their own ConfigMap here (see clusters-configmap.example.yaml)
+            # so the SAME image works for both without rebuilding.
+            - name: clusters-config
+              mountPath: /app/clusters.yaml
+              subPath: clusters.yaml
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+      volumes:
+        - name: git-ssh-key
+          secret:
+            secretName: tenant-operator-git-ssh-key
+            # 0440 (group-read), not 0400 -- combined with the pod's fsGroup
+            # above, this is what actually lets the non-root container user
+            # read its own mounted SSH key.
+            defaultMode: 0440
+        - name: kubeconfig
+          secret:
+            secretName: tenant-operator-kubeconfig
+        - name: git-repo-cache
+          persistentVolumeClaim:
+            claimName: tenant-operator-git-cache
+        - name: clusters-config
+          configMap:
+            name: tenant-operator-clusters
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tenant-operator
+  namespace: tenant-operator
+spec:
+  selector:
+    app: tenant-operator
+  ports:
+    - port: 80
+      targetPort: 8000
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tenant-operator-git-cache
+  namespace: tenant-operator
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi

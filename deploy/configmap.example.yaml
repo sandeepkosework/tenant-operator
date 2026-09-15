@@ -1,0 +1,103 @@
+# Template for the non-secret half of the operator's config, referenced by
+# deploy/deployment.yaml's envFrom.configMapRef. Copy this file, fill in
+# real values, and apply it as `tenant-operator-config` -- do NOT commit the
+# filled-in copy (see deploy/secret.example.yaml for the secret half).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-operator-config
+  namespace: tenant-operator
+data:
+  # Which environment this deployment serves -- "prod" or "stage". One
+  # operator deployment == one environment; run a second Deployment (its own
+  # namespace/config/secrets) for the other one.
+  ENVIRONMENT: "stage"
+
+  # --- CORS (for a browser frontend consuming the API / SSE status stream) ---
+  CORS_ALLOW_ORIGINS: '["https://portal.your-org.com"]'
+
+  # --- Git (GitOps source of truth) ---
+  GIT_REPO_URL: "git@github.com:your-org/tenant-config.git"
+  GIT_BRANCH: "main"
+  GIT_LOCAL_PATH: "/data/tenant-config"
+  GIT_AUTHOR_NAME: "tenant-operator"
+  GIT_AUTHOR_EMAIL: "tenant-operator@your-org.com"
+
+  # --- Argo CD ---
+  ARGOCD_SERVER: "https://argocd.hub.internal"
+  ARGOCD_VERIFY_TLS: "true"
+  ARGOCD_APPSET_NAME: "workplace"
+  ARGOCD_UNREACHABLE_FAIL_AFTER: "5"
+
+  # --- Kubernetes ---
+  KUBECONFIG_PATH: "/secrets/kube/config"
+
+  # --- Cluster registry ---
+  CLUSTERS_CONFIG_PATH: "clusters.yaml"
+
+  # --- Provisioning behavior ---
+  PROVISIONING_POLL_INTERVAL_SECONDS: "5"
+  PROVISIONING_TIMEOUT_SECONDS: "900"
+  ALLOWED_ENVIRONMENTS: '["dev", "stage", "prod"]'
+
+  # --- Tenant CR / meta-builder Job (see app/config.py for full defaults) ---
+  HUB_NAMESPACE: "platform-mgmt"
+  CR_API_VERSION: "platform.saas.com/v1alpha1"
+  CR_KIND: "Tenant"
+  DEFAULT_APPLICATION: "workplace"
+  DEFAULT_VERSION: "1.0.0"
+  DEFAULT_TIER: "standard"
+  META_BUILDER_JOB_IMAGE: "registry.internal/bridge-meta-builder:2.0.0"
+  META_BUILDER_JOB_NAMESPACE: "platform-jobs"
+
+  # --- Spoke capacity planning (override only if different from defaults) ---
+  # PROD_SPOKE_CAPACITY: "1000"
+  # PROD_SPOKE_SCALE_TRIGGER: "995"
+  # STAGE_SPOKE_CAPACITY: "3"
+  # STAGE_SPOKE_SCALE_TRIGGER: "2"
+
+  # --- Crossplane (prod-only new-spoke OKE provisioning) ---
+  # Only turn this on for the prod Deployment, and only once Crossplane +
+  # your OKE Composition/XRD are actually installed on this hub cluster --
+  # leave "false" (or omit this whole block) for the stage Deployment.
+  CROSSPLANE_ENABLED: "true"
+  CROSSPLANE_API_VERSION: "oke.platform.example.com/v1alpha1"
+  CROSSPLANE_KIND: "OKEClusterClaim"
+  CROSSPLANE_PLURAL: "okeclusterclaims"
+  CROSSPLANE_CLAIM_NAMESPACE: "platform-infra"
+  # CROSSPLANE_COMPOSITION_REF: "oke-standard"
+  CROSSPLANE_DEFAULT_REGION: "us-ashburn-1"
+  CROSSPLANE_DEFAULT_NODE_COUNT: "3"
+  CROSSPLANE_PROVISION_TIMEOUT_SECONDS: "1800"
+  CROSSPLANE_POLL_INTERVAL_SECONDS: "15"
+
+  # --- Hub cluster access ---
+  # Leave unset: the operator runs on the hub itself (deploy/deployment.yaml),
+  # so in-cluster config is used automatically for the Tenant/SpokeCluster
+  # CRs and Crossplane claims.
+  # HUB_KUBECONFIG_PATH: "/secrets/kube/hub-config"
+  # HUB_KUBE_CONTEXT: "hub"
+
+  # --- Vault ---
+  # Auth is via the Vault Agent Injector, not a static token -- see the
+  # vault.hashicorp.com/* annotations on the pod template in
+  # deployment.yaml. The Agent authenticates as this pod's ServiceAccount
+  # (Kubernetes auth method, role "tenant-operator") and writes its session
+  # token to VAULT_TOKEN_FILE below; app.vault_bootstrap.py and
+  # vault_service.py both already know how to use a token file instead of a
+  # static VAULT_TOKEN. VAULT_ADDR/VAULT_TOKEN_FILE can safely live here
+  # (not the Secret) since neither is itself a secret value.
+  VAULT_ADDR: "http://vault.vault.svc.cluster.local:8200"
+  VAULT_TOKEN_FILE: "/vault/secrets/token"
+  VAULT_ENABLED: "true"
+  VAULT_KV_MOUNT: "secret"
+  VAULT_COMMON_SECRET_PATH: "common/config"
+  VAULT_TENANT_SECRET_PREFIX: "tenants"
+  # Fallback/seed values only -- once VAULT_ENABLED=true, PUT
+  # /api/v1/vault/common is the real source of truth for these.
+  TENANT_POSTGRES_HOST: "postgres.database.svc.cluster.local"
+  TENANT_POSTGRES_PORT: "5432"
+  TENANT_MONGO_HOST: "mongo.database.svc.cluster.local"
+  TENANT_MONGO_PORT: "27017"
+  TENANT_REDIS_HOST: "redis.database.svc.cluster.local"
+  TENANT_REDIS_PORT: "6379"

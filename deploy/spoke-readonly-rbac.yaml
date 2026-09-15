@@ -1,0 +1,50 @@
+# Baseline RBAC for the operator's ServiceAccount -- applied to EVERY
+# deployment (stage and prod alike), unlike crossplane-rbac.yaml which is
+# prod-only. Grants exactly what kubernetes_service.py's real calls need
+# to check a tenant's health (namespaces, deployments, pods, PVCs,
+# ingresses, cluster-wide -- tenant namespaces are created dynamically by
+# Argo CD, one per tenant, so there's no fixed namespace to scope to).
+#
+# Mostly read-only (get/list/watch) -- writes still only ever happen via
+# Argo CD reading git, never the operator calling Kubernetes directly, with
+# one deliberate exception: "delete" on namespaces. Argo CD's
+# CreateNamespace=true sync option creates a tenant's namespace but never
+# tracks/prunes it, so delete_tenant() deletes it directly (see
+# kubernetes_service.delete_namespace()) -- without this verb, tenant
+# deletion succeeds everywhere except the namespace stays Active forever.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tenant-operator
+  namespace: tenant-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tenant-operator-spoke-readonly
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tenant-operator-spoke-readonly
+subjects:
+  - kind: ServiceAccount
+    name: tenant-operator
+    namespace: tenant-operator
+roleRef:
+  kind: ClusterRole
+  name: tenant-operator-spoke-readonly
+  apiGroup: rbac.authorization.k8s.io

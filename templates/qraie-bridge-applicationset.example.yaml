@@ -1,0 +1,57 @@
+# One-time platform setup manifest, applied once to Argo CD by a human/CI --
+# NOT generated per tenant, NOT processed by this codebase's Jinja engine.
+# Every {{...}} below is Argo CD's own ApplicationSet templating syntax.
+#
+# Counterpart to templates/applicationset.example.yaml for appType=
+# "qraie-bridge" tenants -- watches bridge-tenants/*.yaml (a SEPARATE
+# directory from tenants/*.yaml) and deploys charts/qraie-bridge instead of
+# charts/workplace, so the two appTypes' Applications/tenants never collide.
+# Both ApplicationSets can run against the same repo at once.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: qraie-bridge
+  namespace: argocd
+spec:
+  generators:
+    - git:
+        repoURL: git@github.com:your-org/tenant-config.git
+        revision: main
+        requeueAfterSeconds: 15
+        files:
+          - path: "bridge-tenants/*.yaml"
+  template:
+    metadata:
+      # tenant.id comes from the matched file's own content (see
+      # templates/qraie_bridge_values.yaml.j2), guaranteed unique per tenant
+      # -- same reasoning as templates/applicationset.example.yaml.
+      name: "{{tenant.id}}"
+    spec:
+      project: default
+      source:
+        repoURL: git@github.com:your-org/tenant-config.git
+        targetRevision: main
+        path: charts/qraie-bridge
+        helm:
+          valueFiles:
+            - "../../{{path}}/{{path.filename}}"
+      destination:
+        server: "{{argocdClusterServer}}"
+        namespace: "{{tenant.namespace}}"
+      syncPolicy:
+        # Labels the namespace Argo CD creates (CreateNamespace=true below)
+        # so Vault's qraie-bridge Kubernetes auth role can match it via
+        # bound_service_account_namespace_selector instead of a hand-listed
+        # bound_service_account_namespaces -- see that chart's README
+        # "Vault setup" section. Without this label, a brand new tenant's
+        # pods can authenticate to Vault with zero manual `vault write`
+        # steps; with the old hand-listed-namespaces approach, every single
+        # tenant needed one before its pods could start.
+        managedNamespaceMetadata:
+          labels:
+            qraie-bridge-tenant: "true"
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

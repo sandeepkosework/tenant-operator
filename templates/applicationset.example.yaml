@@ -1,0 +1,68 @@
+# This is a ONE-TIME platform setup manifest, applied once to Argo CD by
+# a human/CI — NOT generated per tenant by the operator, and NOT processed
+# through Jinja/any template engine by this codebase — it's applied as
+# literal YAML (`kubectl apply -f`), so every {{...}} below is Argo CD's
+# own ApplicationSet templating syntax, evaluated by Argo CD itself.
+#
+# Uses the git FILES generator to watch tenants/*.yaml and spin up one
+# Argo CD Application per file automatically. This is what keeps the
+# operator's job simple: it only ever commits/deletes one file under
+# tenants/, and Argo CD does the rest, including creating/removing the
+# Application resource itself.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: workplace
+  namespace: argocd
+spec:
+  generators:
+    - git:
+        repoURL: git@github.com:your-org/tenant-config.git
+        revision: main
+        # Default is 180s -- without a git webhook configured (real prod
+        # should have one: Settings > Webhooks in your repo host, pointed at
+        # Argo CD), this is how long a new tenant can sit waiting for Argo
+        # CD to even notice its file before syncing starts. 15s keeps local
+        # testing/demos fast; raise it (or add a webhook and drop it
+        # entirely) once this isn't just a POC.
+        requeueAfterSeconds: 15
+        files:
+          - path: "tenants/*.yaml"
+  template:
+    metadata:
+      # NOT {{path.basenameNormalized}} -- for the git FILES generator that
+      # resolves to the containing DIRECTORY name ("tenants"), identical for
+      # every file, which would collide every tenant onto one Application.
+      # tenant.id comes from the matched file's own content instead (see
+      # templates/values.yaml.j2), guaranteed unique per tenant.
+      name: "{{tenant.id}}"
+    spec:
+      project: default
+      source:
+        repoURL: git@github.com:your-org/tenant-config.git
+        targetRevision: main
+        path: charts/workplace
+        helm:
+          valueFiles:
+            # {{path}} = containing directory ("tenants"), {{path.filename}}
+            # = the actual matched filename (e.g. "acme.yaml") -- NOT
+            # {{path.basename}}, which is also just the directory name.
+            # ../../ because valueFiles resolve relative to source.path
+            # (charts/workplace), two levels below the repo root.
+            - "../../{{path}}/{{path.filename}}"
+      destination:
+        # Both come straight from the fields the operator actually renders
+        # into tenants/{name}.yaml -- see templates/values.yaml.j2
+        # (argocdClusterServer, tenant.namespace). server must match the
+        # `server` field of an Argo CD cluster secret you've already
+        # registered (`argocd cluster add <context>`) -- or
+        # https://kubernetes.default.svc if it's the same cluster Argo CD
+        # itself runs on.
+        server: "{{argocdClusterServer}}"
+        namespace: "{{tenant.namespace}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

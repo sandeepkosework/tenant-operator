@@ -1,0 +1,6 @@
+clusters:
+  - name: spoke-1
+    context: kind-tenant-poc      # kind names contexts "kind-<cluster-name>"
+    argocd_cluster_server: https://kubernetes.default.svc  # in-cluster: hub == spoke for this POC
+    max_tenants: 5                 # small on purpose, to test the capacity/failover error path too
+    environments: ["dev"]

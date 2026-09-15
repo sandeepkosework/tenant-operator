@@ -1,0 +1,30 @@
+# The Dockerfile only ever COPYs app/, templates/, clusters.yaml, and
+# requirements.txt by name -- nothing here is strictly required for that to
+# stay true. This file is a deliberate second guardrail: if the Dockerfile
+# ever changes to `COPY . .`, none of this build context still leaks in.
+#
+# In short: poc/ and every local-dev/testing file are NEVER part of the
+# deployable image, by construction (Dockerfile) AND by this ignore list.
+
+poc/
+deploy/
+README.md
+.git/
+.gitignore
+.dockerignore
+
+.venv/
+venv/
+.env
+*.env
+!.env.example
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+*.db
+*.db-journal
+
+.DS_Store
+*Zone.Identifier
