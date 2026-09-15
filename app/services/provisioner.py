@@ -13,10 +13,10 @@ import logging
 import time
 import uuid
 
-from sqlalchemy.orm import Session
+from pymongo.database import Database
 
 from app.config import get_settings
-from app.database import SessionLocal
+from app.database import db as db_handle
 from app.models.tenant import Tenant, TenantStatus
 from app.services import (
     argocd_service,
@@ -31,6 +31,7 @@ from app.services import (
     spoke_scaler,
     status_bus,
     tenant_cr,
+    tenant_repo,
     vault_service,
 )
 
@@ -60,18 +61,16 @@ def _render_values_yaml(tenant: Tenant, cluster) -> str:
     )
 
 
-def _set_status(db: Session, tenant: Tenant, status: TenantStatus, error: str | None = None) -> None:
+def _set_status(db: Database, tenant: Tenant, status: TenantStatus, error: str | None = None) -> None:
     tenant.status = status
     tenant.error_message = error
-    db.add(tenant)
-    db.commit()
-    db.refresh(tenant)
+    tenant_repo.save(db, tenant)
     logger.info("tenant=%s status=%s", tenant.tenant_name, status)
     tenant_cr.echo_cr_phase(tenant, status.value)
     status_bus.publish(tenant)
 
 
-def _wait_for_argocd_and_k8s(db: Session, tenant: Tenant, cluster_context: str) -> None:
+def _wait_for_argocd_and_k8s(db: Database, tenant: Tenant, cluster_context: str) -> None:
     """
     Poll Argo CD + Kubernetes until healthy or timeout. Updates status to
     RUNNING/FAILED. Fails fast (before the timeout) in two cases instead of
@@ -152,213 +151,194 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
     `admin_password` is passed through only for the meta-builder Job trigger
     at the end of this flow -- it is never written to the database.
     """
-    db = SessionLocal()
+    db = db_handle
+    tenant = tenant_repo.get_by_id(db, tenant_id)
+    if tenant is None:
+        logger.error("tenant_id=%s not found -- cannot provision", tenant_id)
+        return
+
     try:
-        tenant = db.get(Tenant, tenant_id)
-        if tenant is None:
-            logger.error("tenant_id=%s not found -- cannot provision", tenant_id)
-            return
+        logger.info("[step] tenant=%s provisioning started", tenant.tenant_name)
+        _set_status(db, tenant, TenantStatus.VALIDATING)
 
-        try:
-            logger.info("[step] tenant=%s provisioning started", tenant.tenant_name)
-            _set_status(db, tenant, TenantStatus.VALIDATING)
+        cluster, projected_count = cluster_selector.select_cluster(tenant.environment, db)
+        tenant.cluster = cluster.name
+        # tenant.slug already carries the sequential id (see
+        # Tenant.slug) -- "tenant-" here is just so this namespace
+        # reads unambiguously as a tenant's own among argocd/vault/
+        # kube-system/etc. in `kubectl get ns`, e.g. "tenant-00042-acme-corp".
+        tenant.namespace = f"tenant-{tenant.slug}"
+        tenant_repo.save(db, tenant)
+        logger.info(
+            "[step] tenant=%s placed on cluster=%s (region=%s, %d/%d on that spoke)",
+            tenant.tenant_name, cluster.name, cluster.region, projected_count,
+            settings.spoke_capacity(tenant.environment),
+        )
 
-            cluster, projected_count = cluster_selector.select_cluster(tenant.environment, db)
-            tenant.cluster = cluster.name
-            # tenant.slug already carries the sequential id (see
-            # Tenant.slug) -- "tenant-" here is just so this namespace
-            # reads unambiguously as a tenant's own among argocd/vault/
-            # kube-system/etc. in `kubectl get ns`, e.g. "tenant-00042-acme-corp".
-            tenant.namespace = f"tenant-{tenant.slug}"
-            db.add(tenant)
-            db.commit()
-            db.refresh(tenant)
-            logger.info(
-                "[step] tenant=%s placed on cluster=%s (region=%s, %d/%d on that spoke)",
-                tenant.tenant_name, cluster.name, cluster.region, projected_count,
-                settings.spoke_capacity(tenant.environment),
-            )
+        # Capacity check for the spoke we just placed this tenant on. Fires a
+        # parallel/non-blocking new-spoke provisioning job in prod, or a
+        # notification in stage (no autoscaling there) -- see spoke_scaler.
+        spoke_scaler.maybe_trigger_spoke_scale(cluster.name, tenant.environment, projected_count)
 
-            # Capacity check for the spoke we just placed this tenant on. Fires a
-            # parallel/non-blocking new-spoke provisioning job in prod, or a
-            # notification in stage (no autoscaling there) -- see spoke_scaler.
-            spoke_scaler.maybe_trigger_spoke_scale(cluster.name, tenant.environment, projected_count)
+        # Keep the spoke's SpokeCluster CR (tenant list + count) current.
+        spoke_cr.upsert_spoke_cluster_cr(cluster, db)
+        logger.info("[step] tenant=%s SpokeCluster CR for '%s' updated", tenant.tenant_name, cluster.name)
 
-            # Keep the spoke's SpokeCluster CR (tenant list + count) current.
-            spoke_cr.upsert_spoke_cluster_cr(cluster, db)
-            logger.info("[step] tenant=%s SpokeCluster CR for '%s' updated", tenant.tenant_name, cluster.name)
+        # Create the Tenant CR on the hub cluster before handing off to GitOps.
+        logger.info("[step] tenant=%s creating Tenant CR on hub", tenant.tenant_name)
+        cr = tenant_cr.build_tenant_cr(tenant, cluster)
+        cr_name, cr_uid = tenant_cr.create_tenant_cr(cr)
+        tenant.hub_cr_name = cr_name
+        tenant.hub_cr_uid = cr_uid
+        tenant_repo.save(db, tenant)
+        logger.info("[step] tenant=%s Tenant CR created (uid=%s)", tenant.tenant_name, cr_uid)
 
-            # Create the Tenant CR on the hub cluster before handing off to GitOps.
-            logger.info("[step] tenant=%s creating Tenant CR on hub", tenant.tenant_name)
-            cr = tenant_cr.build_tenant_cr(tenant, cluster)
-            cr_name, cr_uid = tenant_cr.create_tenant_cr(cr)
-            tenant.hub_cr_name = cr_name
-            tenant.hub_cr_uid = cr_uid
-            db.add(tenant)
-            db.commit()
-            db.refresh(tenant)
-            logger.info("[step] tenant=%s Tenant CR created (uid=%s)", tenant.tenant_name, cr_uid)
+        # Write Vault secrets BEFORE the GitOps handoff, not after RUNNING:
+        # the tenant workload's own Vault Agent/VSO sidecar blocks its
+        # pod from starting until these paths exist, so if we waited
+        # until RUNNING to write them, the pod could never become Ready
+        # in the first place -- a chicken-and-egg deadlock. The
+        # meta-builder Job trigger still waits for RUNNING further down;
+        # it just reads the same secrets written here.
+        logger.info("[step] tenant=%s writing initial secrets to Vault", tenant.tenant_name)
+        service_data = vault_service.write_initial_qraie_bridge_tenant_secrets(tenant.slug, tenant.domain)
+        mongo_service.write_tenant_env_config(tenant.slug, service_data)
 
-            # Write Vault secrets BEFORE the GitOps handoff, not after RUNNING:
-            # the tenant workload's own Vault Agent/VSO sidecar blocks its
-            # pod from starting until these paths exist, so if we waited
-            # until RUNNING to write them, the pod could never become Ready
-            # in the first place -- a chicken-and-egg deadlock. The
-            # meta-builder Job trigger still waits for RUNNING further down;
-            # it just reads the same secrets written here.
-            logger.info("[step] tenant=%s writing initial secrets to Vault", tenant.tenant_name)
-            service_data = vault_service.write_initial_qraie_bridge_tenant_secrets(tenant.slug, tenant.domain)
-            mongo_service.write_tenant_env_config(tenant.slug, service_data)
+        logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
+        values_yaml = _render_values_yaml(tenant, cluster)
 
-            logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
-            values_yaml = _render_values_yaml(tenant, cluster)
+        logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)
+        commit_sha = git_service.commit_tenant_manifest(
+            tenant.slug,
+            values_yaml,
+            message=f"tenant-operator: create {tenant.tenant_name} ({tenant.environment})",
+            tenants_dir=_tenants_dir_for(tenant),
+        )
+        tenant.git_commit = commit_sha
+        tenant_repo.save(db, tenant)
+        logger.info("[step] tenant=%s git commit created: %s", tenant.tenant_name, commit_sha)
+        _set_status(db, tenant, TenantStatus.GIT_COMMITTED)
 
-            logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)
-            commit_sha = git_service.commit_tenant_manifest(
-                tenant.slug,
-                values_yaml,
-                message=f"tenant-operator: create {tenant.tenant_name} ({tenant.environment})",
-                tenants_dir=_tenants_dir_for(tenant),
-            )
-            tenant.git_commit = commit_sha
-            db.add(tenant)
-            db.commit()
-            db.refresh(tenant)
-            logger.info("[step] tenant=%s git commit created: %s", tenant.tenant_name, commit_sha)
-            _set_status(db, tenant, TenantStatus.GIT_COMMITTED)
+        logger.info("[step] tenant=%s waiting for Argo CD sync + Kubernetes readiness", tenant.tenant_name)
+        _wait_for_argocd_and_k8s(db, tenant, cluster.context)
 
-            logger.info("[step] tenant=%s waiting for Argo CD sync + Kubernetes readiness", tenant.tenant_name)
-            _wait_for_argocd_and_k8s(db, tenant, cluster.context)
+        if tenant.status == TenantStatus.RUNNING:
+            # DB + workload are ready. Vault secrets were already written
+            # above (before the GitOps handoff); the seeding Job reads
+            # those same DB/redis/mongo/jwt secrets via safeVault() and
+            # fails hard if they're missing.
+            logger.info("[step] tenant=%s triggering DB seeding job", tenant.tenant_name)
+            meta_builder_job.trigger_meta_builder_job(tenant, admin_password)
 
-            if tenant.status == TenantStatus.RUNNING:
-                # DB + workload are ready. Vault secrets were already written
-                # above (before the GitOps handoff); the seeding Job reads
-                # those same DB/redis/mongo/jwt secrets via safeVault() and
-                # fails hard if they're missing.
-                logger.info("[step] tenant=%s triggering DB seeding job", tenant.tenant_name)
-                meta_builder_job.trigger_meta_builder_job(tenant, admin_password)
+            logger.info("[step] tenant=%s provisioning complete", tenant.tenant_name)
 
-                logger.info("[step] tenant=%s provisioning complete", tenant.tenant_name)
-
-        except cluster_selector.NoAvailableClusterError as e:
-            _set_status(db, tenant, TenantStatus.FAILED, error=str(e))
-        except git_service.GitServiceError as e:
-            _set_status(db, tenant, TenantStatus.FAILED, error=str(e))
-        except Exception as e:  # noqa: BLE001
-            logger.exception("tenant=%s unexpected provisioning failure", tenant.tenant_name)
-            _set_status(db, tenant, TenantStatus.FAILED, error=f"unexpected error: {e}")
-    finally:
-        db.close()
+    except cluster_selector.NoAvailableClusterError as e:
+        _set_status(db, tenant, TenantStatus.FAILED, error=str(e))
+    except git_service.GitServiceError as e:
+        _set_status(db, tenant, TenantStatus.FAILED, error=str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("tenant=%s unexpected provisioning failure", tenant.tenant_name)
+        _set_status(db, tenant, TenantStatus.FAILED, error=f"unexpected error: {e}")
 
 
 def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int | None,
                    new_db_size: str | None, new_disabled_services: list[str] | None = None) -> None:
     """Entry point for PUT /tenants/{id}. Re-renders values.yaml and re-commits."""
-    db = SessionLocal()
+    db = db_handle
+    tenant = tenant_repo.get_by_id(db, tenant_id)
+    if tenant is None:
+        logger.error("tenant_id=%s not found -- cannot update", tenant_id)
+        return
+
     try:
-        tenant = db.get(Tenant, tenant_id)
-        if tenant is None:
-            logger.error("tenant_id=%s not found -- cannot update", tenant_id)
-            return
+        logger.info("[step] tenant=%s update started (version=%s users=%s db_size=%s services=%s)",
+                    tenant.tenant_name, new_version, new_users, new_db_size, new_disabled_services)
+        _set_status(db, tenant, TenantStatus.UPDATING)
 
-        try:
-            logger.info("[step] tenant=%s update started (version=%s users=%s db_size=%s services=%s)",
-                        tenant.tenant_name, new_version, new_users, new_db_size, new_disabled_services)
-            _set_status(db, tenant, TenantStatus.UPDATING)
+        if new_version:
+            tenant.version = new_version
+        if new_users is not None:
+            tenant.users = new_users
+        if new_db_size:
+            tenant.database_size = new_db_size
+        if new_disabled_services is not None:
+            tenant.disabled_services = new_disabled_services
+        tenant_repo.save(db, tenant)
 
-            if new_version:
-                tenant.version = new_version
-            if new_users is not None:
-                tenant.users = new_users
-            if new_db_size:
-                tenant.database_size = new_db_size
-            if new_disabled_services is not None:
-                tenant.disabled_services = new_disabled_services
-            db.add(tenant)
-            db.commit()
-            db.refresh(tenant)
+        cluster = next(c for c in cluster_selector.load_cluster_registry() if c.name == tenant.cluster)
 
-            cluster = next(c for c in cluster_selector.load_cluster_registry() if c.name == tenant.cluster)
+        logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
+        values_yaml = _render_values_yaml(tenant, cluster)
 
-            logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
-            values_yaml = _render_values_yaml(tenant, cluster)
+        logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)
+        commit_sha = git_service.commit_tenant_manifest(
+            tenant.slug,
+            values_yaml,
+            message=f"tenant-operator: update {tenant.tenant_name} -> version={tenant.version}",
+            tenants_dir=_tenants_dir_for(tenant),
+        )
+        tenant.git_commit = commit_sha
+        tenant_repo.save(db, tenant)
+        logger.info("[step] tenant=%s git commit created: %s", tenant.tenant_name, commit_sha)
 
-            logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)
-            commit_sha = git_service.commit_tenant_manifest(
-                tenant.slug,
-                values_yaml,
-                message=f"tenant-operator: update {tenant.tenant_name} -> version={tenant.version}",
-                tenants_dir=_tenants_dir_for(tenant),
-            )
-            tenant.git_commit = commit_sha
-            db.add(tenant)
-            db.commit()
-            db.refresh(tenant)
-            logger.info("[step] tenant=%s git commit created: %s", tenant.tenant_name, commit_sha)
+        logger.info("[step] tenant=%s waiting for Argo CD sync + Kubernetes readiness", tenant.tenant_name)
+        _wait_for_argocd_and_k8s(db, tenant, cluster.context)
 
-            logger.info("[step] tenant=%s waiting for Argo CD sync + Kubernetes readiness", tenant.tenant_name)
-            _wait_for_argocd_and_k8s(db, tenant, cluster.context)
+        if tenant.status == TenantStatus.RUNNING:
+            logger.info("[step] tenant=%s update complete", tenant.tenant_name)
 
-            if tenant.status == TenantStatus.RUNNING:
-                logger.info("[step] tenant=%s update complete", tenant.tenant_name)
-
-        except Exception as e:  # noqa: BLE001
-            logger.exception("tenant=%s unexpected update failure", tenant.tenant_name)
-            _set_status(db, tenant, TenantStatus.FAILED, error=f"unexpected error during update: {e}")
-    finally:
-        db.close()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("tenant=%s unexpected update failure", tenant.tenant_name)
+        _set_status(db, tenant, TenantStatus.FAILED, error=f"unexpected error during update: {e}")
 
 
 def delete_tenant(tenant_id: uuid.UUID) -> None:
     """Entry point for DELETE /tenants/{id}."""
-    db = SessionLocal()
+    db = db_handle
+    tenant = tenant_repo.get_by_id(db, tenant_id)
+    if tenant is None:
+        logger.error("tenant_id=%s not found -- cannot delete", tenant_id)
+        return
+
     try:
-        tenant = db.get(Tenant, tenant_id)
-        if tenant is None:
-            logger.error("tenant_id=%s not found -- cannot delete", tenant_id)
-            return
+        logger.info("[step] tenant=%s deletion started", tenant.tenant_name)
+        _set_status(db, tenant, TenantStatus.DELETING)
 
-        try:
-            logger.info("[step] tenant=%s deletion started", tenant.tenant_name)
-            _set_status(db, tenant, TenantStatus.DELETING)
+        logger.info("[step] tenant=%s removing manifest from GitOps repo", tenant.tenant_name)
+        git_service.delete_tenant_manifest(
+            tenant.slug,
+            message=f"tenant-operator: delete {tenant.tenant_name}",
+            tenants_dir=_tenants_dir_for(tenant),
+        )
 
-            logger.info("[step] tenant=%s removing manifest from GitOps repo", tenant.tenant_name)
-            git_service.delete_tenant_manifest(
-                tenant.slug,
-                message=f"tenant-operator: delete {tenant.tenant_name}",
-                tenants_dir=_tenants_dir_for(tenant),
-            )
+        cluster = next(c for c in cluster_selector.load_cluster_registry() if c.name == tenant.cluster)
 
-            cluster = next(c for c in cluster_selector.load_cluster_registry() if c.name == tenant.cluster)
+        # Argo CD prunes the Application (and everything it tracks) once it
+        # sees the manifest gone, but never tracks the namespace itself --
+        # delete it directly or it stays Active forever. See
+        # kubernetes_service.delete_namespace().
+        logger.info("[step] tenant=%s deleting namespace '%s' on '%s'",
+                    tenant.tenant_name, tenant.namespace, cluster.name)
+        kubernetes_service.delete_namespace(cluster.context, tenant.namespace)
 
-            # Argo CD prunes the Application (and everything it tracks) once it
-            # sees the manifest gone, but never tracks the namespace itself --
-            # delete it directly or it stays Active forever. See
-            # kubernetes_service.delete_namespace().
-            logger.info("[step] tenant=%s deleting namespace '%s' on '%s'",
-                        tenant.tenant_name, tenant.namespace, cluster.name)
-            kubernetes_service.delete_namespace(cluster.context, tenant.namespace)
+        logger.info("[step] tenant=%s waiting for namespace '%s' to terminate on '%s'",
+                    tenant.tenant_name, tenant.namespace, cluster.name)
+        deadline = time.monotonic() + settings.provisioning_timeout_seconds
+        while time.monotonic() < deadline:
+            if kubernetes_service.namespace_fully_deleted(cluster.context, tenant.namespace):
+                from datetime import datetime, timezone
+                tenant.deleted_at = datetime.now(timezone.utc)
+                _set_status(db, tenant, TenantStatus.DELETED)
+                # Tenant no longer counts toward this spoke -- refresh its CR.
+                spoke_cr.upsert_spoke_cluster_cr(cluster, db)
+                logger.info("[step] tenant=%s deletion complete", tenant.tenant_name)
+                return
+            time.sleep(settings.provisioning_poll_interval_seconds)
 
-            logger.info("[step] tenant=%s waiting for namespace '%s' to terminate on '%s'",
-                        tenant.tenant_name, tenant.namespace, cluster.name)
-            deadline = time.monotonic() + settings.provisioning_timeout_seconds
-            while time.monotonic() < deadline:
-                if kubernetes_service.namespace_fully_deleted(cluster.context, tenant.namespace):
-                    from datetime import datetime, timezone
-                    tenant.deleted_at = datetime.now(timezone.utc)
-                    _set_status(db, tenant, TenantStatus.DELETED)
-                    # Tenant no longer counts toward this spoke -- refresh its CR.
-                    spoke_cr.upsert_spoke_cluster_cr(cluster, db)
-                    logger.info("[step] tenant=%s deletion complete", tenant.tenant_name)
-                    return
-                time.sleep(settings.provisioning_poll_interval_seconds)
-
-            _set_status(
-                db, tenant, TenantStatus.FAILED,
-                error=f"namespace '{tenant.namespace}' did not terminate within timeout",
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("tenant=%s unexpected deletion failure", tenant.tenant_name)
-            _set_status(db, tenant, TenantStatus.FAILED, error=f"unexpected error during deletion: {e}")
-    finally:
-        db.close()
+        _set_status(
+            db, tenant, TenantStatus.FAILED,
+            error=f"namespace '{tenant.namespace}' did not terminate within timeout",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("tenant=%s unexpected deletion failure", tenant.tenant_name)
+        _set_status(db, tenant, TenantStatus.FAILED, error=f"unexpected error during deletion: {e}")

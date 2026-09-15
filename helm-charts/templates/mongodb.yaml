@@ -1,0 +1,100 @@
+{{- if .Values.mongodb.enabled }}
+{{- $fullname := include "tenant-operator.fullname" . }}
+{{- $secretName := include "tenant-operator.mongodbSecretName" . }}
+{{- if not .Values.mongodb.auth.existingSecretName }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenant-operator.mongodbLabels" . | nindent 4 }}
+type: Opaque
+stringData:
+  MONGO_INITDB_ROOT_USERNAME: {{ .Values.mongodb.auth.rootUsername | quote }}
+  # required, not auto-generated: Mongo only applies this env var on first
+  # boot against an empty data volume, so a value that changed on every
+  # `helm upgrade` (e.g. a fresh randAlphaNum each render) would silently
+  # drift the Secret's displayed password away from the real one already
+  # set on the running mongod -- explicit and stable beats convenient here.
+  MONGO_INITDB_ROOT_PASSWORD: {{ required "mongodb.auth.rootPassword is required when mongodb.auth.existingSecretName is not set" .Values.mongodb.auth.rootPassword | quote }}
+---
+{{- end }}
+{{- if and .Values.mongodb.persistence.enabled (not .Values.mongodb.persistence.existingClaimName) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-mongodb
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenant-operator.mongodbLabels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.mongodb.persistence.storageClassName }}
+  storageClassName: {{ .Values.mongodb.persistence.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.mongodb.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-mongodb
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenant-operator.mongodbLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: the data PVC is ReadWriteOnce, same
+  # reasoning as the main Deployment's own strategy (see deployment.yaml).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "tenant-operator.mongodbLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tenant-operator.mongodbLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: mongodb
+          image: "{{ .Values.mongodb.image.repository }}:{{ .Values.mongodb.image.tag }}"
+          ports:
+            - containerPort: 27017
+          envFrom:
+            - secretRef:
+                name: {{ $secretName }}
+          {{- if .Values.mongodb.resources }}
+          resources:
+            {{- toYaml .Values.mongodb.resources | nindent 12 }}
+          {{- end }}
+          {{- if .Values.mongodb.persistence.enabled }}
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+          {{- end }}
+      {{- if .Values.mongodb.persistence.enabled }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.mongodb.persistence.existingClaimName | default (printf "%s-mongodb" $fullname) }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-mongodb
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenant-operator.mongodbLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "tenant-operator.mongodbLabels" . | nindent 4 }}
+  ports:
+    - port: 27017
+      targetPort: 27017
+{{- end }}

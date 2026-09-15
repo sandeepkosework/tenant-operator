@@ -5,32 +5,28 @@ Alongside the per-tenant Tenant CR (see tenant_cr.py), the operator also
 keeps one SpokeCluster CR per registered spoke, recording which tenants
 currently live there and the count against each environment's capacity.
 This is what a platform operator would look at to answer "what's on
-spoke-1 right now?" without querying Postgres directly.
+spoke-1 right now?" without querying tenant-operator's own MongoDB directly.
 
 POC note: same as tenant_cr.py -- no real CRD is installed and no real API
 call is made. upsert_spoke_cluster_cr() builds the object from live
-Postgres state and logs/echoes the equivalent `kubectl apply`.
+tenant-operator MongoDB state and logs/echoes the equivalent `kubectl apply`.
 """
 import logging
 
 import yaml
-from sqlalchemy.orm import Session
+from pymongo.database import Database
 
 from app.config import get_settings
 from app.models.tenant import Tenant
+from app.services import tenant_repo
 from app.services.cluster_selector import ACTIVE_STATUSES, ClusterInfo
 
 logger = logging.getLogger("tenant-operator.spoke_cr")
 settings = get_settings()
 
 
-def _active_tenants_for_cluster(cluster_name: str, db: Session) -> list[Tenant]:
-    return (
-        db.query(Tenant)
-        .filter(Tenant.cluster == cluster_name, Tenant.status.in_(ACTIVE_STATUSES))
-        .order_by(Tenant.tenant_name)
-        .all()
-    )
+def _active_tenants_for_cluster(cluster_name: str, db: Database) -> list[Tenant]:
+    return tenant_repo.list_active_by_cluster(db, cluster_name, ACTIVE_STATUSES)
 
 
 def build_spoke_cluster_cr(cluster: ClusterInfo, tenants: list[Tenant]) -> dict:
@@ -65,12 +61,13 @@ def build_spoke_cluster_cr(cluster: ClusterInfo, tenants: list[Tenant]) -> dict:
     }
 
 
-def get_spoke_cluster_status(cluster: ClusterInfo, db: Session) -> dict:
-    """Read-only: current CR content computed live from Postgres, no echo/log."""
+def get_spoke_cluster_status(cluster: ClusterInfo, db: Database) -> dict:
+    """Read-only: current CR content computed live from tenant-operator's
+    own MongoDB, no echo/log."""
     return build_spoke_cluster_cr(cluster, _active_tenants_for_cluster(cluster.name, db))
 
 
-def upsert_spoke_cluster_cr(cluster: ClusterInfo, db: Session) -> dict:
+def upsert_spoke_cluster_cr(cluster: ClusterInfo, db: Database) -> dict:
     """Call whenever a tenant is placed on or removed from `cluster` so the
     CR's tenant list/count stays current. Echoes `kubectl apply`; no real
     Kubernetes call is made."""

@@ -78,7 +78,8 @@ helm-charts/
     ├── serviceaccount.yaml     ServiceAccount the Deployment runs as
     ├── configmap.yaml          non-secret config (envFrom) + a second ConfigMap for clusters.yaml (file mount)
     ├── secret.yaml             secret-shaped config (envFrom) -- SKIPPED ENTIRELY when existingSecretName is set
-    ├── pvc.yaml                two independent PVCs: git-cache and (optional) sqlite db-data
+    ├── pvc.yaml                git-cache PVC (the operator's own local clone of the GitOps repo)
+    ├── mongodb.yaml            THE operator's own dedicated MongoDB: Secret + PVC + Deployment + Service (see "Database")
     ├── rbac.yaml               ClusterRole (spoke read-only + namespace delete), Role (Jobs), Role (Crossplane, optional)
     └── NOTES.txt               post-install hints (has a stale `appType` field in its example -- see below)
 ```
@@ -212,14 +213,14 @@ chart's only job is deciding whether a given key ends up in the ConfigMap
 |---|---|
 | `image.repository` / `image.tag` | See "Versioning" — defaults are stale; the live deployment overrides both via the Argo CD `Application`'s `valuesObject`, not this file. |
 | `environment` | `stage` or `prod`. One release == one environment == one `ENVIRONMENT` ConfigMap value. |
-| `config` | Any non-secret `Settings` field, `UPPER_SNAKE` key → ConfigMap → `envFrom`. Real live example values observed on the hub: `DATABASE_URL=sqlite:////data/db/tenant_operator.db` (SQLite, not Postgres, for this deployment's own bookkeeping — see "Persistence"), `VAULT_ENABLED=true`, `GIT_REPO_URL=https://github.com/sandeepkosework/k8s-infra-setup-testing.git`, `GIT_BRIDGE_TENANTS_DIR=bridge-tenants` (set, but currently unused by any live code path — see root README), `KUBECONFIG_PATH=/secrets/kube/config`, `MSSQL_ADMIN_HOST=192.168.85.203`, `MSSQL_ADMIN_PORT=30143`. These are illustrative of what this specific deployment runs, not universal defaults — every deployment's real values depend on its own infra. |
-| `secret` / `existingSecretName` | Secret-shaped config (Git/Vault/Argo CD tokens, DB password if inline in `DATABASE_URL`, MSSQL admin password). **The live deployment uses `existingSecretName: tenant-operator-secrets`** — see the gotcha above; `secret:` inline values are ignored entirely in that mode (the template that would render them doesn't run). |
+| `config` | Any non-secret `Settings` field, `UPPER_SNAKE` key → ConfigMap → `envFrom`. Example values for this deployment: `DATABASE_MONGO_DB_NAME=tenant_operator`, `VAULT_ENABLED=true`, `GIT_REPO_URL=https://github.com/sandeepkosework/k8s-infra-setup-testing.git`, `GIT_BRIDGE_TENANTS_DIR=bridge-tenants` (set, but currently unused by any live code path — see root README), `KUBECONFIG_PATH=/secrets/kube/config`, `MSSQL_ADMIN_HOST=192.168.85.203`, `MSSQL_ADMIN_PORT=30143`. These are illustrative of what this specific deployment runs, not universal defaults — every deployment's real values depend on its own infra. |
+| `secret` / `existingSecretName` | Secret-shaped config (Git/Vault/Argo CD tokens, `DATABASE_MONGO_URI` — password embedded in the connection string, MSSQL admin password). **The live deployment uses `existingSecretName: tenant-operator-secrets`** — see the gotcha above; `secret:` inline values are ignored entirely in that mode (the template that would render them doesn't run). |
 | `vault.enabled` / `vault.role` | Vault Agent Injector sidecar for the operator's **own** config bootstrap (`secret/tenant-operator/config`, read by `app/vault_bootstrap.py` before `Settings` is even constructed). Entirely separate from the application's runtime Vault writes for tenant secrets (`vault_service.py`), which always go through `VAULT_ADDR`/`VAULT_TOKEN`/`VAULT_TOKEN_FILE` in `config`/`secret` regardless of this setting. |
 | `git.sshKey.existingSecretName` | SSH deploy key, if using `git@...` instead of an HTTPS PAT (`secret.GIT_HTTPS_TOKEN`/`config.GIT_REPO_URL` with an `https://` URL — the live deployment uses the HTTPS form). |
 | `kubeconfig.existingSecretName` | Only needed when the tenant workload cluster(s) aren't the cluster the operator itself runs on. Mounted at `/secrets/kube` — also set `config.KUBECONFIG_PATH` to the actual file path inside that Secret. |
 | `clustersConfig.inline` / `.existingConfigMapName` | Overrides the `clusters.yaml` baked into the image, so one image serves multiple environments/spoke registries without a rebuild. |
 | `persistence.*` | Backs `GIT_LOCAL_PATH` — the operator's local clone of the GitOps repo. `ReadWriteOnce`. |
-| `sqlitePersistence.*` | Backs `DATABASE_URL` when using `sqlite:////data/db/...` (the live deployment's actual setup) — not needed with a real external Postgres. |
+| `mongodb.*` | The operator's own dedicated MongoDB (Secret + PVC + Deployment + Service, `templates/mongodb.yaml`) — see "Database" below. Set `mongodb.enabled: false` and point `secret.DATABASE_MONGO_URI` at an externally managed instance instead if you don't want this chart to own it. |
 | `rbac.create` | Baseline cluster-scoped `ClusterRole` (see "RBAC" below). |
 | `rbac.crossplane.*` | Prod-only, off by default: namespaced `Role` for applying Crossplane OKE claims. |
 
@@ -327,22 +328,53 @@ allows (`templates/rbac.yaml`):
 
 ## Persistence
 
-Two independent PVCs, both `ReadWriteOnce` (`templates/pvc.yaml`):
+Two independent PVCs, both `ReadWriteOnce`:
 
-- **`persistence`** — the operator's local clone of the GitOps repo
-  (`GIT_LOCAL_PATH`, mounted at `/data/tenant-config`). Needs to survive
-  pod restarts for a warm cache; a fresh clone on every restart also works,
-  just slower on the first request after a restart.
-- **`sqlitePersistence`** — the operator's own bookkeeping database, when
-  `DATABASE_URL` points at `sqlite:////data/db/...` rather than an external
-  Postgres. **This is what the live deployment actually uses** — its
-  `DATABASE_URL` is `sqlite:////data/db/tenant_operator.db`, and
-  `sqlitePersistence.mountPath` defaults to `/data/db` to match. If you
-  switch a deployment to a real external Postgres instead, set
-  `sqlitePersistence.enabled: false` to skip provisioning an unused PVC.
+- **`persistence`** (`templates/pvc.yaml`) — the operator's local clone of
+  the GitOps repo (`GIT_LOCAL_PATH`, mounted at `/data/tenant-config`).
+  Needs to survive pod restarts for a warm cache; a fresh clone on every
+  restart also works, just slower on the first request after a restart.
+- **`mongodb.persistence`** (`templates/mongodb.yaml`) — the operator's own
+  bookkeeping database's data directory (`/data/db` inside the `mongodb`
+  container this same chart renders). This is a **separate Deployment**
+  from the operator itself, not a volume mounted into the operator's own
+  pod — see "Database" below.
 
 Both support `existingClaimName` to bring your own PVC instead of letting
 the chart create one.
+
+## Database
+
+`templates/mongodb.yaml` (gated by `mongodb.enabled`, default `true`)
+renders a small, single-replica MongoDB deployment dedicated to this
+operator's own bookkeeping — its `tenants`/`counters` collections (see the
+root README's "How it's written"). This is **not** the unrelated shared
+MongoDB instance used for tenant application data + the env-config mirror
+(`MONGO_ENV_CONFIG_URI`, a completely separate deployment on a spoke — see
+`doc/MONGODB_SETUP.md`); this one is meant to run on the same cluster as
+the operator itself.
+
+Point the operator at it by setting, in `secret`/`existingSecretName`:
+```
+DATABASE_MONGO_URI=mongodb://root:<mongodb.auth.rootPassword>@<release>-tenant-operator-mongodb.<namespace>.svc.cluster.local:27017/?authSource=admin
+```
+(`<release>-tenant-operator-mongodb` — or just `tenant-operator-mongodb` if
+the release is named exactly `tenant-operator`, same `fullname` convention
+as every other object this chart renders — is the Service `templates/
+mongodb.yaml` creates.)
+
+`mongodb.auth.rootPassword` is **required** (or `mongodb.auth.
+existingSecretName`, same "prefer this for anything real" convention used
+by `secret.existingSecretName`/`git.sshKey.existingSecretName` elsewhere in
+this chart) — deliberately not auto-generated, since Mongo only applies
+`MONGO_INITDB_ROOT_PASSWORD` on first boot against an empty data volume; a
+value that changed on every `helm upgrade` would silently drift the
+Secret's displayed password away from the real one already set on the
+running `mongod`, with no way to tell from the Secret alone that it had
+gone stale.
+
+Set `mongodb.enabled: false` and point `DATABASE_MONGO_URI` at an
+externally managed MongoDB instead if you don't want this chart to own it.
 
 ## Deployment instructions (full walkthrough)
 
@@ -408,9 +440,9 @@ helm upgrade tenant-operator . --namespace tenant-operator -f my-values.yaml
 # Uninstall
 helm uninstall tenant-operator --namespace tenant-operator
 # PVCs are NOT deleted automatically by Helm -- clean up
-# tenant-operator-git-cache / tenant-operator-db manually if you actually
-# want the data gone, otherwise they're just orphaned and safe to leave
-# (e.g. before a reinstall that should keep the same git cache/DB).
+# tenant-operator-git-cache / tenant-operator-mongodb manually if you
+# actually want the data gone, otherwise they're just orphaned and safe to
+# leave (e.g. before a reinstall that should keep the same git cache/DB).
 ```
 
 ## Operational notes
@@ -419,8 +451,10 @@ helm uninstall tenant-operator --namespace tenant-operator
   (`git_service.py`) and its Socket.IO status bus (`status_bus.py`) are
   both in-process only — safe for exactly one replica. Don't raise
   `replicaCount` without first moving the git critical section to a
-  Postgres advisory lock and the status bus to Redis pub/sub (both are
-  small, contained changes in the application, not this chart).
+  Mongo-backed distributed lock (`findOneAndUpdate` on a lock document,
+  the same primitive `next_tenant_seq()` already uses) and the status bus
+  to Redis pub/sub (both are small, contained changes in the application,
+  not this chart).
 - **`strategy: Recreate`, not `RollingUpdate`**, deliberately — this
   chart's PVCs are `ReadWriteOnce`, and a surge pod briefly coexisting with
   the old one during a rolling update can deadlock on volume attachment,

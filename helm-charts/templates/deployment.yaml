@@ -79,10 +79,6 @@ spec:
             - name: git-repo-cache
               mountPath: /data/tenant-config
             {{- end }}
-            {{- if .Values.sqlitePersistence.enabled }}
-            - name: db-data
-              mountPath: {{ .Values.sqlitePersistence.mountPath }}
-            {{- end }}
             - name: clusters-config
               mountPath: /app/clusters.yaml
               subPath: clusters.yaml
@@ -116,11 +112,6 @@ spec:
         - name: git-repo-cache
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaimName | default (printf "%s-git-cache" (include "tenant-operator.fullname" .)) }}
-        {{- end }}
-        {{- if .Values.sqlitePersistence.enabled }}
-        - name: db-data
-          persistentVolumeClaim:
-            claimName: {{ .Values.sqlitePersistence.existingClaimName | default (printf "%s-db" (include "tenant-operator.fullname" .)) }}
         {{- end }}
         - name: clusters-config
           configMap:

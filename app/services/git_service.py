@@ -6,7 +6,8 @@ core rule: "the Tenant Operator writes YAML into Git, never K8s directly."
 Concurrency: git working-tree operations are not safe to run in parallel
 from multiple threads/requests against the same clone, so all writes take
 a process-wide lock. In production, back this with an actual lock service
-(e.g. Postgres advisory lock) if you run more than one operator replica.
+(e.g. a `findOneAndUpdate`-based distributed lock document in tenant-
+operator's own MongoDB) if you run more than one operator replica.
 """
 import os
 import threading

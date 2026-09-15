@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import cluster, health, tenant, vault
 from app.config import get_settings
-from app.database import Base, engine
+from app.database import ensure_indexes
 from app.socketio_app import sio
 
 settings = get_settings()
@@ -44,7 +44,7 @@ app.mount("/socket.io", socketio.ASGIApp(sio, socketio_path=""))
 
 @app.on_event("startup")
 def on_startup():
-    # For a real deployment, replace this with Alembic migrations
-    # (see scripts/ and README) -- create_all is fine for first bring-up.
-    Base.metadata.create_all(bind=engine)
-    logger.info("tenant-operator started; tables ensured")
+    # Mongo creates collections implicitly on first write -- nothing to
+    # migrate, just indexes to declare (see app/database.py).
+    ensure_indexes()
+    logger.info("tenant-operator started; mongo indexes ensured")

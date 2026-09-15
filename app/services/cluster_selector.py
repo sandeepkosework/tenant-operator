@@ -7,19 +7,19 @@ yet at capacity for its environment -- so spoke-1 fills up completely before
 spoke-2 ever receives a tenant, and so on. This is what makes the capacity
 scale-out/notify thresholds (see spoke_scaler.py) mean "this spoke is about
 to run out," rather than "some spoke somewhere is about to run out." Uses
-live counts from PostgreSQL (source of truth for "which tenants are
-active"), not from Kubernetes.
+live counts from tenant-operator's own MongoDB (source of truth for "which
+tenants are active"), not from Kubernetes.
 """
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import yaml
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from pymongo.database import Database
 
 from app.config import get_settings
-from app.models.tenant import Tenant, TenantStatus
+from app.models.tenant import TenantStatus
+from app.services import tenant_repo
 
 settings = get_settings()
 
@@ -73,7 +73,7 @@ def load_cluster_registry() -> list[ClusterInfo]:
     return [ClusterInfo(**c) for c in data["clusters"]]
 
 
-def select_cluster(environment: str, db: Session) -> tuple[ClusterInfo, int]:
+def select_cluster(environment: str, db: Database) -> tuple[ClusterInfo, int]:
     """
     Returns (chosen_cluster, projected_tenant_count) where projected_tenant_count
     includes the tenant currently being placed -- callers use it to decide whether
@@ -85,12 +85,7 @@ def select_cluster(environment: str, db: Session) -> tuple[ClusterInfo, int]:
     if not clusters:
         raise NoAvailableClusterError(f"no cluster configured for environment '{environment}'")
 
-    counts = dict(
-        db.query(Tenant.cluster, func.count(Tenant.id))
-        .filter(Tenant.status.in_(ACTIVE_STATUSES))
-        .group_by(Tenant.cluster)
-        .all()
-    )
+    counts = tenant_repo.count_active_by_cluster(db, ACTIVE_STATUSES)
 
     # Sequential fill: clusters are tried in registry order (NOT sorted by
     # load) -- the first one under capacity wins, so earlier spokes fill up

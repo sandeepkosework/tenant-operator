@@ -57,20 +57,21 @@ list of tenants placed there and counts against capacity — see
 ```
 tenant-operator/
 ├── app/                              the deployable FastAPI application
-│   ├── main.py                       FastAPI app, CORS, mounts Socket.IO, creates DB tables on startup
+│   ├── main.py                       FastAPI app, CORS, mounts Socket.IO, ensures Mongo indexes on startup
 │   ├── config.py                     all settings (pydantic-settings), env-var driven
 │   ├── vault_bootstrap.py            loads this operator's OWN config from Vault, pre-Settings
 │   ├── socketio_app.py               Socket.IO transport for tenant status push
-│   ├── database.py                   SQLAlchemy engine/session (works against SQLite or Postgres)
+│   ├── database.py                   pymongo client for the operator's OWN dedicated MongoDB (tenants/counters collections)
 │   ├── api/
 │   │   ├── tenant.py                 POST/GET/PUT/DELETE /api/v1/tenant + GET .../{id}/vault
 │   │   ├── cluster.py                GET /api/v1/cluster[/{name}] -- SpokeCluster CR view
 │   │   ├── vault.py                  PUT/GET /api/v1/vault/qraie-bridge-defaults -- shared per-service config
 │   │   └── health.py                 GET /health (checks DB connectivity)
 │   ├── models/
-│   │   ├── tenant.py                 ORM model + TenantStatus enum + STATUS_PROGRESS map
+│   │   ├── tenant.py                 plain dataclass (not an ORM) + TenantStatus enum + STATUS_PROGRESS map
 │   │   └── schemas.py                Pydantic request/response models (TenantCreateRequest, etc.)
 │   └── services/
+│       ├── tenant_repo.py            all `tenants` collection queries -- the one place that touches raw Mongo docs
 │       ├── validation.py             request validation (400s) -- duplicate tenantId, environment sanity
 │       ├── cluster_selector.py       sequential-fill spoke placement + capacity accounting
 │       ├── spoke_scaler.py           capacity threshold -> new-spoke job (prod) / notify (stage)
@@ -117,15 +118,21 @@ been removed as part of this repo's dead-code cleanup — see "The retired
 - **FastAPI** (`app/main.py`) for the REST API, with **python-socketio**
   mounted alongside it at `/socket.io` (same host/port, no separate
   process) for push-based status updates — see "Live status" below.
-- **SQLAlchemy 2.x**, engine URL fully driven by `DATABASE_URL` — works
-  against either SQLite (`sqlite:////data/db/tenant_operator.db`, what the
-  current hub deployment actually runs — see `helm-charts/README.md`) or
-  PostgreSQL (`postgresql+psycopg2://...`, the config default and what
-  `requirements.txt`'s `psycopg2-binary` is there for). `Base.metadata.create_all()`
-  runs on every startup (`app/main.py`'s `on_startup` hook) — fine for this
-  scale of bookkeeping table; swap for real Alembic migrations if the schema
-  starts changing under live data (`alembic` is already a pinned dependency,
-  unused so far).
+- **pymongo**, talking to a dedicated MongoDB instance
+  (`DATABASE_MONGO_URI`/`DATABASE_MONGO_DB_NAME`) that is this operator's
+  OWN bookkeeping store -- a `tenants` collection (one document per tenant,
+  see `app/models/tenant.py`'s `Tenant` dataclass) plus a `counters`
+  collection backing an atomic `tenant_seq` allocator
+  (`app/database.next_tenant_seq`). Deliberately a SEPARATE MongoDB
+  deployment from the one used for tenant application data + the
+  env-config mirror (`mongo_service.py`, `MONGO_ENV_CONFIG_URI`, see
+  `doc/MONGODB_SETUP.md`) -- that one lives on a spoke; this one is
+  rendered by `helm-charts/templates/mongodb.yaml` so it runs on the same
+  cluster as the operator itself, and the operator's own core function
+  (listing/tracking tenants) doesn't depend on cross-cluster reachability
+  to a spoke. `ensure_indexes()` runs on every startup (`app/main.py`'s
+  `on_startup` hook) -- Mongo has no schema to migrate, so there's no
+  Alembic-equivalent step needed here.
 - **Pydantic v2 + pydantic-settings** (`app/config.py`) for typed,
   env-var-driven configuration — one `Settings` class, ~50 fields, every one
   overridable by a real environment variable, `.env` file, or (see below) a
@@ -523,7 +530,7 @@ Selected settings worth knowing about explicitly:
 | Setting | Default | Notes |
 |---|---|---|
 | `ENVIRONMENT` | `stage` | Which environment *this* deployment serves — drives spoke capacity thresholds. One deployment = one environment. |
-| `DATABASE_URL` | `postgresql+psycopg2://...` | Also works as `sqlite:////data/db/tenant_operator.db` — what the current hub deployment actually runs (see `helm-charts/README.md`). |
+| `DATABASE_MONGO_URI` / `DATABASE_MONGO_DB_NAME` | `mongodb://localhost:27017/...` / `tenant_operator` | This operator's OWN dedicated MongoDB (tenants/counters collections) — **not** `MONGO_ENV_CONFIG_URI` below, a completely separate instance. The current hub deployment points this at the in-chart `helm-charts/templates/mongodb.yaml` instance (see `helm-charts/README.md`). |
 | `VAULT_ENABLED` | `false` | Gates every real Vault write in `vault_service.py`; `false` means log/echo only. |
 | `MONGO_ENV_CONFIG_ENABLED` | `false` | Gates the read-only MongoDB mirror in `mongo_service.py`. |
 | `MONGO_ENV_CONFIG_URI` | unset | Full Mongo connection string, also the base for each tenant's derived `MONGODB_URI` (see above). |
@@ -549,23 +556,17 @@ uvicorn app.main:app --reload
 ```
 
 With `VAULT_ENABLED=false`, `MONGO_ENV_CONFIG_ENABLED=false`,
-`CROSSPLANE_ENABLED=false` (all defaults) and `DATABASE_URL` pointed at a
-local SQLite file, the entire onboarding flow runs end-to-end with nothing
-external except a reachable git remote and (if you want the Argo CD wait
-loop to resolve) a reachable Argo CD/Kubernetes spoke. Every optional
-integration echoes/logs what it would have done instead of failing outright
-when disabled.
+`CROSSPLANE_ENABLED=false` (all defaults) and `DATABASE_MONGO_URI` pointed
+at any reachable MongoDB (a local `docker run -p 27017:27017 mongo:7` is
+enough), the entire onboarding flow runs end-to-end with nothing external
+except a reachable git remote and (if you want the Argo CD wait loop to
+resolve) a reachable Argo CD/Kubernetes spoke. Every optional integration
+echoes/logs what it would have done instead of failing outright when
+disabled.
 
-`Base.metadata.create_all()` runs on startup for convenience. For anything
-beyond local dev, switch to Alembic migrations (already a pinned
-dependency, not yet wired up):
-
-```bash
-pip install alembic
-alembic init migrations
-# point migrations/env.py at app.database.Base.metadata and DATABASE_URL,
-# then: alembic revision --autogenerate -m "init" && alembic upgrade head
-```
+`ensure_indexes()` runs on startup for convenience -- Mongo creates
+collections implicitly on first write, so there's no Alembic-equivalent
+migration step to run in local dev either.
 
 ## Deploying the operator itself
 
@@ -628,8 +629,9 @@ contents are environment-specific credentials.
    to a spoke directly.
 6. **Git deploy key** (SSH) or PAT (HTTPS) with write access to the GitOps
    repo.
-7. **Database**: a Postgres database + user, or a persistent volume for a
-   SQLite file — either way, wired via `DATABASE_URL`.
+7. **Database**: a MongoDB instance for the operator's OWN bookkeeping —
+   `helm-charts/templates/mongodb.yaml` renders one (with a PVC) as part of
+   this same chart by default; wired via `DATABASE_MONGO_URI`.
 8. **MSSQL admin login** (optional but needed for real DB seeding): set
    `MSSQL_ADMIN_HOST`/`..._PORT`/`..._USER`/`..._PASSWORD` and make sure the
    operator's ServiceAccount can create `batch/v1` Jobs in its own
@@ -652,9 +654,10 @@ contents are environment-specific credentials.
   process that received the HTTP request, so there's no crash recovery: if
   the pod restarts mid-provision, that tenant is stuck in whatever status
   it was last in. `provisioner.py`'s functions are already plain functions,
-  so wrapping them as Celery tasks (with the git lock moved to a Postgres
-  advisory lock, and the status bus to Redis pub/sub) is the natural next
-  step, not a rewrite.
+  so wrapping them as Celery tasks (with the git lock moved to a Mongo-
+  backed distributed lock -- `findOneAndUpdate` on a lock document, the
+  same primitive `next_tenant_seq()` already uses -- and the status bus to
+  Redis pub/sub) is the natural next step, not a rewrite.
 - **Tenant CR and SpokeCluster CR are intent records, not real CRDs —
   still true.** `tenant_cr.py` and `spoke_cr.py` build the objects and
   `logger.info`/`print()` the equivalent `kubectl apply` rather than

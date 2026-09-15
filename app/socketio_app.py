@@ -24,9 +24,8 @@ import uuid
 import socketio
 
 from app.config import get_settings
-from app.database import SessionLocal
-from app.models.tenant import Tenant
-from app.services import status_bus
+from app.database import db as db_handle
+from app.services import status_bus, tenant_repo
 
 logger = logging.getLogger("tenant-operator.socketio")
 settings = get_settings()
@@ -78,11 +77,7 @@ async def subscribe(sid, data):
         await sio.emit("error", {"message": f"'{raw_id}' is not a valid tenant id"}, to=sid)
         return
 
-    db = SessionLocal()
-    try:
-        tenant = db.get(Tenant, tenant_id)
-    finally:
-        db.close()
+    tenant = tenant_repo.get_by_id(db_handle, tenant_id)
 
     if tenant is None:
         await sio.emit("error", {"message": f"tenant '{raw_id}' not found"}, to=sid)

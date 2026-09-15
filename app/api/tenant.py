@@ -2,11 +2,10 @@ import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from pymongo.database import Database
 
 from app.config import get_settings
-from app.database import get_db
+from app.database import get_db, next_tenant_seq
 from app.models.tenant import Tenant, TenantStatus
 from app.models.schemas import (
     TenantCreateAccepted,
@@ -14,7 +13,7 @@ from app.models.schemas import (
     TenantResponse,
     TenantUpdateRequest,
 )
-from app.services import helm_values, provisioner, vault_service
+from app.services import helm_values, provisioner, tenant_repo, vault_service
 from app.services.validation import ValidationError, validate_create_request
 
 logger = logging.getLogger("tenant-operator.api.tenant")
@@ -26,19 +25,17 @@ settings = get_settings()
 def create_tenant(
     req: TenantCreateRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Database = Depends(get_db),
 ):
     try:
         validate_create_request(req, db)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Allocated here, not left to a DB default, since it must be a plain
-    # sequential int portable across SQLite (local/POC) and Postgres (real
-    # deployments) -- see Tenant.tenant_seq's comment for the accepted
-    # single-replica race-window tradeoff, same one tenant_name uniqueness
-    # already lives with elsewhere in this codebase.
-    next_seq = (db.query(func.max(Tenant.tenant_seq)).scalar() or 0) + 1
+    # Allocated via an atomic Mongo counter (app.database.next_tenant_seq) --
+    # see Tenant.tenant_seq's comment for why this needs to stay unique and
+    # sortable even across thousands of tenants with similar names.
+    next_seq = next_tenant_seq()
 
     tenant = Tenant(
         tenant_name=req.tenantId,
@@ -57,9 +54,7 @@ def create_tenant(
         status=TenantStatus.PENDING,
         created_by=req.createdBy,
     )
-    db.add(tenant)
-    db.commit()
-    db.refresh(tenant)
+    tenant_repo.insert(db, tenant)
     logger.info(
         "[step] tenant=%s (slug=%s) row created in tenant-operator DB (id=%s, environment=%s)",
         tenant.tenant_name, tenant.slug, tenant.id, tenant.environment,
@@ -74,20 +69,20 @@ def create_tenant(
 
 
 @router.get("/{tenant_id}", response_model=TenantResponse)
-def get_tenant(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
-    tenant = db.get(Tenant, tenant_id)
+def get_tenant(tenant_id: uuid.UUID, db: Database = Depends(get_db)):
+    tenant = tenant_repo.get_by_id(db, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="tenant not found")
     return tenant
 
 
 @router.get("/{tenant_id}/vault")
-def get_tenant_vault(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_tenant_vault(tenant_id: uuid.UUID, db: Database = Depends(get_db)):
     """Current Vault secrets for this tenant -- one path per qraie-bridge
     chart service, platform defaults + tenant-specific (generated
     credential) fields merged together at onboarding time. See
     vault_service.py."""
-    tenant = db.get(Tenant, tenant_id)
+    tenant = tenant_repo.get_by_id(db, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="tenant not found")
     return vault_service.read_tenant_secrets(tenant.slug)
@@ -97,14 +92,9 @@ def get_tenant_vault(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
 def list_tenants(
     environment: str | None = None,
     status_filter: TenantStatus | None = None,
-    db: Session = Depends(get_db),
+    db: Database = Depends(get_db),
 ):
-    query = db.query(Tenant)
-    if environment:
-        query = query.filter(Tenant.environment == environment)
-    if status_filter:
-        query = query.filter(Tenant.status == status_filter)
-    return query.order_by(Tenant.created_at.desc()).all()
+    return tenant_repo.list_tenants(db, environment=environment, status=status_filter)
 
 
 @router.put("/{tenant_id}", response_model=TenantResponse)
@@ -112,9 +102,9 @@ def update_tenant(
     tenant_id: uuid.UUID,
     req: TenantUpdateRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: Database = Depends(get_db),
 ):
-    tenant = db.get(Tenant, tenant_id)
+    tenant = tenant_repo.get_by_id(db, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="tenant not found")
     if tenant.status not in (TenantStatus.RUNNING, TenantStatus.FAILED):
@@ -138,8 +128,8 @@ def update_tenant(
 
 
 @router.delete("/{tenant_id}", status_code=status.HTTP_202_ACCEPTED)
-def delete_tenant(tenant_id: uuid.UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    tenant = db.get(Tenant, tenant_id)
+def delete_tenant(tenant_id: uuid.UUID, background_tasks: BackgroundTasks, db: Database = Depends(get_db)):
+    tenant = tenant_repo.get_by_id(db, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="tenant not found")
     if tenant.status == TenantStatus.DELETING:

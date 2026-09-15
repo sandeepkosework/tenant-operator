@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from pymongo.database import Database
 
 from app.database import get_db
 
@@ -8,6 +7,6 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-def health(db: Session = Depends(get_db)):
-    db.execute(text("SELECT 1"))
+def health(db: Database = Depends(get_db)):
+    db.command("ping")
     return {"status": "ok"}

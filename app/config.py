@@ -123,8 +123,16 @@ class Settings(BaseSettings):
     hub_kubeconfig_path: Optional[str] = None
     hub_kube_context: Optional[str] = None
 
-    # --- Database (PostgreSQL, per your Database VM) ---
-    database_url: str = "postgresql+psycopg2://tenant_operator:tenant_operator@localhost:5432/tenant_operator"
+    # --- Database (tenant-operator's own bookkeeping store) ---
+    # A dedicated MongoDB instance -- separate from mongo_env_config_uri
+    # below, which is the shared instance holding tenant APPLICATION data +
+    # the env-config mirror. This one holds the operator's own `tenants`/
+    # `counters` collections (see app/database.py, app/models/tenant.py) and
+    # is meant to run on the same cluster as the operator itself so its own
+    # core function (listing/tracking tenants) doesn't depend on cross-
+    # cluster reachability to a spoke.
+    database_mongo_uri: str = "mongodb://localhost:27017/?authSource=admin"
+    database_mongo_db_name: str = "tenant_operator"
 
     # --- Git (source of truth for GitOps) ---
     git_repo_url: str = "git@github.com:your-org/tenant-config.git"

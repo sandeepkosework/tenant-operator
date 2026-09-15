@@ -1,12 +1,12 @@
 # Pinned at 1 by design -- git_service.py's write lock and status_bus.py's
 # Socket.IO pub/sub are both in-process only, safe for exactly one replica.
-# Don't raise this without first moving the git lock to a Postgres advisory
-# lock and the status bus to Redis pub/sub.
+# Don't raise this without first moving the git lock to a Mongo-backed
+# distributed lock and the status bus to Redis pub/sub.
 replicaCount: 1
 
 image:
   repository: sandeepkosework/tenant-operator
-  tag: "0.1.3"
+  tag: "0.2.7"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -64,15 +64,36 @@ persistence:
   storageClassName: ""
   existingClaimName: ""
 
-# Backs DATABASE_URL when using the sqlite:////data/db/... option (set
-# DATABASE_URL in `config` accordingly) -- not needed if DATABASE_URL
-# points at a real external Postgres instead.
-sqlitePersistence:
+# Dedicated MongoDB instance for THIS operator's own bookkeeping DB
+# (DATABASE_MONGO_URI/DATABASE_MONGO_DB_NAME -- set those in `config`/
+# `secret` above to point at the Service this renders: "<fullname>-
+# mongodb.<namespace>.svc.cluster.local:27017"). Deliberately separate from
+# the unrelated shared MongoDB instance used for tenant application data +
+# the env-config mirror (MONGO_ENV_CONFIG_URI, see doc/MONGODB_SETUP.md) --
+# that one lives on a spoke; this one is rendered by this same chart so it
+# runs on whichever cluster the operator itself runs on (see app/config.py's
+# comment on why that matters). Set enabled: false and point
+# DATABASE_MONGO_URI at an externally managed instance instead if you don't
+# want this chart to own it.
+mongodb:
   enabled: true
-  size: 256Mi
-  storageClassName: ""
-  existingClaimName: ""
-  mountPath: /data/db
+  image:
+    repository: mongo
+    tag: "7"
+  auth:
+    rootUsername: root
+    # Prefer this for anything real -- must contain keys
+    # MONGO_INITDB_ROOT_USERNAME/MONGO_INITDB_ROOT_PASSWORD. Inline
+    # rootPassword below ends up in this release's Helm history in
+    # plaintext, same caveat as `secret` above.
+    existingSecretName: ""
+    rootPassword: ""   # required if existingSecretName is blank -- not auto-generated, see templates/mongodb.yaml
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClassName: ""
+    existingClaimName: ""
+  resources: {}
 
 rbac:
   # Baseline ClusterRole -- read-only spoke-fleet health checks, plus the

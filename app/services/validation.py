@@ -1,9 +1,9 @@
 """Request-level validation, independent of cluster placement."""
-from sqlalchemy.orm import Session
+from pymongo.database import Database
 
 from app.config import get_settings
-from app.models.tenant import Tenant, TenantStatus
 from app.models.schemas import TenantCreateRequest
+from app.services import tenant_repo
 
 settings = get_settings()
 
@@ -12,16 +12,12 @@ class ValidationError(Exception):
     """Raised for any 400-worthy problem with a tenant request."""
 
 
-def validate_create_request(req: TenantCreateRequest, db: Session) -> None:
+def validate_create_request(req: TenantCreateRequest, db: Database) -> None:
     # Duplicate tenant id (globally unique across all clusters/environments
     # among tenants that still exist -- a DELETED tenant's name is free to
     # reuse, since it maps 1:1 to a namespace name and an Argo CD
     # Application name that no longer exist either).
-    existing = (
-        db.query(Tenant)
-        .filter(Tenant.tenant_name == req.tenantId, Tenant.status != TenantStatus.DELETED)
-        .first()
-    )
+    existing = tenant_repo.find_active_by_name(db, req.tenantId)
     if existing is not None:
         raise ValidationError(f"tenant '{req.tenantId}' already exists (status={existing.status})")
 

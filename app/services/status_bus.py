@@ -5,9 +5,10 @@ to poll GET /api/v1/tenant/{id} in a loop.
 
 Single-replica only, same caveat as git_service.py's in-process lock: an
 in-memory queue per subscriber doesn't survive a pod restart and isn't
-shared across replicas. Swap for Redis pub/sub (or Postgres LISTEN/NOTIFY)
-if/when the operator needs >1 replica -- callers (provisioner.py, the SSE
-endpoint) don't need to change, just this module's internals.
+shared across replicas. Swap for Redis pub/sub (or a MongoDB change stream
+against the `tenants` collection) if/when the operator needs >1 replica --
+callers (provisioner.py, the SSE endpoint) don't need to change, just this
+module's internals.
 """
 import queue
 import threading
