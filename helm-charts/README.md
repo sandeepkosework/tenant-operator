@@ -32,7 +32,7 @@ Tenant RUNNING → trigger meta-builder Job (real MSSQL DB/login seeding, when c
 
 ## Where this chart lives, and how it relates to the app
 
-This chart (`helm/`) is **one Helm chart inside the `tenant-operator`
+This chart (`helm-charts/`) is **one Helm chart inside the `tenant-operator`
 application repository** — application source (the FastAPI service) sits
 at the repo root, and this directory is its own deployment chart, versioned
 and released independently of the application's own image tags (see
@@ -67,7 +67,7 @@ either the chart default or a README's hardcoded number.
 ## Chart structure
 
 ```
-helm/
+helm-charts/
 ├── Chart.yaml              apiVersion v2, name tenant-operator, chart version + appVersion (see "Versioning")
 ├── values.yaml              defaults for every templated value below
 ├── README.md                 this file
@@ -104,7 +104,7 @@ example should be updated to drop it next time this file is touched.
 **Two independent version numbers, easy to conflate:**
 
 - **`Chart.yaml`'s `version`** (currently `0.1.3`) — the Helm chart's own
-  package version. Bump this whenever `helm/templates/*` or `values.yaml`'s
+  package version. Bump this whenever `helm-charts/templates/*` or `values.yaml`'s
   *shape* changes (a new key, a new template, changed defaults) — this is
   what `helm package`/a chart registry tracks, independent of the
   application inside it.

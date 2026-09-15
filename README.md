@@ -103,7 +103,7 @@ tenant-operator/
 │   ├── clusters-configmap.prod.example.yaml   prod's real spoke registry (entirely separate spokes)
 │   ├── configmap.example.yaml         non-secret config template
 │   └── secret.example.yaml            secret config template (fill in, never commit)
-└── helm/                             THE deployment Helm chart actually used in production -- see helm/README.md
+└── helm-charts/                      THE deployment Helm chart actually used in production -- see helm-charts/README.md
 ```
 
 `poc/` (a local no-cluster test harness) and the old generic `workplace`
@@ -119,7 +119,7 @@ been removed as part of this repo's dead-code cleanup — see "The retired
   process) for push-based status updates — see "Live status" below.
 - **SQLAlchemy 2.x**, engine URL fully driven by `DATABASE_URL` — works
   against either SQLite (`sqlite:////data/db/tenant_operator.db`, what the
-  current hub deployment actually runs — see `helm/README.md`) or
+  current hub deployment actually runs — see `helm-charts/README.md`) or
   PostgreSQL (`postgresql+psycopg2://...`, the config default and what
   `requirements.txt`'s `psycopg2-binary` is there for). `Base.metadata.create_all()`
   runs on every startup (`app/main.py`'s `on_startup` hook) — fine for this
@@ -499,7 +499,7 @@ repo's dead-code cleanup:
   `templates/applicationset.example.yaml` that no longer exists) — cosmetic
   only, doesn't affect behavior, but worth cleaning up next time that file
   is touched.
-- `helm/templates/NOTES.txt`'s example `curl` still includes
+- `helm-charts/templates/NOTES.txt`'s example `curl` still includes
   `"appType": "qraie-bridge"` in its sample request body — also stale;
   `TenantCreateRequest` will simply ignore that unknown field today (Pydantic
   models here don't reject extra fields by default), but it should be
@@ -523,7 +523,7 @@ Selected settings worth knowing about explicitly:
 | Setting | Default | Notes |
 |---|---|---|
 | `ENVIRONMENT` | `stage` | Which environment *this* deployment serves — drives spoke capacity thresholds. One deployment = one environment. |
-| `DATABASE_URL` | `postgresql+psycopg2://...` | Also works as `sqlite:////data/db/tenant_operator.db` — what the current hub deployment actually runs (see `helm/README.md`). |
+| `DATABASE_URL` | `postgresql+psycopg2://...` | Also works as `sqlite:////data/db/tenant_operator.db` — what the current hub deployment actually runs (see `helm-charts/README.md`). |
 | `VAULT_ENABLED` | `false` | Gates every real Vault write in `vault_service.py`; `false` means log/echo only. |
 | `MONGO_ENV_CONFIG_ENABLED` | `false` | Gates the read-only MongoDB mirror in `mongo_service.py`. |
 | `MONGO_ENV_CONFIG_URI` | unset | Full Mongo connection string, also the base for each tenant's derived `MONGODB_URI` (see above). |
@@ -569,12 +569,12 @@ alembic init migrations
 
 ## Deploying the operator itself
 
-Two paths exist in this repo; **the Helm chart under `helm/` is the primary,
-currently-used one** — it's what's actually deployed as the Argo CD
+Two paths exist in this repo; **the Helm chart under `helm-charts/` is the
+primary, currently-used one** — it's what's actually deployed as the Argo CD
 `Application` named `tenant-operator` on the hub cluster. Full instructions,
 image versioning, and the live-deployment operational notes (including a
 real gotcha around `existingSecretName` and Secret patches) are in
-**`helm/README.md`** — read that for the real deployment story.
+**`helm-charts/README.md`** — read that for the real deployment story.
 
 `deploy/*.yaml` is a secondary, plain-manifest path — the same
 Namespace/Deployment/Service/PVC/RBAC objects the Helm chart also renders,

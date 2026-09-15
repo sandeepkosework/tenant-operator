@@ -1,5 +1,5 @@
 # Packaged Helm chart artifacts -- never commit a .tgz, publish to a
-# registry instead (see helm/README.md "Releasing" / OPERATIONS_RUNBOOK.md).
+# registry instead (see helm-charts/README.md "Releasing" / OPERATIONS_RUNBOOK.md).
 *.tgz
 
 # Local environment / virtualenv
