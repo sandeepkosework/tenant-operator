@@ -49,44 +49,6 @@ def compute_disabled_services(services: dict[str, bool], only_listed: bool) -> l
     return [name for name, enabled in services.items() if not enabled]
 
 
-def _size_bucket(users: int) -> dict:
-    """Very simple tiering; replace with your real sizing rules."""
-    if users <= 25:
-        return {"replica_count": 1, "cpu_request": "100m", "memory_request": "256Mi",
-                 "cpu_limit": "500m", "memory_limit": "512Mi"}
-    if users <= 200:
-        return {"replica_count": 2, "cpu_request": "250m", "memory_request": "512Mi",
-                 "cpu_limit": "1", "memory_limit": "1Gi"}
-    return {"replica_count": 3, "cpu_request": "500m", "memory_request": "1Gi",
-            "cpu_limit": "2", "memory_limit": "2Gi"}
-
-
-def render_values_yaml(
-    tenant_name: str,
-    tenant_slug: str,
-    environment: str,
-    application: str,
-    version: str,
-    namespace: str,
-    database_size: str,
-    users: int,
-    argocd_cluster_server: str,
-) -> str:
-    template = _env.get_template("values.yaml.j2")
-    sizing = _size_bucket(users)
-    return template.render(
-        tenant_name=tenant_name,
-        tenant_slug=tenant_slug,
-        environment=environment,
-        application=application,
-        version=version,
-        namespace=namespace,
-        database_size=database_size,
-        argocd_cluster_server=argocd_cluster_server,
-        **sizing,
-    )
-
-
 def render_qraie_bridge_values_yaml(
     tenant_name: str,
     tenant_slug: str,
@@ -98,7 +60,9 @@ def render_qraie_bridge_values_yaml(
     vault_server: str | None = None,
     ingress_class_name: str | None = None,
 ) -> str:
-    """appType=qraie-bridge counterpart to render_values_yaml() above.
+    """Renders a tenant's values.yaml for the qraie-bridge chart -- the only
+    chart tenants are provisioned onto (see app/models/tenant.py's
+    `app_type` docstring for the retired "workplace" chart this replaced).
 
     Deliberately a much smaller set of params -- charts/qraie-bridge's own
     values.yaml already carries every service's image/env/volume defaults;

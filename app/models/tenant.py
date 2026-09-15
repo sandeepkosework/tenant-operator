@@ -74,25 +74,32 @@ class Tenant(Base):
     tier = Column(String(32), default="standard")
 
     environment = Column(String(32), nullable=False)
-    # Which chart this tenant is deployed with -- "workplace" (default, the
-    # toy single-image nginx chart) or "qraie-bridge" (the ~30-service
-    # prototype-bridge conversion). Drives which git directory/Jinja
-    # template/ApplicationSet provisioner.py uses -- see
-    # helm_values.render_qraie_bridge_values_yaml() and
-    # settings.git_bridge_tenants_dir.
-    app_type = Column(String(32), nullable=False, default="workplace", server_default="workplace")
-    # app_type="qraie-bridge" only -- names from
-    # helm_values.QRAIE_BRIDGE_SERVICE_NAMES this tenant does NOT get. Set
-    # from the request's `services: {name: bool}` field (any name whose
-    # value is false), see api/tenant.py's create_tenant. Rendered into the
-    # per-tenant values.yaml as the chart's `disabledServices:` list, NOT
-    # merged back into `services:` -- Helm replaces an entire list
-    # wholesale on override, so a per-tenant override can't toggle one
-    # entry inside the chart's base 32-entry `services:` array without
-    # repeating the whole thing; a separate plain list merges cleanly
-    # instead. Meaningless (ignored) for app_type="workplace", which is a
-    # single image, nothing to select between.
+    # Which chart this tenant is deployed with. Always "qraie-bridge" (the
+    # ~30-service prototype-bridge conversion) for every tenant created from
+    # here on -- there used to be a second value, "workplace" (a toy
+    # single-image demo/POC chart, poc/chart-workplace), selectable via the
+    # request's `appType` field, but that chart was never used for a real
+    # tenant and has been retired along with the code that branched on this
+    # column. Kept as a real column (rather than dropped) so any pre-existing
+    # row and API consumers reading `TenantResponse.appType` don't break --
+    # see helm_values.render_qraie_bridge_values_yaml().
+    app_type = Column(String(32), nullable=False, default="qraie-bridge", server_default="qraie-bridge")
+    # Names from helm_values.QRAIE_BRIDGE_SERVICE_NAMES this tenant does NOT
+    # get. Set from the request's `services: {name: bool}` field (any name
+    # whose value is false), see api/tenant.py's create_tenant. Rendered
+    # into the per-tenant values.yaml as the chart's `disabledServices:`
+    # list, NOT merged back into `services:` -- Helm replaces an entire list
+    # wholesale on override, so a per-tenant override can't toggle one entry
+    # inside the chart's base 32-entry `services:` array without repeating
+    # the whole thing; a separate plain list merges cleanly instead.
     disabled_services = Column(JSON, nullable=True)
+    # Vestigial: originally the retired "workplace" chart's image.repository/
+    # image.tag (see app_type above). Not read anywhere in the remaining
+    # qraie-bridge path -- every service's image tag comes from that chart's
+    # own defaults instead (see its README "Image versioning" section).
+    # Kept as NOT NULL DB columns (rather than dropped, which would need a
+    # migration) and populated from settings.default_application/
+    # default_version at creation time; no longer settable per-request.
     application = Column(String(64), nullable=False)
     version = Column(String(32), nullable=False)
     users = Column(Integer, default=0)

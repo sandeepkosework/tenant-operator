@@ -1,5 +1,4 @@
 """Request-level validation, independent of cluster placement."""
-from packaging.version import Version, InvalidVersion
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -31,16 +30,3 @@ def validate_create_request(req: TenantCreateRequest, db: Session) -> None:
             f"this operator's environment '{settings.environment}' is not in allowed list "
             f"{settings.allowed_environments}"
         )
-
-    if req.appType not in ("workplace", "qraie-bridge"):
-        raise ValidationError(f"appType must be one of 'workplace'/'qraie-bridge', got '{req.appType}'")
-
-    version = req.version or settings.default_version
-    try:
-        Version(version)
-    except InvalidVersion:
-        raise ValidationError(f"version '{version}' is not a valid semantic version")
-
-    application = req.application or settings.default_application
-    if not application.strip():
-        raise ValidationError("application is required")

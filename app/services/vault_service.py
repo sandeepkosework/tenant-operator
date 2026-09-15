@@ -1,31 +1,18 @@
 """
-Runtime Vault integration for two kinds of variables:
-
-  - COMMON: shared infra config (Redis/Postgres/Mongo hosts+ports, JWT
-    signing config, ...) that's the same for every tenant in this
-    environment. Lives at secret/{vault_common_secret_path} (one object,
-    not per-tenant), managed via PUT/GET /api/v1/vault/common.
-  - TENANT-SPECIFIC: the initial per-tenant secrets that bridge-meta-builder
-    (the seeding Job) reads via safeVault() at
-    secret/tenants/{tenantId}/{redis,database,mongo,jwt} -- see that
-    script's `vbase`/`safeVault()` calls for the exact fields expected at
-    each path. The seeding Job fails hard ("Missing vault value") if any
-    are absent, so this must run before
-    meta_builder_job.trigger_meta_builder_job().
-
-Every tenant's secrets are actually COMMON (host/port) + TENANT-SPECIFIC
-(generated credential) merged together -- see build_initial_tenant_secrets().
+Runtime Vault integration for this tenant's secrets -- see the
+"qraie-bridge tenant secrets" section below for the schema
+(secret/tenants/{tenant_slug}/<service>) that bridge-meta-builder (the
+seeding Job) and each tenant's own workload read via Vault Agent/VSO.
 
 Only writes/reads for real when settings.vault_enabled is True; otherwise
-logs/echoes what would happen and falls back to the tenant_* Settings
-fields as a stand-in for the common config, same pattern as
-crossplane_service.py.
+logs/echoes what would happen, same pattern as crossplane_service.py.
 
-Note on db_username/db_password: these are generated fresh per tenant here.
-If your Postgres/Mongo actually connect via a shared service account
-instead of a dedicated per-tenant role, replace the generated password
-below with that shared secret instead -- this module only controls what
-lands in Vault, not what accounts actually exist in Postgres/Mongo.
+Note on generated credentials (QRAIE_BRIDGE_GENERATED_KEYS): these are
+generated fresh per tenant here. If your Postgres/Mongo actually connect
+via a shared service account instead of a dedicated per-tenant role,
+replace the generated password with that shared secret instead -- this
+module only controls what lands in Vault, not what accounts actually exist
+in Postgres/Mongo.
 """
 import logging
 import secrets as pysecrets
@@ -112,116 +99,14 @@ def _redact(data: dict) -> dict:
     return {k: ("***" if "password" in k or "secret" in k else v) for k, v in data.items()}
 
 
-# --- Common config (shared across every tenant in this environment) --------
-
-def default_common_config() -> dict:
-    """Fallback/seed values, from Settings -- used when Vault is disabled or
-    secret/{vault_common_secret_path} hasn't been set yet."""
-    return {
-        "redis_host": settings.tenant_redis_host,
-        "redis_port": settings.tenant_redis_port,
-        "postgres_host": settings.tenant_postgres_host,
-        "postgres_port": settings.tenant_postgres_port,
-        "mongo_host": settings.tenant_mongo_host,
-        "mongo_port": settings.tenant_mongo_port,
-        "jwt_issuer": "tenant-operator",
-        "jwt_algorithm": "HS256",
-    }
-
-
-def read_common_config() -> dict:
-    """GET /api/v1/vault/common. Falls back to Settings-derived defaults if
-    Vault is disabled or nothing has been pushed to that path yet."""
-    if not settings.vault_enabled:
-        return default_common_config()
-
-    data = _read(settings.vault_common_secret_path)
-    if data is None:
-        logger.info(
-            "[vault] no common config at %s/%s yet -- returning Settings-derived defaults",
-            settings.vault_kv_mount, settings.vault_common_secret_path,
-        )
-        return default_common_config()
-    return data
-
-
-def write_common_config(data: dict) -> None:
-    """PUT /api/v1/vault/common. Overwrites whatever's currently there."""
-    logger.info(
-        "[vault] writing common config at %s/%s%s: %s",
-        settings.vault_kv_mount, settings.vault_common_secret_path,
-        " (echoed, vault_enabled=false)" if not settings.vault_enabled else "",
-        _redact(data),
-    )
-    if settings.vault_enabled:
-        _write(settings.vault_common_secret_path, data)
-
-
-# --- Tenant-specific secrets -------------------------------------------------
-
-def build_initial_tenant_secrets(tenant_id: str) -> dict[str, dict]:
-    """Split out from write_* so the values can be inspected/tested without a
-    real Vault. Merges the common config (hosts/ports/JWT config) with
-    freshly generated, tenant-specific credentials."""
-    common = read_common_config()
-    return {
-        "redis": {
-            "redis_host": common["redis_host"],
-            "password": _generate_secret(),
-        },
-        "database": {
-            "db_host": common["postgres_host"],
-            "db_port": str(common["postgres_port"]),
-            "db_username": tenant_id,
-            "db_password": _generate_secret(),
-        },
-        "mongo": {
-            "db_host": common["mongo_host"],
-            "db_port": str(common["mongo_port"]),
-            "root_username": f"{tenant_id}_root",
-            "root_password": _generate_secret(),
-        },
-        "jwt": {
-            "jwt_issuer": common["jwt_issuer"],
-            "jwt_algorithm": common["jwt_algorithm"],
-            "jwt_secret": _generate_secret(48),
-        },
-    }
-
-
-def write_initial_tenant_secrets(tenant_id: str) -> None:
-    """Call once, right before the meta-builder Job is triggered."""
-    base = f"{settings.vault_tenant_secret_prefix}/{tenant_id}"
-    secrets_by_suffix = build_initial_tenant_secrets(tenant_id)
-
-    logger.info(
-        "[vault] tenant=%s writing initial secrets at %s/{%s}%s",
-        tenant_id, base, ",".join(secrets_by_suffix.keys()),
-        " (echoed, vault_enabled=false)" if not settings.vault_enabled else "",
-    )
-
-    for suffix, data in secrets_by_suffix.items():
-        if settings.vault_enabled:
-            _write(f"{base}/{suffix}", data)
-        logger.info("[vault] tenant=%s step: wrote %s/%s -> %s", tenant_id, base, suffix, _redact(data))
-
-    logger.info("[vault] tenant=%s initial secrets ready", tenant_id)
-
-
 # --- qraie-bridge tenant secrets -------------------------------------------
 #
-# The generic build_initial_tenant_secrets() above writes ONE shape
-# (redis/database/mongo/jwt) that the "workplace" chart's Vault Agent
-# annotations read (see poc/chart-workplace/templates/deployment.yaml). The
-# "qraie-bridge" chart is a ~30-service conversion with its own, much wider
-# Vault schema -- one path per service (secret/tenants/<slug>/<service>,
-# see charts/qraie-bridge/templates/vaultstaticsecret.yaml and each
-# service's `vault.injectKeys`/`vault.mode` in that chart's values.yaml) --
-# writing the generic shape for a qraie-bridge tenant leaves every one of
-# its services' actual secrets empty. This mirrors that same shape here so
-# app_type="qraie-bridge" tenants get real values instead.
+# The "qraie-bridge" chart is a ~30-service conversion with its own, wide
+# Vault schema -- one path per service (secret/tenants/<slug>/<service>, see
+# charts/qraie-bridge/templates/vaultstaticsecret.yaml and each service's
+# `vault.injectKeys`/`vault.mode` in that chart's values.yaml).
 #
-# Unlike the generic schema, most of these keys are NOT tenant-specific
+# Most of these keys are NOT tenant-specific
 # credentials -- they're shared platform/integration config (SLM API creds,
 # ElevenLabs key, Meeting API key, external DB hosts, ...) that's the same
 # for every tenant in this environment. Only a handful are actually unique
@@ -352,6 +237,21 @@ def write_qraie_bridge_platform_defaults(service: str, data: dict) -> None:
         _write(f"{QRAIE_BRIDGE_PLATFORM_DEFAULTS_PATH}/{service}", data)
 
 
+def _tenant_mongodb_uri(tenant_slug: str) -> str:
+    """This tenant's own MongoDB connection string -- one database per
+    tenant (named after its slug), shared by every service in that tenant,
+    not one database per service. Built from mongo_env_config_uri (the same
+    shared instance/root credentials mongo_service.py's env mirror already
+    uses), inserting tenant_slug as the database name in the path. Returns
+    "" if mongo_env_config_uri isn't configured (mirrors every other
+    optional-config fallback in this file)."""
+    if not settings.mongo_env_config_uri:
+        return ""
+    base, sep, query = settings.mongo_env_config_uri.partition("?")
+    uri = f"{base.rstrip('/')}/{tenant_slug}"
+    return f"{uri}{sep}{query}" if sep else uri
+
+
 def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_domain: str) -> dict[str, dict]:
     """Call once, right before the GitOps handoff -- same timing/reasoning
     as write_initial_tenant_secrets() above (the tenant's Vault Agent/VSO
@@ -366,11 +266,16 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_domain: s
     VITE_API_URL, ...), VIRTUAL_HOST is always just the bare tenant domain
     with no service-specific path suffix, so it's the one URL-shaped key
     safe to derive automatically rather than requiring a platform-default
-    entry someone fills in per tenant. The others still come from
-    platform_defaults below -- their path suffix differs per service (and
-    the source reference data for this schema showed real inconsistencies
-    between environments for a couple of them), so guessing a formula for
-    each one risks being confidently wrong. Fill those in per tenant via
+    entry someone fills in per tenant. MONGODB_URI is similarly derived
+    (see _tenant_mongodb_uri) rather than a platform default -- the source
+    reference data showed some services sharing one fixed database name
+    across every tenant, which defeats tenant isolation; every service that
+    needs Mongo gets this same tenant's own database instead. Every other
+    self-referencing URL key still comes from platform_defaults below --
+    their path suffix differs per service (and the source reference data
+    for this schema showed real inconsistencies between environments for a
+    couple of them), so guessing a formula for each one risks being
+    confidently wrong. Fill those in per tenant via
     PUT /api/v1/vault/qraie-bridge-defaults/{service} (or a future
     per-tenant override) until that's worth automating too.
 
@@ -380,6 +285,7 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_domain: s
     platform_defaults = read_qraie_bridge_platform_defaults()
     base = f"{settings.vault_tenant_secret_prefix}/{tenant_slug}"
     written: dict[str, dict] = {}
+    mongodb_uri = _tenant_mongodb_uri(tenant_slug)
 
     for service, keys in QRAIE_BRIDGE_SERVICE_KEYS.items():
         platform = platform_defaults.get(service, {})
@@ -387,6 +293,8 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_domain: s
         for k in keys:
             if k == "VIRTUAL_HOST":
                 data[k] = tenant_domain
+            elif k == "MONGODB_URI":
+                data[k] = mongodb_uri
             elif k in QRAIE_BRIDGE_TENANT_DERIVED_KEYS:
                 data[k] = tenant_slug
             elif k in QRAIE_BRIDGE_GENERATED_KEYS:
@@ -418,19 +326,16 @@ def read_qraie_bridge_tenant_secret(tenant_slug: str, service: str) -> dict | No
     return _read(f"{settings.vault_tenant_secret_prefix}/{tenant_slug}/{service}")
 
 
-def read_tenant_secrets(tenant_id: str, app_type: str = "workplace") -> dict:
+def read_tenant_secrets(tenant_id: str) -> dict:
     """GET /api/v1/tenant/{id}/vault. Reads back what's currently stored for
-    this tenant -- the generic redis/database/mongo/jwt suffixes for
-    app_type="workplace", or every qraie-bridge service path for
-    app_type="qraie-bridge" -- or a note explaining why there's nothing to
-    read if Vault is disabled."""
+    this tenant -- every qraie-bridge service path -- or a note explaining
+    why there's nothing to read if Vault is disabled."""
     if not settings.vault_enabled:
         return {"vaultEnabled": False, "note": "VAULT_ENABLED=false -- secrets are only echoed/logged, never actually written"}
 
     base = f"{settings.vault_tenant_secret_prefix}/{tenant_id}"
     result = {"vaultEnabled": True}
-    suffixes = QRAIE_BRIDGE_SERVICE_KEYS.keys() if app_type == "qraie-bridge" else ("redis", "database", "mongo", "jwt")
-    for suffix in suffixes:
+    for suffix in QRAIE_BRIDGE_SERVICE_KEYS.keys():
         data = _read(f"{base}/{suffix}")
         result[suffix] = data  # None if that path doesn't exist yet
     return result

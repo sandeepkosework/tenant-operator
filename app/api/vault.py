@@ -5,23 +5,6 @@ from app.services import vault_service
 router = APIRouter(prefix="/vault", tags=["vault"])
 
 
-@router.get("/common")
-def get_common_config():
-    """Current common config -- shared Redis/Postgres/Mongo hosts, JWT
-    signing config, etc, merged into every tenant's secrets alongside their
-    own generated credentials. Falls back to Settings-derived defaults if
-    nothing's been pushed yet or Vault is disabled."""
-    return vault_service.read_common_config()
-
-
-@router.put("/common")
-def put_common_config(config: dict):
-    """Overwrites the common config. Body is a free-form JSON object, e.g.
-    {"redis_host": "...", "postgres_host": "...", "jwt_issuer": "..."}."""
-    vault_service.write_common_config(config)
-    return {"status": "ok", "keys": list(config.keys())}
-
-
 @router.get("/qraie-bridge-defaults")
 def get_qraie_bridge_platform_defaults():
     """Current shared (non-tenant-specific) config for every qraie-bridge

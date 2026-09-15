@@ -30,30 +30,25 @@ class TenantCreateRequest(BaseModel):
     password: str = Field(..., min_length=8)
     domain: str
 
-    # Which chart this tenant gets deployed with. "workplace" (default) is
-    # the original single-image toy nginx chart (poc/chart-workplace) --
-    # `application`/`version` below map directly to its image.repository/
-    # image.tag. "qraie-bridge" is the ~30-service chart converted from the
-    # prototype-bridge docker-compose stack (charts/qraie-bridge); for that
-    # one, `application`/`version` are ignored -- every service's image tag
-    # currently comes from the chart's own defaults (see that chart's
-    # README "Image versioning" section for why, and what extending this
-    # would take).
-    appType: str = "workplace"
-
-    application: Optional[str] = None
-    version: Optional[str] = None
+    # Every tenant is provisioned onto the ~30-service chart converted from
+    # the prototype-bridge docker-compose stack (helm-chart-bridge). There
+    # used to be a second, generic single-image "workplace" chart selectable
+    # via an `appType` request field (with `application`/`version` fields
+    # mapping to its image.repository/image.tag) -- that chart was only ever
+    # a demo/POC (poc/chart-workplace) and has been retired, along with the
+    # request fields that only made sense for it. `Tenant.app_type` still
+    # exists as a DB column (always "qraie-bridge" for every tenant created
+    # from here on) -- see that column's docstring.
     tier: Optional[str] = None
     users: int = Field(default=0, ge=0)
     database: DatabaseSpec = DatabaseSpec()
     createdBy: Optional[str] = None
 
-    # appType="qraie-bridge" only: which of that chart's ~30 services this
-    # tenant actually gets. Sparse and opt-out by default (onlyListedServices
-    # =false) -- any service not mentioned here still gets created (today's
-    # default behavior is unchanged for every existing caller that doesn't
-    # pass this field at all). e.g. {"voxflow": false, "mcp-server": false}
-    # skips just those two.
+    # Which of the chart's ~30 services this tenant actually gets. Sparse
+    # and opt-out by default (onlyListedServices=false) -- any service not
+    # mentioned here still gets created (today's default behavior is
+    # unchanged for every existing caller that doesn't pass this field at
+    # all). e.g. {"voxflow": false, "mcp-server": false} skips just those two.
     # Set onlyListedServices=true to flip to opt-IN / allowlist instead --
     # every service NOT set to `true` here is disabled, so
     # {"services": {"bridge": true}, "onlyListedServices": true} runs only
@@ -79,8 +74,6 @@ class TenantCreateRequest(BaseModel):
     def validate_services(self) -> "TenantCreateRequest":
         if not self.services and not self.onlyListedServices:
             return self
-        if self.appType != "qraie-bridge":
-            raise ValueError("services/onlyListedServices is only meaningful for appType=qraie-bridge")
         unknown = set(self.services) - QRAIE_BRIDGE_SERVICE_NAMES
         if unknown:
             raise ValueError(f"unknown qraie-bridge service name(s): {sorted(unknown)}")
@@ -107,10 +100,7 @@ class TenantUpdateRequest(BaseModel):
     # None = leave this tenant's service selection untouched; {} = clear
     # back to every service enabled; see TenantCreateRequest.services --
     # same semantics (including onlyListedServices below), just optional
-    # here since most updates don't touch it. Whether appType=="qraie-bridge"
-    # (the only appType this applies to) is checked in api/tenant.py's
-    # update_tenant, not here -- this schema has no access to the tenant's
-    # already-set appType to validate against.
+    # here since most updates don't touch it.
     services: Optional[dict[str, bool]] = None
     onlyListedServices: bool = False
 

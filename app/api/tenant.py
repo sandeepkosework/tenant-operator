@@ -48,10 +48,10 @@ def create_tenant(
         domain=req.domain,
         tier=req.tier or settings.default_tier,
         environment=settings.environment,  # which environment this deployment serves, not from the payload
-        app_type=req.appType,
+        app_type="qraie-bridge",  # the only chart tenants are provisioned onto -- see Tenant.app_type
         disabled_services=helm_values.compute_disabled_services(req.services, req.onlyListedServices),
-        application=req.application or settings.default_application,
-        version=req.version or settings.default_version,
+        application=settings.default_application,
+        version=settings.default_version,
         users=req.users,
         database_size=req.database.size,
         status=TenantStatus.PENDING,
@@ -83,13 +83,14 @@ def get_tenant(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
 
 @router.get("/{tenant_id}/vault")
 def get_tenant_vault(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
-    """Current Vault secrets for this tenant (redis/database/mongo/jwt) --
-    the common (host/port) + tenant-specific (generated credential) fields
-    merged together at onboarding time. See vault_service.py."""
+    """Current Vault secrets for this tenant -- one path per qraie-bridge
+    chart service, platform defaults + tenant-specific (generated
+    credential) fields merged together at onboarding time. See
+    vault_service.py."""
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="tenant not found")
-    return vault_service.read_tenant_secrets(tenant.slug, app_type=tenant.app_type)
+    return vault_service.read_tenant_secrets(tenant.slug)
 
 
 @router.get("", response_model=list[TenantResponse])
@@ -121,9 +122,6 @@ def update_tenant(
             status_code=409,
             detail=f"tenant is currently {tenant.status}; updates are only allowed once RUNNING or FAILED",
         )
-    if req.services is not None and tenant.app_type != "qraie-bridge":
-        raise HTTPException(status_code=400, detail="services is only meaningful for appType=qraie-bridge")
-
     new_disabled_services = None
     if req.services is not None:
         new_disabled_services = helm_values.compute_disabled_services(req.services, req.onlyListedServices)

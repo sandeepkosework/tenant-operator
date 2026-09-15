@@ -47,7 +47,13 @@ class Settings(BaseSettings):
     hub_namespace: str = "platform-mgmt"
     cr_api_version: str = "platform.saas.com/v1alpha1"
     cr_kind: str = "Tenant"
-    default_application: str = "workplace"
+    # Vestigial: every tenant is provisioned onto the qraie-bridge chart,
+    # which doesn't take a per-tenant application/version (every service's
+    # image tag comes from that chart's own defaults) -- these two just seed
+    # the Tenant.application/version NOT NULL DB columns left over from the
+    # retired "workplace" chart (see that column's docstring), no longer
+    # settable per-request.
+    default_application: str = "qraie-bridge"
     default_version: str = "1.0.0"
     default_tier: str = "standard"
 
@@ -80,26 +86,10 @@ class Settings(BaseSettings):
     vault_token_file: Optional[str] = None          # e.g. written by a Vault Agent sidecar
     vault_kv_mount: str = "secret"
     vault_config_path: str = "tenant-operator/config"   # where THIS operator's own config lives, if any
-    vault_tenant_secret_prefix: str = "tenants"          # secret/tenants/{tenantId}/{redis,database,mongo,jwt}
-    vault_common_secret_path: str = "common/config"      # secret/common/config -- shared across every tenant
-
-    # Fallback values for the common config above, used to seed
-    # secret/common/config the first time (see
-    # vault_service.read_common_config()) and as a fallback if Vault is
-    # disabled or that path is still empty. Once Vault is enabled, PUT
-    # /api/v1/vault/common is the real source of truth -- these are only a
-    # starting point, not synced back into here.
-    tenant_postgres_host: str = "postgres.database.svc.cluster.local"
-    tenant_postgres_port: int = 5432
-    tenant_mongo_host: str = "mongo.database.svc.cluster.local"
-    tenant_mongo_port: int = 27017
-    tenant_redis_host: str = "redis.database.svc.cluster.local"
-    tenant_redis_port: int = 6379
+    vault_tenant_secret_prefix: str = "tenants"          # secret/tenants/{tenantId}/<service>
 
     # --- MongoDB env-config mirror (qraie-bridge only) ---
-    # Separate from tenant_mongo_host/port above (which only seed the
-    # generic workplace schema's placeholder mongo credential) -- this is
-    # mongo_service.py writing every qraie-bridge tenant's actual resolved
+    # This is mongo_service.py writing every qraie-bridge tenant's actual resolved
     # env config (same data just written to Vault) into that tenant's own
     # Mongo database, one collection per service group, one document per
     # service. Disabled by default for the same reason vault_enabled is --
@@ -148,16 +138,22 @@ class Settings(BaseSettings):
     git_https_token: Optional[str] = None           # e.g. GitHub/GitLab PAT
     git_https_username: Optional[str] = "git"
 
-    # Paths inside the git repo (matches the structure in your doc)
-    git_tenants_dir: str = "tenants"                # tenants/{name}.yaml (Helm values) -- appType=workplace
-    git_bridge_tenants_dir: str = "bridge-tenants"   # bridge-tenants/{name}.yaml -- appType=qraie-bridge
+    # Paths inside the git repo (matches the structure in your doc).
+    # git_tenants_dir: tenants/{name}.yaml (Helm values) -- every tenant's
+    # manifest lives here (see provisioner._tenants_dir_for()).
+    # git_bridge_tenants_dir is currently unused by any live code path --
+    # git_service.commit_tenant_manifest()/delete_tenant_manifest() accept a
+    # tenants_dir override for exactly this kind of split, but nothing calls
+    # them with it today. Left in place rather than removed since it's cheap
+    # to keep and the parameterization it documents may still be wanted.
+    git_tenants_dir: str = "tenants"
+    git_bridge_tenants_dir: str = "bridge-tenants"
     git_applicationsets_dir: str = "applicationsets"
 
     # --- Argo CD ---
     argocd_server: str = "https://argocd.hub.internal"
     argocd_token: Optional[str] = None
     argocd_verify_tls: bool = True
-    argocd_appset_name: str = "workplace"            # the ApplicationSet that watches tenants/
 
     # If Argo CD is unreachable for this many CONSECUTIVE polls during a
     # tenant's own rollout, fail that tenant early instead of silently

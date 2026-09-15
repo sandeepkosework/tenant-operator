@@ -39,41 +39,24 @@ settings = get_settings()
 
 
 def _tenants_dir_for(tenant: Tenant) -> str:
-    """Which git directory this tenant's manifest lives under. Both
-    appTypes share the same tenants/ directory (and the same
-    ApplicationSet, keyed off the values file's own top-level fields --
-    see helm-chart-bridge-tenants' generator) -- filenames don't collide
-    across appTypes since they're the plain tenant_name, unique among
-    active tenants (see validation.py)."""
+    """Which git directory this tenant's manifest lives under -- see
+    helm-chart-bridge-tenants' ApplicationSet generator."""
     return settings.git_tenants_dir
 
 
 def _render_values_yaml(tenant: Tenant, cluster) -> str:
-    """Dispatches to the right Jinja template for this tenant's app_type.
-    See helm_values.render_qraie_bridge_values_yaml()'s docstring for why
-    its param list is so much smaller than render_values_yaml()'s."""
-    if tenant.app_type == "qraie-bridge":
-        return helm_values.render_qraie_bridge_values_yaml(
-            tenant_name=tenant.tenant_name,
-            tenant_slug=tenant.slug,
-            environment=tenant.environment,
-            namespace=tenant.namespace,
-            domain=tenant.domain,
-            argocd_cluster_server=cluster.argocd_cluster_server,
-            disabled_services=tenant.disabled_services,
-            vault_server=cluster.vault_server,
-            ingress_class_name=cluster.ingress_class_name,
-        )
-    return helm_values.render_values_yaml(
+    """Renders this tenant's values.yaml via the qraie-bridge chart's Jinja
+    template -- the only chart tenants are provisioned onto."""
+    return helm_values.render_qraie_bridge_values_yaml(
         tenant_name=tenant.tenant_name,
         tenant_slug=tenant.slug,
         environment=tenant.environment,
-        application=tenant.application,
-        version=tenant.version,
         namespace=tenant.namespace,
-        database_size=tenant.database_size,
-        users=tenant.users,
+        domain=tenant.domain,
         argocd_cluster_server=cluster.argocd_cluster_server,
+        disabled_services=tenant.disabled_services,
+        vault_server=cluster.vault_server,
+        ingress_class_name=cluster.ingress_class_name,
     )
 
 
@@ -217,21 +200,17 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             logger.info("[step] tenant=%s Tenant CR created (uid=%s)", tenant.tenant_name, cr_uid)
 
             # Write Vault secrets BEFORE the GitOps handoff, not after RUNNING:
-            # the tenant workload's own Vault Agent sidecar (see
-            # poc/chart-workplace's vault.hashicorp.com/* annotations) blocks
-            # its pod from starting until these paths exist, so if we waited
+            # the tenant workload's own Vault Agent/VSO sidecar blocks its
+            # pod from starting until these paths exist, so if we waited
             # until RUNNING to write them, the pod could never become Ready
             # in the first place -- a chicken-and-egg deadlock. The
             # meta-builder Job trigger still waits for RUNNING further down;
             # it just reads the same secrets written here.
             logger.info("[step] tenant=%s writing initial secrets to Vault", tenant.tenant_name)
-            if tenant.app_type == "qraie-bridge":
-                service_data = vault_service.write_initial_qraie_bridge_tenant_secrets(tenant.slug, tenant.domain)
-                mongo_service.write_tenant_env_config(tenant.slug, service_data)
-            else:
-                vault_service.write_initial_tenant_secrets(tenant.slug)
+            service_data = vault_service.write_initial_qraie_bridge_tenant_secrets(tenant.slug, tenant.domain)
+            mongo_service.write_tenant_env_config(tenant.slug, service_data)
 
-            logger.info("[step] tenant=%s rendering Helm values (appType=%s)", tenant.tenant_name, tenant.app_type)
+            logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
             values_yaml = _render_values_yaml(tenant, cluster)
 
             logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)
@@ -301,7 +280,7 @@ def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int 
 
             cluster = next(c for c in cluster_selector.load_cluster_registry() if c.name == tenant.cluster)
 
-            logger.info("[step] tenant=%s rendering Helm values (appType=%s)", tenant.tenant_name, tenant.app_type)
+            logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
             values_yaml = _render_values_yaml(tenant, cluster)
 
             logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)

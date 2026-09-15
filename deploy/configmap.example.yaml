@@ -26,7 +26,6 @@ data:
   # --- Argo CD ---
   ARGOCD_SERVER: "https://argocd.hub.internal"
   ARGOCD_VERIFY_TLS: "true"
-  ARGOCD_APPSET_NAME: "workplace"
   ARGOCD_UNREACHABLE_FAIL_AFTER: "5"
 
   # --- Kubernetes ---
@@ -44,7 +43,9 @@ data:
   HUB_NAMESPACE: "platform-mgmt"
   CR_API_VERSION: "platform.saas.com/v1alpha1"
   CR_KIND: "Tenant"
-  DEFAULT_APPLICATION: "workplace"
+  # Vestigial (see app/config.py) -- every tenant is provisioned onto the
+  # qraie-bridge chart, which doesn't take a per-tenant application/version.
+  DEFAULT_APPLICATION: "qraie-bridge"
   DEFAULT_VERSION: "1.0.0"
   DEFAULT_TIER: "standard"
   META_BUILDER_JOB_IMAGE: "registry.internal/bridge-meta-builder:2.0.0"
@@ -91,13 +92,4 @@ data:
   VAULT_TOKEN_FILE: "/vault/secrets/token"
   VAULT_ENABLED: "true"
   VAULT_KV_MOUNT: "secret"
-  VAULT_COMMON_SECRET_PATH: "common/config"
   VAULT_TENANT_SECRET_PREFIX: "tenants"
-  # Fallback/seed values only -- once VAULT_ENABLED=true, PUT
-  # /api/v1/vault/common is the real source of truth for these.
-  TENANT_POSTGRES_HOST: "postgres.database.svc.cluster.local"
-  TENANT_POSTGRES_PORT: "5432"
-  TENANT_MONGO_HOST: "mongo.database.svc.cluster.local"
-  TENANT_MONGO_PORT: "27017"
-  TENANT_REDIS_HOST: "redis.database.svc.cluster.local"
-  TENANT_REDIS_PORT: "6379"
