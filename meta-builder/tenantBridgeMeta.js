@@ -1322,6 +1322,26 @@ function generateRandomPassword(length = 16) {
     ).join("");
 }
 
+// QRaie-Database-Default-Inserts.sql reuses the same {...tenantid...}
+// placeholder in two incompatible contexts: bare SQL identifiers (`use
+// {...tenantid...};`, `INSERT INTO {...tenantid...}.dbo.X`, and inside
+// IDENT_CURRENT('{...tenantid...}.dbo.X')) and quoted string-literal values
+// (`N'{...tenantid...}'`, e.g. the MEMBER.username/TENANT.tenant_id columns).
+// applySqlTemplate()'s generic key->value substitution can't tell these
+// apart and would inject a bare, unbracketed value everywhere -- fine for a
+// legacy tenant ID without special characters, but a tenant slug like
+// "bridge-meta-test-16" then makes SQL Server parse `INSERT INTO
+// bridge-meta-test-16.dbo.X` as a subtraction expression ("Incorrect syntax
+// near '-'"). Must run BEFORE applySqlTemplate() so only the identifier
+// occurrences get bracketed -- every remaining {...tenantid...} afterward is
+// inside a quoted string literal, where the generic bare substitution is
+// correct as-is.
+function applyInsertsIdentifierFixups(template, tenantId) {
+    return template
+        .replaceAll(`{...tenantid...}.dbo`, `[${tenantId}].dbo`)
+        .replace(/\buse\s+\{\.\.\.tenantid\.\.\.\}/gi, `use [${tenantId}]`);
+}
+
 function applySqlTemplate(template, values) {
     let sql = template;
 
@@ -1385,7 +1405,14 @@ async function executeSqlScript(sqlText, sqlDB, tenantId) {
 function applySchemaTemplate(template, tenantId) {
     let sqlText = template
         .replaceAll(`[{...tenantid...}]`, `[${tenantId}]`)
-        .replaceAll(`{...tenantid...}.dbo`, `${tenantId}.dbo`)
+        // Must stay bracketed like every other identifier substitution below --
+        // an unbracketed tenantId containing a hyphen (e.g. a tenant slug like
+        // "bridge-meta-test-16") makes SQL Server parse `CREATE TABLE
+        // bridge-meta-test-16.dbo.X` as a subtraction expression, surfacing as
+        // "Incorrect syntax near '-'." The legacy bash script (02_sql_mongo.sh)
+        // has this identical bug, just never triggered since legacy tenant IDs
+        // were bare names without hyphens -- our tenant slugs always have one.
+        .replaceAll(`{...tenantid...}.dbo`, `[${tenantId}].dbo`)
         .replaceAll(`{...tenantid...}`, `[${tenantId}]`)
         .replaceAll(`{...password...}`, `[2b10hashedPasswordHere]`);
 
@@ -1471,7 +1498,8 @@ async function runTenantDefaultInserts({
         workplace_QraieWeb_api_uuid_key: qraieWebUuid
     };
 
-    const finalSql = applySqlTemplate(sqlTemplate, replacements);
+    const identifierFixedSql = applyInsertsIdentifierFixups(sqlTemplate, tenantId);
+    const finalSql = applySqlTemplate(identifierFixedSql, replacements);
 
     // FOR TESTING
     // const outputDir = path.resolve(__dirname, "..", "sql", "output");
