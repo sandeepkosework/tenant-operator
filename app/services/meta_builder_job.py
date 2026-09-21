@@ -161,10 +161,10 @@ def build_meta_builder_job(tenant: Tenant, db_secret: dict) -> dict:
     }
 
 
-def _watch_job(api_client: client.ApiClient, job_name: str, namespace: str) -> None:
-    """Polls the Job to completion (or timeout/failure). Runs on a
-    background thread -- must never raise past trigger_meta_builder_job()'s
-    fire-and-forget call site; logs the outcome instead."""
+def _poll_job_to_completion(api_client: client.ApiClient, job_name: str, namespace: str) -> bool:
+    """Shared polling core for both the background fire-and-forget watch
+    (_watch_job) and the blocking wait_for_job() below. Returns True only
+    on a confirmed Succeeded; False on Failed or timeout."""
     batch_v1 = client.BatchV1Api(api_client)
     deadline = time.monotonic() + _JOB_TIMEOUT_SECONDS
 
@@ -179,17 +179,36 @@ def _watch_job(api_client: client.ApiClient, job_name: str, namespace: str) -> N
         status = job.status
         if status.succeeded:
             logger.info("[meta-builder] job=%s completed successfully", job_name)
-            return
+            return True
         if status.failed:
             logger.error(
                 "[meta-builder] job=%s failed -- tenant's DB credentials in Vault do NOT match a "
                 "working login; check the Job's own pod logs (kubectl logs -n %s job/%s)",
                 job_name, namespace, job_name,
             )
-            return
+            return False
         time.sleep(_JOB_POLL_INTERVAL_SECONDS)
 
     logger.error("[meta-builder] job=%s did not complete within %ds", job_name, _JOB_TIMEOUT_SECONDS)
+    return False
+
+
+def _watch_job(api_client: client.ApiClient, job_name: str, namespace: str) -> None:
+    """Polls the Job to completion (or timeout/failure). Runs on a
+    background thread -- must never raise past trigger_meta_builder_job()'s
+    fire-and-forget call site; logs the outcome instead."""
+    _poll_job_to_completion(api_client, job_name, namespace)
+
+
+def wait_for_job(job_name: str, namespace: str | None = None) -> bool:
+    """Blocking variant of the same wait, for callers that need to know
+    this Job actually finished before doing something that depends on it
+    -- e.g. bridge_meta_builder_job.py's Job connects to the tenant's
+    database as the tenant's own login, which this Job is what creates in
+    the first place, so provisioner.py needs this to actually complete
+    (not just "submitted") before triggering that one."""
+    api_client = _get_hub_api_client()
+    return _poll_job_to_completion(api_client, job_name, namespace or settings.meta_builder_job_namespace)
 
 
 def trigger_meta_builder_job(tenant: Tenant, admin_password: str) -> str | None:

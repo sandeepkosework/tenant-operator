@@ -20,6 +20,7 @@ from app.database import SessionLocal
 from app.models.tenant import Tenant, TenantStatus
 from app.services import (
     argocd_service,
+    bridge_meta_builder_job,
     cluster_selector,
     git_service,
     helm_values,
@@ -207,7 +208,9 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             # meta-builder Job trigger still waits for RUNNING further down;
             # it just reads the same secrets written here.
             logger.info("[step] tenant=%s writing initial secrets to Vault", tenant.tenant_name)
-            service_data = vault_service.write_initial_qraie_bridge_tenant_secrets(tenant.slug, tenant.domain)
+            service_data = vault_service.write_initial_qraie_bridge_tenant_secrets(
+                tenant.slug, tenant.tenant_name, tenant.domain
+            )
             mongo_service.write_tenant_env_config(tenant.slug, service_data)
 
             logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
@@ -232,11 +235,29 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
 
             if tenant.status == TenantStatus.RUNNING:
                 # DB + workload are ready. Vault secrets were already written
-                # above (before the GitOps handoff); the seeding Job reads
-                # those same DB/redis/mongo/jwt secrets via safeVault() and
-                # fails hard if they're missing.
+                # above (before the GitOps handoff); both seeding Jobs read
+                # those same DB/redis/mongo/jwt secrets back out of Vault
+                # (see vault_service.read_qraie_bridge_tenant_secret) rather
+                # than needing their own Vault access.
                 logger.info("[step] tenant=%s triggering DB seeding job", tenant.tenant_name)
-                meta_builder_job.trigger_meta_builder_job(tenant, admin_password)
+                db_job_name = meta_builder_job.trigger_meta_builder_job(tenant, admin_password)
+
+                # Blocking, not fire-and-forget: bridge_meta_builder_job's
+                # Job connects to the tenant's database AS the tenant's own
+                # login -- the one db_job_name above is what actually
+                # creates -- so it can't run until that Job has genuinely
+                # finished, not just been submitted.
+                if db_job_name and not meta_builder_job.wait_for_job(db_job_name):
+                    logger.warning(
+                        "[step] tenant=%s DB seeding job did not succeed -- skipping bridge meta-builder job",
+                        tenant.tenant_name,
+                    )
+                elif db_job_name:
+                    # Real schema + SQL default-data inserts + full Mongo
+                    # seed (bridgeMetaInfo, admin user/auth, WFM lookups,
+                    # ControlOps actors, IoT lookups/devices).
+                    logger.info("[step] tenant=%s triggering bridge meta-builder job", tenant.tenant_name)
+                    bridge_meta_builder_job.trigger_bridge_meta_builder_job(tenant, admin_password)
 
                 logger.info("[step] tenant=%s provisioning complete", tenant.tenant_name)
 

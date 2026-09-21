@@ -72,6 +72,21 @@ class Settings(BaseSettings):
     mssql_admin_user: str = "sa"
     mssql_admin_password: Optional[str] = None
 
+    # --- Bridge meta-builder Job (real schema + SQL default-data inserts +
+    # full Mongo seed -- bridgeMetaInfo/auth/users/wfm_*/controlops_actors/
+    # iot_*, ported from HBSS's legacy 02_sql_mongo.sh + meta-builder/
+    # Node.js scripts, see the meta-builder/ directory at this repo's root
+    # for the reference implementation this was adapted from) -- separate
+    # from meta_builder_job.py above, which only creates the empty
+    # database + login. Triggered at the same point in provisioner.py.
+    bridge_meta_builder_job_namespace: str = "tenant-operator"
+    bridge_meta_builder_image_repository: str = "sandeepkosework/bridge-meta-builder"
+    bridge_meta_builder_image_tag: str = "0.1.0"
+    # Base public domain every tenant's hostname is built under (the
+    # legacy system's own convention: "<tenant_name>-bridge<stg-suffix>.
+    # <this>", e.g. "hbss-bridgestg.qraie.ai" -- see bridge_meta_builder_job.py).
+    bridge_base_domain: str = "qraie.ai"
+
     # --- Vault ---
     # Two separate uses:
     #  1. app.vault_bootstrap.load_env_from_vault() reads VAULT_* directly

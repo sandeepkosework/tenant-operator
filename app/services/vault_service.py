@@ -237,22 +237,33 @@ def write_qraie_bridge_platform_defaults(service: str, data: dict) -> None:
         _write(f"{QRAIE_BRIDGE_PLATFORM_DEFAULTS_PATH}/{service}", data)
 
 
-def _tenant_mongodb_uri(tenant_slug: str) -> str:
+def _tenant_mongodb_uri(tenant_name: str) -> str:
     """This tenant's own MongoDB connection string -- one database per
-    tenant (named after its slug), shared by every service in that tenant,
-    not one database per service. Built from mongo_env_config_uri (the same
-    shared instance/root credentials mongo_service.py's env mirror already
-    uses), inserting tenant_slug as the database name in the path. Returns
-    "" if mongo_env_config_uri isn't configured (mirrors every other
-    optional-config fallback in this file)."""
+    tenant, shared by every service in that tenant, not one database per
+    service. Built from mongo_env_config_uri (the same shared instance/root
+    credentials mongo_service.py's env mirror already uses).
+
+    Database name is "{tenant_name}-bridge" -- tenant_name (the bare,
+    human-chosen name, e.g. "hbss"), NOT tenant_slug (the sequence-suffixed
+    "hbss-15" used for namespace/Vault-path/git-filename collision
+    avoidance elsewhere). This matches the legacy bridge-meta-builder
+    system's own convention exactly (its Mongo DB name and public hostname
+    were both built from the bare tenant name, never a sequence number),
+    which bridge_meta_builder_job.py's seeded collections (bridgeMetaInfo,
+    auth, users, wfm_*, controlops_actors, ...) and this MONGODB_URI must
+    agree with -- otherwise controlops-server and the meta-builder's own
+    seeded data would end up looking at two different databases.
+
+    Returns "" if mongo_env_config_uri isn't configured (mirrors every
+    other optional-config fallback in this file)."""
     if not settings.mongo_env_config_uri:
         return ""
     base, sep, query = settings.mongo_env_config_uri.partition("?")
-    uri = f"{base.rstrip('/')}/{tenant_slug}"
+    uri = f"{base.rstrip('/')}/{tenant_name}-bridge"
     return f"{uri}{sep}{query}" if sep else uri
 
 
-def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_domain: str) -> dict[str, dict]:
+def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str, tenant_domain: str) -> dict[str, dict]:
     """Call once, right before the GitOps handoff -- same timing/reasoning
     as write_initial_tenant_secrets() above (the tenant's Vault Agent/VSO
     reads block pod startup until these paths exist). Writes
@@ -285,7 +296,7 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_domain: s
     platform_defaults = read_qraie_bridge_platform_defaults()
     base = f"{settings.vault_tenant_secret_prefix}/{tenant_slug}"
     written: dict[str, dict] = {}
-    mongodb_uri = _tenant_mongodb_uri(tenant_slug)
+    mongodb_uri = _tenant_mongodb_uri(tenant_name)
 
     for service, keys in QRAIE_BRIDGE_SERVICE_KEYS.items():
         platform = platform_defaults.get(service, {})
