@@ -19,8 +19,8 @@
         "DB_HOST": "{{DB_HOST}}",
         "DB_USER": "{{DB_USER}}",
         "DB_PASSWORD": "{{DB_PASSWORD}}",
-        "DB_NAME": "{{TENANT_ID}}",
-        "DB_SCHEMA": "{{TENANT_ID}}",
+        "DB_NAME": "{{DB_NAME}}",
+        "DB_SCHEMA": "{{DB_NAME}}",
         "DB_PORT": "{{DB_PORT}}",
         "NODE_ENV": "production",
         "MICROSERVICE_URL": "http://microservice-qraie:{{MICROSERVICE_PORT}}",
@@ -52,7 +52,7 @@
         "DB_USER": "{{DB_USER}}",
         "DB_PASSWORD": "{{DB_PASSWORD}}",
         "MONGODB_URI": "mongodb://{{MONGO_DB_USERNAME}}:{{MONGO_DB_PASSWORD}}@{{MONGO_DB_HOST}}:{{MONGO_DB_PORT}}/{{TENANT_ID}}-bridge?authSource=admin",
-        "DB_NAME": "{{TENANT_ID}}"
+        "DB_NAME": "{{DB_NAME}}"
     },
     "dlmObj": {
         "hrDlm": {

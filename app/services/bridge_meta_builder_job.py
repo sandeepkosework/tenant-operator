@@ -152,6 +152,13 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
         {"name": "DB_PORT", "value": str(settings.mssql_admin_port)},
         {"name": "DB_USER", "value": db_secret.get("DB_USER", "")},
         {"name": "DB_PASSWORD", "value": db_secret.get("DB_PASSWORD", "")},
+        # The real database/login name meta_builder_job.py already created
+        # on the MSSQL server -- tenant.slug (e.g. "bridge-meta-test-16"),
+        # NOT tenant.tenant_name (args[0] above, the bare name used for
+        # Mongo/domain purposes). tenantBridgeMeta.js's SQL connection and
+        # its schema/inserts SQL substitution both key off this value, not
+        # its CLI tenantId arg -- see that file's main() for why.
+        {"name": "DB_NAME", "value": db_secret.get("DB_NAME", "")},
         {"name": "REDIS_HOST", "value": db_secret.get("REDIS_HOST", "")},
         {"name": "REDIS_PASSWORD", "value": db_secret.get("REDIS_PASSWORD", "")},
         {"name": "MONGO_DB_HOST", "value": mongo_host},

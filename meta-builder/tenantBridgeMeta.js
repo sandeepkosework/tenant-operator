@@ -151,6 +151,13 @@ async function bridgeMetaBuilderService(conn, tenantId, tenantName, domain, emai
         const dbPort = requireEnv("DB_PORT");
         const dbUser = requireEnv("DB_USER");
         const dbPass = requireEnv("DB_PASSWORD");
+        // The real SQL Server database/login name meta_builder_job.py already
+        // created (tenant.slug, e.g. "bridge-meta-test-16") -- NOT tenantId
+        // (the bare tenant_name used for Mongo/domain purposes below). Using
+        // tenantId here would connect with a `database:`/schema that doesn't
+        // exist, which SQL Server reports as a login failure rather than a
+        // "database not found" error.
+        const dbName = requireEnv("DB_NAME");
 
         const mongoHost = requireEnv("MONGO_DB_HOST");
         const mongoPort = requireEnv("MONGO_DB_PORT");
@@ -201,6 +208,7 @@ async function bridgeMetaBuilderService(conn, tenantId, tenantName, domain, emai
             DB_PORT: dbPort,
             DB_USER: dbUser,
             DB_PASSWORD: dbPass,
+            DB_NAME: dbName,
 
             MONGO_DB_HOST: mongoHost,
             MONGO_DB_PORT: mongoPort,
@@ -1601,22 +1609,30 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
            STEP 3: SQL Schema + Default Inserts
         ========================= */
 
-        const { DB_USER, DB_PASSWORD, DB_HOST, DB_PORT } = configFile;
+        const { DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME } = configFile;
 
         console.log("   SQL Host :", DB_HOST);
         console.log("   SQL Port :", DB_PORT);
         console.log("   SQL User :", DB_USER);
+        console.log("   SQL DB   :", DB_NAME);
 
+        // DB_NAME (tenant.slug, e.g. "bridge-meta-test-16") is the real
+        // database/login meta_builder_job.py created -- NOT the bare
+        // tenantId used above for Mongo/domain purposes. Every SQL-side
+        // identifier (the connection's `database:` field, and the
+        // {...tenantid...} substitutions inside the schema/inserts SQL)
+        // must match that real name, so DB_NAME is passed as the `tenantId`
+        // these two functions use internally.
         console.log("📄 STEP 3a: Running SQL schema (CREATE TABLE)...");
         await runTenantSchema({
-            tenantId,
+            tenantId: DB_NAME,
             sqlDB: { DB_USER, DB_PASSWORD, DB_HOST, DB_PORT }
         });
         console.log("✅ SQL schema applied");
 
         console.log("📄 STEP 3b: Running SQL default inserts...");
         const QraieCreds = await runTenantDefaultInserts({
-            tenantId,
+            tenantId: DB_NAME,
             tenantName: TENANT_NAME,
             email: EMAIL,
             adminPassword: ADMIN_PW,
