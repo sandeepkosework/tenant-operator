@@ -1,0 +1,119 @@
+{
+    "tenantObj": {
+        "tenantId": "{{TENANT_ID_UPPER}}",
+        "tenantName": "{{DISPLAY_NAME}}",
+        "emailId": "{{TENANT_EMAIL}}",
+        "logo": "https://{{TENANT_ID}}-bridge{{STG_ENV}}.{{DOMAIN_NAME}}/workplace/api/attachment/direct/upload_1763474329245_pj0xd9dnx/logo.png"
+    },
+    "workplace": {
+        "joinedOn": "{{TODAY_DATE}}",
+        "PORT": "{{NEXT_PORT}}",
+        "redisPort": "{{REDIS_PORT}}",
+        "redisIp": "{{REDIS_IP}}",
+        "redisPassword": "{{REDIS_PASSWORD}}",
+        "serverIPA": "0.0.0.0",
+        "RESPONSE_TIMEOUT": "900000",
+        "G_JWT_SECRETKEY": "{{JWT_SECRETKEY}}",
+        "G_RT_SECRETKEY": "{{RT_SECRETKEY}}",
+        "G_JWT_EXPIRESIN": "1d",
+        "DB_HOST": "{{DB_HOST}}",
+        "DB_USER": "{{DB_USER}}",
+        "DB_PASSWORD": "{{DB_PASSWORD}}",
+        "DB_NAME": "{{TENANT_ID}}",
+        "DB_SCHEMA": "{{TENANT_ID}}",
+        "DB_PORT": "{{DB_PORT}}",
+        "NODE_ENV": "production",
+        "MICROSERVICE_URL": "http://microservice-qraie:{{MICROSERVICE_PORT}}",
+        "syncInterval": "600000",
+        "MAX_CONNECTIONS": "100",
+        "MIN_CONNECTIONS": "20",
+        "alertMemberId": "M101",
+        "VIDEO_BASE_URL": "https://qr-video.{{DOMAIN_NAME}}",
+        "gatewayUrl": "https://{{TENANT_ID}}-bridge{{STG_ENV}}.{{DOMAIN_NAME}}",
+        "authTokenPassword":"",
+        "authTokenUsername":"QraieBot"
+    },
+    "wfmObj": {
+        "NEXT_PUBLIC_SOCKET_URL": "{{TENANT_ID}}-bridge{{STG_ENV}}.{{DOMAIN_NAME}}/organization/wfm/api",
+        "FABREQ_COMMAND_ENDPOINT_MAP": "http://wfm-microservice:{{WFM_MICROSERVICE_PORT}}",
+        "TNT_DB_CONN": {
+            "wfm": {
+                "type": "mongoose",
+                "connectionString": "mongodb://{{MONGO_DB_USERNAME}}:{{MONGO_DB_PASSWORD}}@{{MONGO_DB_HOST}}:{{MONGO_DB_PORT}}/{{TENANT_ID}}-bridge?authSource=admin"
+            }
+        }
+    },
+    "eRepObj": [],
+    "ctrlOpsObj": {
+        "REDIS_HOST": "{{REDIS_IP}}",
+        "REDIS_PORT": "{{REDIS_PORT}}",
+        "REDIS_PASSWORD": "{{REDIS_PASSWORD}}",
+        "DB_HOST": "{{DB_HOST}}",
+        "DB_USER": "{{DB_USER}}",
+        "DB_PASSWORD": "{{DB_PASSWORD}}",
+        "MONGODB_URI": "mongodb://{{MONGO_DB_USERNAME}}:{{MONGO_DB_PASSWORD}}@{{MONGO_DB_HOST}}:{{MONGO_DB_PORT}}/{{TENANT_ID}}-bridge?authSource=admin",
+        "DB_NAME": "{{TENANT_ID}}"
+    },
+    "dlmObj": {
+        "hrDlm": {
+            "llmBaseUrl": "https://mcp-llm-client.qryde.net/v1",
+            "modelName": "Qwen/Qwen3-4B-Instruct-2507",
+            "mcpServerUrl": "http://localhost:10011/mcp",
+            "ragEndpoint": "https://slm-kb.qraie.ai/api/get_chunks"
+        },
+        "chatUrl": "https://{{TENANT_ID}}-bridge{{STG_ENV}}.{{DOMAIN_NAME}}/galaxy/slmapi/v1",
+        "secretKey": "{{DLM_SECRET_KEY}}",
+        "slmKbApiAuth": {
+            "authUser": "bridgeUser",
+            "authPassword": "{{SLM_KB_AUTH_PASSWORD}}"
+        }
+    },
+    "agentObj": {
+        "agentLookup": {
+            "erepLanguage": {
+                "English": "en",
+                "Hindi": "hi",
+                "Spanish": "es",
+                "French": "fr",
+                "German": "de",
+                "Italian": "it",
+                "Portuguese": "pt",
+                "Russian": "ru",
+                "Japanese": "ja",
+                "Korean": "ko",
+                "Chinese (Mandarin)": "zh"
+            },
+            "additionalLanguages": {
+                "English": "en",
+                "Hindi": "hi",
+                "Spanish": "es",
+                "French": "fr",
+                "German": "de",
+                "Italian": "it",
+                "Portuguese": "pt",
+                "Russian": "ru",
+                "Japanese": "ja",
+                "Korean": "ko",
+                "Chinese (Mandarin)": "zh"
+            },
+            "turnEagerness": {
+                "Low": "low",
+                "Medium": "medium",
+                "High": "high"
+            },
+            "turnTimeoutduration": {
+                "0": 0,
+                "1": 1,
+                "2": 2,
+                "3": 3,
+                "4": 4,
+                "5": 5,
+                "6": 6,
+                "7": 7,
+                "-1": -1
+            }
+        }
+    },
+    "createdAt": "{{DATE_NOW}}",
+    "updatedAt": "{{DATE_NOW}}"
+}

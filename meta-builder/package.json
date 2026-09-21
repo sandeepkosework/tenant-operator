@@ -1,0 +1,23 @@
+{
+  "name": "bridge-seeder",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "dotenv": "^17.2.3",
+    "i": "^0.3.7",
+    "mongodb": "^6.21.0",
+    "mongoose": "^8.20.3",
+    "mssql": "^12.2.0",
+    "npm": "^10.9.4",
+    "uuid": "^13.0.0"
+  }
+}
