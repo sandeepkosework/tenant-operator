@@ -1467,6 +1467,7 @@ async function runTenantSchema({ tenantId, sqlDB }) {
 
 async function runTenantDefaultInserts({
     tenantId,
+    dbName,
     tenantName,
     email,
     adminPassword,
@@ -1475,6 +1476,9 @@ async function runTenantDefaultInserts({
 }) {
     if (!/^[a-zA-Z0-9_-]+$/.test(tenantId)) {
         throw new Error("Invalid tenantId");
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(dbName)) {
+        throw new Error("Invalid dbName");
     }
 
     /* 🔐 Generate secrets */
@@ -1497,7 +1501,10 @@ async function runTenantDefaultInserts({
 
     const sqlTemplate = fs.readFileSync(sqlPath, "utf8");
 
-    /* 🔁 Replace placeholders */
+    /* 🔁 Replace placeholders -- tenantid here is the bare tenant name
+       (business-data value, matches Mongo's tenantObj.tenantId convention),
+       NOT dbName (the slug), which is only used below for the SQL
+       identifier positions and the connection itself. */
     const replacements = {
         tenantid: tenantId,
         tenant_name: tenantName,
@@ -1512,7 +1519,7 @@ async function runTenantDefaultInserts({
         workplace_QraieWeb_api_uuid_key: qraieWebUuid
     };
 
-    const identifierFixedSql = applyInsertsIdentifierFixups(sqlTemplate, tenantId);
+    const identifierFixedSql = applyInsertsIdentifierFixups(sqlTemplate, dbName);
     const finalSql = applySqlTemplate(identifierFixedSql, replacements);
 
     // FOR TESTING
@@ -1532,7 +1539,7 @@ async function runTenantDefaultInserts({
     // END TESTING
 
     /* 🚀 Execute SQL */
-    await executeSqlScript(finalSql, sqlDB, tenantId);
+    await executeSqlScript(finalSql, sqlDB, dbName);
 
     /* 🧾 Return credentials (DO NOT LOG IN PROD) */
     return {
@@ -1660,11 +1667,14 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
 
         // DB_NAME (tenant.slug, e.g. "bridge-meta-test-16") is the real
         // database/login meta_builder_job.py created -- NOT the bare
-        // tenantId used above for Mongo/domain purposes. Every SQL-side
-        // identifier (the connection's `database:` field, and the
-        // {...tenantid...} substitutions inside the schema/inserts SQL)
-        // must match that real name, so DB_NAME is passed as the `tenantId`
-        // these two functions use internally.
+        // tenantId used above for Mongo/domain purposes. The schema script
+        // never stores tenantId as a data VALUE (only as identifiers), so
+        // DB_NAME alone is correct for runTenantSchema. The inserts script
+        // does both (identifiers AND business-data values like
+        // MEMBER.username/TENANT.tenant_id) -- runTenantDefaultInserts
+        // takes both and keeps them separate, so those stored values stay
+        // the bare tenantId, matching Mongo's own tenantObj.tenantId
+        // convention, while the identifiers/connection still use DB_NAME.
         console.log("📄 STEP 3a: Running SQL schema (CREATE TABLE)...");
         await runTenantSchema({
             tenantId: DB_NAME,
@@ -1674,7 +1684,8 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
 
         console.log("📄 STEP 3b: Running SQL default inserts...");
         const QraieCreds = await runTenantDefaultInserts({
-            tenantId: DB_NAME,
+            tenantId,
+            dbName: DB_NAME,
             tenantName: TENANT_NAME,
             email: EMAIL,
             adminPassword: ADMIN_PW,
