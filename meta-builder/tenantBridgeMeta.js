@@ -1338,7 +1338,13 @@ async function executeSqlScript(sqlText, sqlDB, tenantId) {
         port: parseInt(sqlDB.DB_PORT, 10),
         database: tenantId,
         options: {
-            encrypt: false,
+            // sqlcmd -C negotiates TLS and just trusts the server's
+            // certificate without strict validation -- encrypt: false here
+            // (as originally written) refuses TLS entirely, which this
+            // server appears to reject at login (surfaced as a generic
+            // "Login failed" rather than an encryption-specific error).
+            // Matching sqlcmd's actual behavior instead of its flag name.
+            encrypt: true,
             trustServerCertificate: true
         },
         pool: {
