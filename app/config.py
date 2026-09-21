@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     # database + login. Triggered at the same point in provisioner.py.
     bridge_meta_builder_job_namespace: str = "tenant-operator"
     bridge_meta_builder_image_repository: str = "sandeepkosework/bridge-meta-builder"
-    bridge_meta_builder_image_tag: str = "0.1.0"
+    bridge_meta_builder_image_tag: str = "0.1.1"
     # Base public domain every tenant's hostname is built under (the
     # legacy system's own convention: "<tenant_name>-bridge<stg-suffix>.
     # <this>", e.g. "hbss-bridgestg.qraie.ai" -- see bridge_meta_builder_job.py).
