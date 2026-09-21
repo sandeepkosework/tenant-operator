@@ -1387,7 +1387,21 @@ async function executeSqlScript(sqlText, sqlDB, tenantId) {
 
     const pool = await sql.connect(dbConfig);
     try {
-        await pool.request().batch(sqlText);
+        // GO is a batch separator understood only by client tools
+        // (sqlcmd/SSMS), which split on it and send each batch to the
+        // server separately -- the server itself doesn't recognize GO as
+        // valid T-SQL and rejects it ("Incorrect syntax near 'GO'") if sent
+        // verbatim in one .batch() call. The schema script has one real GO
+        // (after `USE [tenantId]`, once the CREATE DATABASE header block is
+        // stripped above) -- split on any/all of them and run each batch in
+        // order on the same connection, matching what sqlcmd -i does.
+        const batches = sqlText
+            .split(/^\s*GO\s*$/im)
+            .map((b) => b.trim())
+            .filter((b) => b.length > 0);
+        for (const batch of batches) {
+            await pool.request().batch(batch);
+        }
     } finally {
         await pool.close();
     }
