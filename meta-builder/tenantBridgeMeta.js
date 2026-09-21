@@ -1330,6 +1330,12 @@ async function executeSqlScript(sqlText, sqlDB, tenantId) {
         user: sqlDB.DB_USER,
         password: sqlDB.DB_PASSWORD,
         server: sqlDB.DB_HOST,
+        // Without this, the mssql package silently falls back to its
+        // default port 1433 -- fine on bare metal where MSSQL listens on
+        // the standard port directly, but this environment reaches it via
+        // a NodePort remap (30143 -> 1433), so the real port has to be
+        // explicit.
+        port: parseInt(sqlDB.DB_PORT, 10),
         database: tenantId,
         options: {
             encrypt: false,
@@ -1589,15 +1595,16 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
            STEP 3: SQL Schema + Default Inserts
         ========================= */
 
-        const { DB_USER, DB_PASSWORD, DB_HOST } = configFile;
+        const { DB_USER, DB_PASSWORD, DB_HOST, DB_PORT } = configFile;
 
         console.log("   SQL Host :", DB_HOST);
+        console.log("   SQL Port :", DB_PORT);
         console.log("   SQL User :", DB_USER);
 
         console.log("📄 STEP 3a: Running SQL schema (CREATE TABLE)...");
         await runTenantSchema({
             tenantId,
-            sqlDB: { DB_USER, DB_PASSWORD, DB_HOST }
+            sqlDB: { DB_USER, DB_PASSWORD, DB_HOST, DB_PORT }
         });
         console.log("✅ SQL schema applied");
 
@@ -1607,7 +1614,7 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
             tenantName: TENANT_NAME,
             email: EMAIL,
             adminPassword: ADMIN_PW,
-            sqlDB: { DB_USER, DB_PASSWORD, DB_HOST }
+            sqlDB: { DB_USER, DB_PASSWORD, DB_HOST, DB_PORT }
         });
 
         /* =========================
