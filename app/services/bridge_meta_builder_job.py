@@ -143,7 +143,12 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
     ]
 
     env = [
-        {"name": "DB_HOST", "value": db_secret.get("DB_HOST", "")},
+        # The real MSSQL server address, same as meta_builder_job.py's admin
+        # connection -- NOT db_secret["DB_HOST"], which is an unpopulated
+        # platform-default field (empty unless someone fills it in via
+        # PUT /api/v1/vault/qraie-bridge-defaults/controlops-server), never
+        # meant to be this job's own connection target.
+        {"name": "DB_HOST", "value": settings.mssql_admin_host or ""},
         {"name": "DB_PORT", "value": str(settings.mssql_admin_port)},
         {"name": "DB_USER", "value": db_secret.get("DB_USER", "")},
         {"name": "DB_PASSWORD", "value": db_secret.get("DB_PASSWORD", "")},
