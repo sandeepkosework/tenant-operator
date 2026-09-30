@@ -23,6 +23,11 @@ Poll Argo CD + Kubernetes for health                       ApplicationSet detect
         │                                                   creates/syncs the Application
         ▼                                                   automatically
 Tenant RUNNING → trigger meta-builder Job (real MSSQL DB/login seeding, when configured)
+        │
+        ▼
+meta-builder Job succeeds → trigger bridge-meta-builder Job (real schema +
+SQL inserts + full Mongo seed, ported from HBSS's legacy 02_sql_mongo.sh +
+meta-builder/ Node.js scripts -- see "Bridge meta-builder Job" below)
 ```
 
 Each spoke also gets a `SpokeCluster` CR on the hub, kept current with the
@@ -82,6 +87,7 @@ tenant-operator/
 │       ├── tenant_cr.py              builds/echoes the per-tenant Tenant CR on the hub (NOT applied for real)
 │       ├── spoke_cr.py               builds/echoes the per-spoke SpokeCluster CR on the hub (NOT applied for real)
 │       ├── meta_builder_job.py       submits the REAL MSSQL DB/login-seeding Job once a tenant is RUNNING
+│       ├── bridge_meta_builder_job.py  submits the schema+inserts+Mongo-seed Job once meta_builder_job's Job succeeds
 │       ├── helm_values.py            renders tenants/{slug}.yaml from the Jinja2 template + service allow/deny logic
 │       ├── git_service.py            clone/commit/push to the GitOps repo (process-wide lock, single replica)
 │       ├── argocd_service.py         read-only Argo CD status polling + failure classification
@@ -95,6 +101,15 @@ tenant-operator/
 ├── requirements.txt
 ├── .env.example                      local-dev config template (not fully in sync with app/config.py -- see below)
 ├── .gitignore / .dockerignore
+├── meta-builder/                     reference implementation the bridge-meta-builder Job's image is built from
+│   ├── tenantBridgeMeta.js             the adapted Node.js script (ported from HBSS's legacy meta-builder/) -- see below
+│   ├── bridge-schema-definition.js     Mongoose schemas for the Mongo-side seed (bridgeMetaInfo, sequence, etc.)
+│   ├── actor.template.js               ControlOps default-actor template the Mongo seed inserts
+│   ├── metaBridgeInfo_template.json    the tenant's bridgeMetaInfo doc template -- {{...}} placeholders, no real secrets
+│   ├── QRaie-Table-Script-11Sep25.sql  the real CREATE TABLE schema, applied verbatim (bracket-substituted) per tenant
+│   ├── QRaie-Database-Default-Inserts.sql  default SQL rows (admin MEMBER, TENANT, permissions, etc.) per tenant
+│   ├── package.json / Dockerfile       node:20-slim image, deps baked in at build time -- see below
+│   └── 02_sql_mongo.sh                 the ORIGINAL legacy bash script this was ported from, kept for reference only
 ├── deploy/                           raw Kubernetes manifests to run the operator itself (secondary path -- see below)
 │   ├── deployment.yaml                Namespace/Deployment/Service/PVC
 │   ├── spoke-readonly-rbac.yaml       baseline ServiceAccount/ClusterRole (every deployment)
@@ -142,7 +157,8 @@ been removed as part of this repo's dead-code cleanup — see "The retired
 - **The official `kubernetes` Python client**, used in three distinct,
   differently-scoped ways: read-only health checks against spoke clusters
   (`kubernetes_service.py`), a real `BatchV1Api.create_namespaced_job` call
-  against the operator's own (hub) namespace (`meta_builder_job.py`), and a
+  against the operator's own (hub) namespace (`meta_builder_job.py` and,
+  once that Job succeeds, `bridge_meta_builder_job.py`), and a
   real `CustomObjectsApi` call against the hub for Crossplane OKE claims
   (`crossplane_service.py`, prod-only, opt-in).
 - **httpx** for read-only Argo CD REST API polling (`argocd_service.py`).
@@ -338,7 +354,12 @@ task queue is called out below). For a fresh `POST /api/v1/tenant`:
 8. **SYNCING** — poll Argo CD + Kubernetes until healthy or timeout (see
    "Argo CD failure monitoring" below) → **RUNNING** or **FAILED**.
 9. **Meta-builder Job** — only on reaching `RUNNING`: submits the real
-   MSSQL DB/login-seeding Job (see below).
+   MSSQL DB/login-seeding Job (see below), then **blocks** on it via
+   `meta_builder_job.wait_for_job()` before triggering the second,
+   bridge-meta-builder Job (schema + inserts + Mongo seed — see "Bridge
+   meta-builder Job" below). The second Job connects to MSSQL *as* the
+   tenant's own freshly-created login, which only exists once the first
+   Job has actually finished, not just been submitted — hence the block.
 
 `PUT /api/v1/tenant/{id}` (only accepted from `RUNNING`/`FAILED`) re-renders
 and re-commits `values.yaml` with the updated version/users/db size/service
@@ -469,6 +490,91 @@ wrote (passed straight through, never re-derived or re-classified) into:
   upsert=True)` so a later tenant update replaces rather than duplicates
   that service's document.
 
+## Bridge meta-builder Job (`app/services/bridge_meta_builder_job.py`)
+
+Separate from `meta_builder_job.py` above, which only creates the empty
+database + login. This Job does everything after that: applies the real SQL
+schema (`QRaie-Table-Script-11Sep25.sql`), runs the SQL default-data inserts
+(`QRaie-Database-Default-Inserts.sql`), and fully seeds this tenant's own
+MongoDB (a `bridgeMetaInfo` aggregate document, an admin user + auth/RBAC
+record, default WFM lookup data, default ControlOps actors, default IoT
+lookups/devices). Ported from HBSS's legacy bare-metal `02_sql_mongo.sh` +
+its sibling Node.js `meta-builder/` scripts — the reference implementation
+this was adapted from lives verbatim in this repo's own `meta-builder/`
+directory, alongside the adapted copy the Job's image
+(`bridge_meta_builder_image_repository`, currently
+`sandeepkosework/bridge-meta-builder`) is actually built from.
+
+Same gating and trigger point as `meta_builder_job.py`: only fires once a
+tenant reaches `RUNNING`, and only if the tenant has a `controlops-server`
+Vault secret with a `DB_NAME` — skipped and logged otherwise, not treated as
+a failure. Unlike the legacy script, this Job never talks to Vault itself
+(no `vault` binary/token baked into its image) — tenant-operator hands over
+everything it needs as plain env vars, sourced from the same Vault reads
+`meta_builder_job.py` already does.
+
+**Two tenant identifiers, used for two different purposes — do not conflate
+them.** This was the single biggest source of bugs porting the legacy
+script, and matters if this Job is ever touched again:
+
+- **The bare `tenant.tenant_name`** (e.g. `hbss`, not the sequence-suffixed
+  `slug`) is used for Mongo database naming (`<tenant_name>-bridge`) and
+  domain construction (`<tenant_name>-bridge<stg-suffix>.<domain>`) —
+  confirmed against a real legacy hostname
+  (`hbss-bridgestg.qraie.ai` only decomposes correctly as
+  `tenant_name="hbss"` + `"-bridge"` + `"stg"` + `".qraie.ai"`, never the
+  slug). This matches the legacy script's own `TENANT_ID` CLI arg exactly.
+- **`DB_NAME`** (the tenant's `slug`, e.g. `hbss-15` — the same value
+  `meta_builder_job.py` already used to create the real database/login) is
+  the value that must be used for every *SQL-side* identifier: the
+  connection's `database:` field, `USE [...]`/`INSERT INTO [...].dbo.X`
+  identifiers in both SQL files, and `IDENT_CURRENT(...)` calls. Using the
+  bare tenant name here connects to a database that doesn't exist — which
+  SQL Server reports as a login failure, not "database not found", which is
+  what made this bug hard to spot live.
+- The inserts file (but not the schema file) also uses the *bare* tenant
+  name as ordinary **row data** (`MEMBER.username`, `TENANT.tenant_id`,
+  etc.) — matching Mongo's own `bridgeMetaInfo.tenantObj.tenantId`
+  convention, not the SQL identifier convention. `runTenantDefaultInserts()`
+  takes both values separately (`tenantId` for data, `dbName` for
+  identifiers) specifically so these two never get conflated again.
+
+**SQL identifiers built from `DB_NAME` must stay bracketed.** A tenant
+slug always contains a hyphen (the sequence suffix), and SQL Server parses
+an *unbracketed* identifier containing a hyphen as a subtraction expression
+(`CREATE TABLE hbss-15.dbo.X` → `hbss - 15 . dbo . X`), surfacing as
+`Incorrect syntax near '-'.` — a latent bug in the legacy bash script too
+(never triggered there since legacy tenant IDs were bare names without
+hyphens). Every identifier substitution in `tenantBridgeMeta.js` brackets
+the value; if you add a new substitution, bracket it too.
+
+**`GO` is stripped and the script is executed as multiple batches.** `GO`
+is a `sqlcmd`/SSMS client-side batch separator, not valid T-SQL — the
+`mssql` npm package's `.batch()` sends whatever it's given to the server
+verbatim, so a literal `GO` in the schema script (after `USE [tenantId]`)
+gets rejected as `Incorrect syntax near 'GO'.` `executeSqlScript()` splits
+on standalone `GO` lines and runs each resulting batch in order on the same
+connection, matching what `sqlcmd -i` does natively.
+
+**Two settings are `Optional[str] = None` by default but functionally
+required.** `BRIDGE_DLM_SECRET_KEY` and `BRIDGE_SLM_KB_AUTH_PASSWORD` feed
+the Mongo seed's shared `dlmObj` block (an LLM/RAG integration config, the
+same for every tenant) — `tenantBridgeMeta.js` calls `requireEnv()` on both,
+which throws if the resolved value is empty. If these are left unset on the
+live deployment, this Job will fail for *every* tenant, not just be skipped
+(unlike the `MSSQL_ADMIN_*` gating above, which fails soft) — set them
+before relying on this Job in any real deployment.
+
+**Verification status**: the schema/inserts/Mongo-seed logic above was
+fully verified against a real MSSQL server and a real MongoDB by manually
+constructing and applying both Jobs' `batch/v1` YAML by hand (bypassing
+tenant-operator's own trigger code entirely, since OCIR image-pull-secret
+gaps meant no test tenant's own pods could reach `RUNNING` at the time).
+The trigger code path itself (`provisioner.py` → `meta_builder_job` →
+`bridge_meta_builder_job`, gated on real `RUNNING`) has **not** yet been
+exercised end-to-end through a live `POST /api/v1/tenant` call — treat that
+integration as unverified until it has been.
+
 ## The retired `workplace` chart
 
 Earlier, tenants could be provisioned onto **either** qraie-bridge, or a
@@ -530,6 +636,10 @@ Selected settings worth knowing about explicitly:
 | `GIT_REPO_URL` / `GIT_BRANCH` / `GIT_TENANTS_DIR` | — | The GitOps repo and directory tenant manifests are committed into. |
 | `GIT_BRIDGE_TENANTS_DIR` | `bridge-tenants` | **Currently unused by any live code path** — `_tenants_dir_for()` in `provisioner.py` always returns `GIT_TENANTS_DIR` now that there's only one chart/one tenant flow. Kept because `git_service.py`'s functions already accept a `tenants_dir` override and nothing currently calls them with it; harmless to leave set. |
 | `MSSQL_ADMIN_HOST` / `..._PORT` / `..._USER` / `..._PASSWORD` | unset | Admin login the meta-builder Job uses to create each tenant's real MSSQL database + login. Both host and password must be set for the Job to actually run — otherwise it's skipped (logged, not failed). |
+| `BRIDGE_META_BUILDER_JOB_NAMESPACE` | `tenant-operator` | Namespace the bridge-meta-builder Job is submitted into — same namespace as the meta-builder Job, no cross-namespace RBAC needed. |
+| `BRIDGE_META_BUILDER_IMAGE_REPOSITORY` / `..._TAG` | `sandeepkosework/bridge-meta-builder` / `0.1.8` | The Node.js Job image built from `meta-builder/` (see "Bridge meta-builder Job"). Bump the tag here whenever that image is rebuilt/repushed. |
+| `BRIDGE_BASE_DOMAIN` | `qraie.ai` | The public domain every tenant's hostname is built under, matching the legacy convention (`<tenant_name>-bridge<stg-suffix>.<this>`). |
+| `BRIDGE_DLM_SECRET_KEY` / `BRIDGE_SLM_KB_AUTH_PASSWORD` | unset | Shared (not per-tenant) secrets for the Mongo seed's `dlmObj` block — **functionally required, not optional**: the Job's `requireEnv()` throws if either is empty, failing the Job for every tenant, not skipping it. Set both before relying on this Job in any real deployment. |
 | `ARGOCD_UNREACHABLE_FAIL_AFTER` | `5` | Consecutive unreachable polls before a rollout fails fast — see "Argo CD failure monitoring". |
 | `CROSSPLANE_ENABLED` | `false` | Prod-only; gates whether `spoke_scaler.py` applies a real Crossplane claim vs. a log-only simulation. |
 | `KUBECONFIG_PATH` | unset (in-cluster) | kubeconfig with one context per spoke, used **read-only** against every spoke. |
@@ -633,7 +743,10 @@ contents are environment-specific credentials.
 8. **MSSQL admin login** (optional but needed for real DB seeding): set
    `MSSQL_ADMIN_HOST`/`..._PORT`/`..._USER`/`..._PASSWORD` and make sure the
    operator's ServiceAccount can create `batch/v1` Jobs in its own
-   namespace (`meta_builder_job_namespace`).
+   namespace (`meta_builder_job_namespace`). If you also want the bridge
+   meta-builder Job's schema/inserts/Mongo seed to actually succeed (not
+   just the DB/login creation), also set `BRIDGE_DLM_SECRET_KEY` and
+   `BRIDGE_SLM_KB_AUTH_PASSWORD` — see "Bridge meta-builder Job".
 9. **Crossplane** (prod only, optional): install Crossplane + an OKE
    provider/Composition on the hub, matching the shape
    `crossplane_service.build_oke_claim()` sends, then set
@@ -671,6 +784,15 @@ contents are environment-specific credentials.
   precondition is missing, it's skipped and logged, not treated as a
   failure (a missing DB integration shouldn't fail an otherwise-successful
   onboarding).
+- **Bridge meta-builder Job: logic verified manually, trigger path not yet
+  verified live.** `bridge_meta_builder_job.py` (schema + inserts + Mongo
+  seed, see its own section above) has had its actual SQL/Mongo logic
+  proven correct against real servers, but only via hand-constructed Jobs —
+  the real `RUNNING`-gated trigger from `provisioner.py` has not yet been
+  exercised end-to-end. Also note `BRIDGE_DLM_SECRET_KEY`/
+  `BRIDGE_SLM_KB_AUTH_PASSWORD` are unset by default and functionally
+  required (see "Configuration reference") — confirm both are set before
+  trusting this Job in a real deployment.
 - **Vault write is secrets-only for most services; MSSQL is the one
   exception with real account provisioning.** `vault_service.py` generates
   and writes credentials for every qraie-bridge service, but for most of
