@@ -298,6 +298,23 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
     written: dict[str, dict] = {}
     mongodb_uri = _tenant_mongodb_uri(tenant_name)
 
+    # This tenant's own qraie-redis-shared instance -- every service that
+    # talks to Redis (including qraie-redis-shared itself, via its
+    # `--requirepass $(REDIS_PASSWORD)` command) MUST agree on the exact
+    # same host/port/password, or the redis-server's own auth rejects every
+    # client. REDIS_HOST/PORT used to fall through to platform_defaults
+    # (a single literal meant to be the same for every tenant) and
+    # REDIS_PASSWORD was generated independently per service -- both wrong,
+    # since the chart deploys a separate qraie-redis-shared pod per tenant,
+    # not one shared platform-wide instance. Host mirrors the chart's own
+    # "tenant-app.slug" helper (helm-chart-bridge/templates/_helpers.tpl):
+    # Kubernetes Service names can't start with a digit, so a tenant_slug
+    # like "00001-verify02" gets a "t-" prefix there, and this must match.
+    redis_dns_slug = f"t-{tenant_slug}" if tenant_slug[:1].isdigit() else tenant_slug
+    tenant_redis_host = f"{redis_dns_slug}-qraie-redis-shared"
+    tenant_redis_port = "6379"
+    tenant_redis_password = _generate_secret()
+
     for service, keys in QRAIE_BRIDGE_SERVICE_KEYS.items():
         platform = platform_defaults.get(service, {})
         data = {}
@@ -306,6 +323,12 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 data[k] = tenant_domain
             elif k == "MONGODB_URI":
                 data[k] = mongodb_uri
+            elif k == "REDIS_HOST":
+                data[k] = tenant_redis_host
+            elif k == "REDIS_PORT":
+                data[k] = tenant_redis_port
+            elif k == "REDIS_PASSWORD":
+                data[k] = tenant_redis_password
             elif k in QRAIE_BRIDGE_TENANT_DERIVED_KEYS:
                 data[k] = tenant_slug
             elif k in QRAIE_BRIDGE_GENERATED_KEYS:
