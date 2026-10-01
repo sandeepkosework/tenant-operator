@@ -171,6 +171,12 @@ class Settings(BaseSettings):
     git_tenants_dir: str = "tenants"
     git_bridge_tenants_dir: str = "bridge-tenants"
     git_applicationsets_dir: str = "applicationsets"
+    # git_tenant_info_dir: tenant-info/{slug}.yaml -- a complete, secrets-free
+    # summary of each tenant (placement, subscription tier, status, etc.),
+    # written alongside (never read by) the Helm values.yaml Argo CD deploys
+    # from. Purely for humans/tooling that want the full record without a
+    # Postgres query -- see app/services/tenant_info.py.
+    git_tenant_info_dir: str = "tenant-info"
 
     # --- Argo CD ---
     argocd_server: str = "https://argocd.hub.internal"

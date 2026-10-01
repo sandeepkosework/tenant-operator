@@ -77,8 +77,11 @@ helm-charts/
     ├── service.yaml            ClusterIP Service, port 80 -> containerPort 8000
     ├── serviceaccount.yaml     ServiceAccount the Deployment runs as
     ├── configmap.yaml          non-secret config (envFrom) + a second ConfigMap for clusters.yaml (file mount)
-    ├── secret.yaml             secret-shaped config (envFrom) -- SKIPPED ENTIRELY when existingSecretName is set
-    ├── pvc.yaml                two independent PVCs: git-cache and (optional) sqlite db-data
+    ├── secret.yaml             secret-shaped config (envFrom), incl. auto-assembled DATABASE_URL -- SKIPPED ENTIRELY when existingSecretName is set
+    ├── pvc.yaml                two independent PVCs: git-cache and (optional) in-chart Postgres data
+    ├── postgres-secret.yaml    the in-chart Postgres' own password Secret (skipped when postgresql.auth.existingSecretName is set)
+    ├── postgres-deployment.yaml  the in-chart Postgres itself (strategy: Recreate, same reasoning as the operator's own Deployment)
+    ├── postgres-service.yaml   ClusterIP Service, port 5432, fronting the in-chart Postgres
     ├── rbac.yaml               ClusterRole (spoke read-only + namespace delete), Role (Jobs), Role (Crossplane, optional)
     └── NOTES.txt               post-install hints (has a stale `appType` field in its example -- see below)
 ```
@@ -212,14 +215,14 @@ chart's only job is deciding whether a given key ends up in the ConfigMap
 |---|---|
 | `image.repository` / `image.tag` | See "Versioning" — defaults are stale; the live deployment overrides both via the Argo CD `Application`'s `valuesObject`, not this file. |
 | `environment` | `stage` or `prod`. One release == one environment == one `ENVIRONMENT` ConfigMap value. |
-| `config` | Any non-secret `Settings` field, `UPPER_SNAKE` key → ConfigMap → `envFrom`. Real live example values observed on the hub: `DATABASE_URL=sqlite:////data/db/tenant_operator.db` (SQLite, not Postgres, for this deployment's own bookkeeping — see "Persistence"), `VAULT_ENABLED=true`, `GIT_REPO_URL=https://github.com/sandeepkosework/k8s-infra-setup-testing.git`, `GIT_BRIDGE_TENANTS_DIR=bridge-tenants` (set, but currently unused by any live code path — see root README), `KUBECONFIG_PATH=/secrets/kube/config`, `MSSQL_ADMIN_HOST=192.168.85.203`, `MSSQL_ADMIN_PORT=30143`. These are illustrative of what this specific deployment runs, not universal defaults — every deployment's real values depend on its own infra. |
-| `secret` / `existingSecretName` | Secret-shaped config (Git/Vault/Argo CD tokens, DB password if inline in `DATABASE_URL`, MSSQL admin password). **The live deployment uses `existingSecretName: tenant-operator-secrets`** — see the gotcha above; `secret:` inline values are ignored entirely in that mode (the template that would render them doesn't run). |
+| `config` | Any non-secret `Settings` field, `UPPER_SNAKE` key → ConfigMap → `envFrom`. Real live example values observed on the hub: `VAULT_ENABLED=true`, `GIT_REPO_URL=https://github.com/sandeepkosework/k8s-infra-setup-testing.git`, `GIT_BRIDGE_TENANTS_DIR=bridge-tenants` (set, but currently unused by any live code path — see root README), `KUBECONFIG_PATH=/secrets/kube/config`, `MSSQL_ADMIN_HOST=192.168.85.203`, `MSSQL_ADMIN_PORT=30143`. `DATABASE_URL` is no longer one of these — see `postgresql.*` below. These are illustrative of what this specific deployment runs, not universal defaults — every deployment's real values depend on its own infra. |
+| `postgresql.*` | The in-chart Postgres this operator's own bookkeeping DB runs on (see "Persistence") — `postgresql.enabled: true` (default) renders a single-replica Postgres Deployment + Service + PVC, and `DATABASE_URL` is assembled automatically from `postgresql.auth.*` and injected into this release's own Secret. Set `postgresql.enabled: false` and `DATABASE_URL` under `secret` yourself to point at a real external Postgres instead. **Only takes effect when this chart renders its own Secret** — see the `existingSecretName` row right below. |
+| `secret` / `existingSecretName` | Secret-shaped config (Git/Vault/Argo CD tokens, MSSQL admin password, and — when `postgresql.enabled` — the assembled `DATABASE_URL`). **The live deployment uses `existingSecretName: tenant-operator-secrets`** — see the gotcha above; in that mode `secret.yaml`'s template (including its `DATABASE_URL` auto-assembly) doesn't run at all, so switching the live deployment onto the in-chart Postgres means either dropping `existingSecretName` (let this chart manage the Secret) or adding `DATABASE_URL` to that existing Secret by hand, pointed at `<release>-tenant-operator-postgres:5432`. |
 | `vault.enabled` / `vault.role` | Vault Agent Injector sidecar for the operator's **own** config bootstrap (`secret/tenant-operator/config`, read by `app/vault_bootstrap.py` before `Settings` is even constructed). Entirely separate from the application's runtime Vault writes for tenant secrets (`vault_service.py`), which always go through `VAULT_ADDR`/`VAULT_TOKEN`/`VAULT_TOKEN_FILE` in `config`/`secret` regardless of this setting. |
 | `git.sshKey.existingSecretName` | SSH deploy key, if using `git@...` instead of an HTTPS PAT (`secret.GIT_HTTPS_TOKEN`/`config.GIT_REPO_URL` with an `https://` URL — the live deployment uses the HTTPS form). |
 | `kubeconfig.existingSecretName` | Only needed when the tenant workload cluster(s) aren't the cluster the operator itself runs on. Mounted at `/secrets/kube` — also set `config.KUBECONFIG_PATH` to the actual file path inside that Secret. |
 | `clustersConfig.inline` / `.existingConfigMapName` | Overrides the `clusters.yaml` baked into the image, so one image serves multiple environments/spoke registries without a rebuild. |
 | `persistence.*` | Backs `GIT_LOCAL_PATH` — the operator's local clone of the GitOps repo. `ReadWriteOnce`. |
-| `sqlitePersistence.*` | Backs `DATABASE_URL` when using `sqlite:////data/db/...` (the live deployment's actual setup) — not needed with a real external Postgres. |
 | `rbac.create` | Baseline cluster-scoped `ClusterRole` (see "RBAC" below). |
 | `rbac.crossplane.*` | Prod-only, off by default: namespaced `Role` for applying Crossplane OKE claims. |
 
@@ -333,13 +336,13 @@ Two independent PVCs, both `ReadWriteOnce` (`templates/pvc.yaml`):
   (`GIT_LOCAL_PATH`, mounted at `/data/tenant-config`). Needs to survive
   pod restarts for a warm cache; a fresh clone on every restart also works,
   just slower on the first request after a restart.
-- **`sqlitePersistence`** — the operator's own bookkeeping database, when
-  `DATABASE_URL` points at `sqlite:////data/db/...` rather than an external
-  Postgres. **This is what the live deployment actually uses** — its
-  `DATABASE_URL` is `sqlite:////data/db/tenant_operator.db`, and
-  `sqlitePersistence.mountPath` defaults to `/data/db` to match. If you
-  switch a deployment to a real external Postgres instead, set
-  `sqlitePersistence.enabled: false` to skip provisioning an unused PVC.
+- **`postgresql.persistence`** — the in-chart Postgres' own data directory
+  (`/var/lib/postgresql/data` in its own pod, not the operator's). This
+  chart no longer supports SQLite at all — the operator's bookkeeping
+  database is always Postgres, either the lightweight single-replica one
+  this chart renders itself (`postgresql.enabled: true`, the default) or a
+  real external instance (`postgresql.enabled: false` + `DATABASE_URL` set
+  under `secret` yourself).
 
 Both support `existingClaimName` to bring your own PVC instead of letting
 the chart create one.

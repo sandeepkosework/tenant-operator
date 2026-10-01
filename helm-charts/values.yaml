@@ -64,15 +64,41 @@ persistence:
   storageClassName: ""
   existingClaimName: ""
 
-# Backs DATABASE_URL when using the sqlite:////data/db/... option (set
-# DATABASE_URL in `config` accordingly) -- not needed if DATABASE_URL
-# points at a real external Postgres instead.
-sqlitePersistence:
+# Lightweight in-chart Postgres backing DATABASE_URL -- a single-replica
+# Deployment + PVC, consistent with this chart's existing single-operator-
+# replica assumption (see replicaCount's comment above). DATABASE_URL is
+# assembled automatically from the fields below and injected into this
+# release's own Secret (see secret.yaml) -- you don't need to set it
+# yourself unless you disable this and point at an external Postgres.
+postgresql:
   enabled: true
-  size: 256Mi
-  storageClassName: ""
-  existingClaimName: ""
-  mountPath: /data/db
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  auth:
+    username: tenant_operator
+    database: tenant_operator
+    # Leave blank to have the chart derive a stable password from the
+    # release name (same value every render, so upgrades don't churn it --
+    # not a substitute for a real secrets manager, just enough for this
+    # lightweight in-cluster instance). Set explicitly to control it
+    # yourself, or set existingSecretName below to bring your own Secret
+    # (must have a `password` key) instead of either option.
+    password: ""
+    existingSecretName: ""
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClassName: ""
+    existingClaimName: ""
+  service:
+    port: 5432
+  resources: {}
+
+# Set postgresql.enabled: false and DATABASE_URL in `secret` yourself to
+# point this operator at a real external Postgres instead of the in-chart
+# one above.
 
 rbac:
   # Baseline ClusterRole -- read-only spoke-fleet health checks, plus the

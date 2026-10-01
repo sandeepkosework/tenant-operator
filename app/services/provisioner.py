@@ -32,6 +32,7 @@ from app.services import (
     spoke_scaler,
     status_bus,
     tenant_cr,
+    tenant_info,
     vault_service,
 )
 
@@ -43,6 +44,21 @@ def _tenants_dir_for(tenant: Tenant) -> str:
     """Which git directory this tenant's manifest lives under -- see
     helm-chart-bridge-tenants' ApplicationSet generator."""
     return settings.git_tenants_dir
+
+
+def _commit_tenant_info(tenant: Tenant, cluster, message: str) -> None:
+    """Writes/refreshes {git_tenant_info_dir}/{slug}.yaml -- a complete,
+    secrets-free record of this tenant, separate from (and not read by)
+    Argo CD's own values.yaml. Best-effort: a failure here should never
+    fail provisioning/update/delete, since nothing downstream reads this
+    file back -- it exists purely for humans."""
+    try:
+        info_yaml = tenant_info.render_tenant_info_yaml(tenant, cluster)
+        git_service.commit_tenant_manifest(
+            tenant.slug, info_yaml, message=message, tenants_dir=settings.git_tenant_info_dir,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("tenant=%s failed to write tenant-info record (non-fatal)", tenant.tenant_name)
 
 
 def _render_values_yaml(tenant: Tenant, cluster) -> str:
@@ -230,8 +246,20 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             logger.info("[step] tenant=%s git commit created: %s", tenant.tenant_name, commit_sha)
             _set_status(db, tenant, TenantStatus.GIT_COMMITTED)
 
+            logger.info("[step] tenant=%s writing tenant-info record to GitOps repo", tenant.tenant_name)
+            _commit_tenant_info(
+                tenant, cluster, message=f"tenant-operator: create {tenant.tenant_name} ({tenant.environment})",
+            )
+
             logger.info("[step] tenant=%s waiting for Argo CD sync + Kubernetes readiness", tenant.tenant_name)
             _wait_for_argocd_and_k8s(db, tenant, cluster.context)
+
+            # Refresh the tenant-info record with the final status (RUNNING
+            # or FAILED) and timestamps now that provisioning has settled --
+            # the earlier write above only had GIT_COMMITTED to report.
+            _commit_tenant_info(
+                tenant, cluster, message=f"tenant-operator: {tenant.tenant_name} reached {tenant.status.value}",
+            )
 
             if tenant.status == TenantStatus.RUNNING:
                 # DB + workload are ready. Vault secrets were already written
@@ -320,6 +348,11 @@ def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int 
             logger.info("[step] tenant=%s waiting for Argo CD sync + Kubernetes readiness", tenant.tenant_name)
             _wait_for_argocd_and_k8s(db, tenant, cluster.context)
 
+            logger.info("[step] tenant=%s refreshing tenant-info record in GitOps repo", tenant.tenant_name)
+            _commit_tenant_info(
+                tenant, cluster, message=f"tenant-operator: update {tenant.tenant_name} -> version={tenant.version}",
+            )
+
             if tenant.status == TenantStatus.RUNNING:
                 logger.info("[step] tenant=%s update complete", tenant.tenant_name)
 
@@ -370,6 +403,13 @@ def delete_tenant(tenant_id: uuid.UUID) -> None:
                     _set_status(db, tenant, TenantStatus.DELETED)
                     # Tenant no longer counts toward this spoke -- refresh its CR.
                     spoke_cr.upsert_spoke_cluster_cr(cluster, db)
+                    # Unlike values.yaml (removed above so Argo CD prunes the
+                    # workload), the tenant-info record is kept -- refreshed
+                    # one last time to show status=DELETED/deletedAt, so the
+                    # tenant's history stays visible in the repo.
+                    _commit_tenant_info(
+                        tenant, cluster, message=f"tenant-operator: delete {tenant.tenant_name}",
+                    )
                     logger.info("[step] tenant=%s deletion complete", tenant.tenant_name)
                     return
                 time.sleep(settings.provisioning_poll_interval_seconds)

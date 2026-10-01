@@ -132,11 +132,14 @@ been removed as part of this repo's dead-code cleanup — see "The retired
 - **FastAPI** (`app/main.py`) for the REST API, with **python-socketio**
   mounted alongside it at `/socket.io` (same host/port, no separate
   process) for push-based status updates — see "Live status" below.
-- **SQLAlchemy 2.x**, engine URL fully driven by `DATABASE_URL` — works
-  against either SQLite (`sqlite:////data/db/tenant_operator.db`, what the
-  current hub deployment actually runs — see `helm-charts/README.md`) or
+- **SQLAlchemy 2.x**, engine URL fully driven by `DATABASE_URL` — always
   PostgreSQL (`postgresql+psycopg2://...`, the config default and what
-  `requirements.txt`'s `psycopg2-binary` is there for). `Base.metadata.create_all()`
+  `requirements.txt`'s `psycopg2-binary` is there for). The Helm chart ships
+  its own lightweight single-replica Postgres by default (`postgresql.enabled:
+  true`, see `helm-charts/README.md`'s "Persistence" section) so no external
+  database is required; point `DATABASE_URL` at a real external instance
+  instead if you need one. SQLite is no longer supported in the chart.
+  `Base.metadata.create_all()`
   runs on every startup (`app/main.py`'s `on_startup` hook) — fine for this
   scale of bookkeeping table; swap for real Alembic migrations if the schema
   starts changing under live data (`alembic` is already a pinned dependency,
@@ -629,7 +632,7 @@ Selected settings worth knowing about explicitly:
 | Setting | Default | Notes |
 |---|---|---|
 | `ENVIRONMENT` | `stage` | Which environment *this* deployment serves — drives spoke capacity thresholds. One deployment = one environment. |
-| `DATABASE_URL` | `postgresql+psycopg2://...` | Also works as `sqlite:////data/db/tenant_operator.db` — what the current hub deployment actually runs (see `helm-charts/README.md`). |
+| `DATABASE_URL` | `postgresql+psycopg2://...` | Points at the Helm chart's own lightweight in-chart Postgres by default (auto-assembled, see `helm-charts/README.md`'s "Persistence" section); set it yourself to use a real external Postgres instead. SQLite is no longer supported in the chart. |
 | `VAULT_ENABLED` | `false` | Gates every real Vault write in `vault_service.py`; `false` means log/echo only. |
 | `MONGO_ENV_CONFIG_ENABLED` | `false` | Gates the read-only MongoDB mirror in `mongo_service.py`. |
 | `MONGO_ENV_CONFIG_URI` | unset | Full Mongo connection string, also the base for each tenant's derived `MONGODB_URI` (see above). |
@@ -659,12 +662,13 @@ uvicorn app.main:app --reload
 ```
 
 With `VAULT_ENABLED=false`, `MONGO_ENV_CONFIG_ENABLED=false`,
-`CROSSPLANE_ENABLED=false` (all defaults) and `DATABASE_URL` pointed at a
-local SQLite file, the entire onboarding flow runs end-to-end with nothing
-external except a reachable git remote and (if you want the Argo CD wait
-loop to resolve) a reachable Argo CD/Kubernetes spoke. Every optional
-integration echoes/logs what it would have done instead of failing outright
-when disabled.
+`CROSSPLANE_ENABLED=false` (all defaults) and `DATABASE_URL` pointed at any
+reachable Postgres (a local `docker run -e POSTGRES_PASSWORD=... -p
+5432:5432 postgres:16-alpine` is the quickest option), the entire onboarding
+flow runs end-to-end with nothing external except a reachable git remote and
+(if you want the Argo CD wait loop to resolve) a reachable Argo CD/Kubernetes
+spoke. Every optional integration echoes/logs what it would have done
+instead of failing outright when disabled.
 
 `Base.metadata.create_all()` runs on startup for convenience. For anything
 beyond local dev, switch to Alembic migrations (already a pinned
@@ -738,8 +742,10 @@ contents are environment-specific credentials.
    to a spoke directly.
 6. **Git deploy key** (SSH) or PAT (HTTPS) with write access to the GitOps
    repo.
-7. **Database**: a Postgres database + user, or a persistent volume for a
-   SQLite file — either way, wired via `DATABASE_URL`.
+7. **Database**: Postgres only. The Helm chart provisions a lightweight
+   single-replica instance itself by default (`postgresql.enabled: true`) —
+   nothing to set up by hand unless you point `DATABASE_URL` at a real
+   external Postgres instead.
 8. **MSSQL admin login** (optional but needed for real DB seeding): set
    `MSSQL_ADMIN_HOST`/`..._PORT`/`..._USER`/`..._PASSWORD` and make sure the
    operator's ServiceAccount can create `batch/v1` Jobs in its own

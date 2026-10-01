@@ -15,21 +15,22 @@ spec:
     requests:
       storage: {{ .Values.persistence.size }}
 {{- end }}
-{{- if and .Values.sqlitePersistence.enabled (not .Values.sqlitePersistence.existingClaimName) }}
+{{- if and .Values.postgresql.enabled .Values.postgresql.persistence.enabled (not .Values.postgresql.persistence.existingClaimName) }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "tenant-operator.fullname" . }}-db
+  name: {{ include "tenant-operator.postgresFullname" . }}-data
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "tenant-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
 spec:
   accessModes: ["ReadWriteOnce"]
-{{- if .Values.sqlitePersistence.storageClassName }}
-  storageClassName: {{ .Values.sqlitePersistence.storageClassName }}
+{{- if .Values.postgresql.persistence.storageClassName }}
+  storageClassName: {{ .Values.postgresql.persistence.storageClassName }}
 {{- end }}
   resources:
     requests:
-      storage: {{ .Values.sqlitePersistence.size }}
+      storage: {{ .Values.postgresql.persistence.size }}
 {{- end }}

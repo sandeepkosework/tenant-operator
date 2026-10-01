@@ -1,0 +1,74 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tenant-operator.postgresFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenant-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  # Pinned at 1, Recreate strategy -- same reasoning as the operator's own
+  # Deployment (values.yaml's replicaCount comment): the data PVC below is
+  # ReadWriteOnce, so a surge pod during a rolling update would deadlock on
+  # volume attachment.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "tenant-operator.labels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        {{- include "tenant-operator.labels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgresql.auth.username | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgresql.auth.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tenant-operator.postgresSecretName" . }}
+                  key: password
+            # Subdirectory, not the mount root -- avoids Postgres' refusal
+            # to initdb into a non-empty directory when the PVC's root
+            # already has the filesystem's lost+found entry.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          {{- if .Values.postgresql.resources }}
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgresql.auth.username | quote }}, "-d", {{ .Values.postgresql.auth.database | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgresql.auth.username | quote }}, "-d", {{ .Values.postgresql.auth.database | quote }}]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: postgres-data
+          {{- if .Values.postgresql.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.postgresql.persistence.existingClaimName | default (printf "%s-data" (include "tenant-operator.postgresFullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- end }}
