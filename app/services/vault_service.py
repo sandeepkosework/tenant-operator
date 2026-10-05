@@ -122,7 +122,16 @@ QRAIE_BRIDGE_PLATFORM_DEFAULTS_PATH = "qraie-bridge/platform-defaults"
 # see charts/qraie-bridge/values.yaml's per-service `vault.injectKeys`/
 # comments for where each of these was derived from.
 QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
-    "common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT"],
+    # Renamed from "common" -- this is the per-tenant "service-common" layer
+    # (helm-chart-bridge/values.yaml's serviceCommonSecrets), shared by every
+    # service of THIS tenant, never other tenants. REDIS_HOST/REDIS_PORT used
+    # to live here too, but are now computed directly in the chart's own
+    # deployment.yaml template (redisSharedServices/redisOwnServices in
+    # values.yaml) instead of round-tripping through Vault -- they're fully
+    # deterministic from the tenant's own slug, so there was never a real
+    # secret there. REDIS_PASSWORD stays here: every shared-Redis client and
+    # qraie-redis-shared's own `--requirepass` must agree on the same value.
+    "service-common": ["REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT"],
     # These two have no custom `env:` block in the chart (raw redis/
     # redisgears images) -- but every enabled service still gets an
     # ExternalSecret (templates/externalsecret.yaml loops over ALL of
@@ -131,52 +140,64 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     # their ExternalSecret would fail ("Secret does not exist") forever.
     "qraie-redis": ["TENANT_ID"],
     "bridge-cp-conductor-redis": ["TENANT_ID"],
-    "acl-server": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    # REDIS_HOST/REDIS_PORT removed below for every service in
+    # values.yaml's redisSharedServices list -- the chart computes them
+    # directly now (see deployment.yaml). REDIS_PASSWORD comes from the
+    # service-common secret above via envFrom, not duplicated per service.
+    "acl-server": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     # +NEXT_PUBLIC_SOCKET_URL -- present in docker-compose.yml, missing here.
-    "admin-panel": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "NEXT_PUBLIC_VERSION", "NEXT_PUBLIC_SOCKET_URL", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    "bridge": ["TENANT_ID", "ACTIVE_COLOR", "GEMINI_MODEL", "GLOBALAPIBASEURL", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    "bridge-cp-conductor": ["TENANT_ID", "API_PORT", "GEMINI_MODEL", "NOTIF_ENG_BASE_URL", "REDIS_CONTAINER", "REDIS_DISPATCHER_PATH", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SR_BASE_PATH", "SR_NAME", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "WORKPLACE_DM_CLIENT_ID", "WORKPLACE_DM_PASSWORD", "WORKPLACE_DM_SOCKET_URL"],
+    "admin-panel": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "NEXT_PUBLIC_VERSION", "NEXT_PUBLIC_SOCKET_URL", "NODE_ENV", "PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "bridge": ["TENANT_ID", "ACTIVE_COLOR", "GEMINI_MODEL", "GLOBALAPIBASEURL", "NODE_ENV", "PORT", "START_PORT", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    # bridge-cp-conductor talks to its OWN dedicated Redis (bridge-cp-conductor-redis
+    # sibling, not the shared qraie-redis-shared instance) -- REDIS_HOST/PORT
+    # are template-computed (values.yaml's redisOwnServices), but it keeps its
+    # own REDIS_PASSWORD here since it's a different Redis instance/secret.
+    "bridge-cp-conductor": ["TENANT_ID", "API_PORT", "GEMINI_MODEL", "NOTIF_ENG_BASE_URL", "REDIS_CONTAINER", "REDIS_DISPATCHER_PATH", "REDIS_PASSWORD", "SR_BASE_PATH", "SR_NAME", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "WORKPLACE_DM_CLIENT_ID", "WORKPLACE_DM_PASSWORD", "WORKPLACE_DM_SOCKET_URL"],
     # REDIS_PASSWORD/ACTIVE_COLOR/START_PORT were missing here despite being
     # part of the compose's common-env-variables anchor this service also
     # inherits -- found by diffing against the real docker-compose.yml.
-    "controlops-server": ["TENANT_ID", "ACTIVE_COLOR", "API_PORT", "DB_HOST", "DB_NAME", "DB_PASSWORD", "DB_USER", "GLOBALAPIBASEURL", "MONGODB_URI", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "controlops-server": ["TENANT_ID", "ACTIVE_COLOR", "API_PORT", "DB_HOST", "DB_NAME", "DB_PASSWORD", "DB_USER", "GLOBALAPIBASEURL", "MONGODB_URI", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "enrollment-api": ["TENANT_ID", "IOT_BROKER_URL", "REDIS_URL", "SML_BASE_URL", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    "erep-server": ["TENANT_ID", "ACTIVE_COLOR", "BASE_URL", "DOCKER_ENABLED", "GLOBALAPIBASEURL", "LOG_LEVEL", "MONGODB_URI", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "erep-server": ["TENANT_ID", "ACTIVE_COLOR", "BASE_URL", "DOCKER_ENABLED", "GLOBALAPIBASEURL", "LOG_LEVEL", "MONGODB_URI", "NODE_ENV", "PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "iot-broker-admin": ["TENANT_ID", "BASE_URL", "FRONTEND_URL", "PUBLIC_URL", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "iot-broker-broker": ["TENANT_ID", "CONFIG_SERVICE_URL", "DATA_SERVICE_URL", "FRONTEND_URL", "LOG_LEVEL", "NODE_ENV", "PORT", "SOCKET_IO_PATH", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "WEB_PORTAL_URL"],
     "iot-broker-config": ["TENANT_ID", "MONGODB_URI", "NODE_ENV", "PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "iot-broker-data": ["TENANT_ID", "BROKER_SERVICE_URL", "IOT_VLM_BASE_URL", "LOCONAV_WEBHOOK_ALLOW_INSECURE", "LOCONAV_WEBHOOK_AUTO_CREATE_DEVICE", "LOCONAV_WEBHOOK_SECRET", "LOCONAV_WEBHOOK_SECRETS", "MONGODB_URI", "NODE_ENV", "PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "iot-broker-loconav-vision": ["TENANT_ID", "DATA_SERVICE_URL", "FRONTEND_URL", "NODE_ENV", "PORT", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "iot-broker-web": ["TENANT_ID", "BASE_URL", "FRONTEND_URL", "PUBLIC_URL", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PORT", "VITE_BASE_PATH", "VITE_DATA_SERVICE_URL", "VITE_SOCKET_IO_PATH", "VITE_SOCKET_URL", "VITE_WEB_PORTAL_URL"],
-    "mcp-client": ["TENANT_ID", "ACTIVE_COLOR", "CONF_URL", "GLOBALAPIBASEURL", "MCP_SERVER_URL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    "mcp-server": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "MCP_SERVER_PORT", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "TZ"],
+    "mcp-client": ["TENANT_ID", "ACTIVE_COLOR", "CONF_URL", "GLOBALAPIBASEURL", "MCP_SERVER_URL", "PORT", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "mcp-server": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "MCP_SERVER_PORT", "PORT", "START_PORT", "TZ"],
     # Expanded from a 7-key stub to the real set this service reads --
     # Jira-bot integration (BOT_EMAIL/TOKEN), management-routing config
     # (DevDirector/CRM*/ManagementMember*/MANAGMENT), its own SQL Server
     # login, and connection-pool tuning. See docker-compose.yml's
     # microservice-qraie_green block + the tenant-config reference doc.
-    "microservice-qraie": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "apiProtocol", "serverIPA", "BOT_EMAIL", "BOT_TOKEN", "syncInterval", "DevDirector", "CRM1", "CRM2", "ManagementMember1", "ManagementMember2", "DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_SCHEMA", "DB_PORT", "NODE_ENV", "MANAGMENT", "MAX_CONNECTIONS", "MIN_CONNECTIONS", "alertMemberId", "VIDEO_BASE_URL"],
-    "prism-backend": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIDEOS_DIR", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    "prism-scanner": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "VITE_API_URL"],
-    "prism-ui": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "VITE_API_URL"],
+    "microservice-qraie": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "START_PORT", "apiProtocol", "serverIPA", "BOT_EMAIL", "BOT_TOKEN", "syncInterval", "DevDirector", "CRM1", "CRM2", "ManagementMember1", "ManagementMember2", "DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_SCHEMA", "DB_PORT", "NODE_ENV", "MANAGMENT", "MAX_CONNECTIONS", "MIN_CONNECTIONS", "alertMemberId", "VIDEO_BASE_URL"],
+    "prism-backend": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "START_PORT", "VIDEOS_DIR", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "prism-scanner": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "VITE_API_URL"],
+    "prism-ui": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "VITE_API_URL"],
     # Expanded from an 11-key stub -- this is the "Workplace" app's own
     # JWT signing config (G_JWT_SECRETKEY/G_RT_SECRETKEY/G_JWT_EXPIRESIN),
     # its SQL Server login, and third-party integration config
     # (Perplexity). See docker-compose.yml's qraie-api-gateway_green block
     # + the tenant-config reference doc.
-    "qraie-api-gateway": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "apiProtocol", "serverIPA", "RESPONSE_TIMEOUT", "PerplexityURL", "PerplexityToken", "G_JWT_SECRETKEY", "G_RT_SECRETKEY", "G_JWT_EXPIRESIN", "DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_SCHEMA", "DB_PORT", "NODE_ENV", "MICROSERVICE_URL"],
+    "qraie-api-gateway": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "apiProtocol", "serverIPA", "RESPONSE_TIMEOUT", "PerplexityURL", "PerplexityToken", "G_JWT_SECRETKEY", "G_RT_SECRETKEY", "G_JWT_EXPIRESIN", "DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_SCHEMA", "DB_PORT", "NODE_ENV", "MICROSERVICE_URL"],
+    # The shared Redis instance itself -- still needs its own REDIS_PASSWORD
+    # (for its `--requirepass $(REDIS_PASSWORD)` command substitution), kept
+    # here rather than only in service-common so this entry stays
+    # self-contained even if service-common's layer were ever disabled.
     "qraie-redis-shared": ["TENANT_ID", "REDIS_PASSWORD"],
     # +NODE_ENV/NEXT_PUBLIC_SOCKET_URL/NEXT_PUBLIC_VERSION -- present on the
     # qraie_ui_green variant in docker-compose.yml, missing here.
-    "qraie-ui": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "NODE_ENV", "NEXT_PUBLIC_SOCKET_URL", "NEXT_PUBLIC_VERSION"],
+    "qraie-ui": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "NODE_ENV", "NEXT_PUBLIC_SOCKET_URL", "NEXT_PUBLIC_VERSION"],
     "radicale": ["TENANT_ID", "RADICALE_CONFIG", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PORT"],
-    "scheduler-agent": ["TENANT_ID", "ACTIVE_COLOR", "CONDUCTOR_API_KEY", "CONDUCTOR_BASE_URL", "CORS_ORIGINS", "GLOBALAPIBASEURL", "MEETING_API_KEY", "MEETING_API_URL", "MEETING_JOIN_BASE_URL", "PORT", "PRISM_BASE_URL", "PRISM_BRIDGE_ENABLED", "PRISM_POLL_INTERVAL_MS", "RADICALE_AGENT_PASS", "RADICALE_AGENT_USER", "RADICALE_BASE_URL", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SESSION_TTL_MINUTES", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    "tranops-backend": ["TENANT_ID", "ACTIVE_COLOR", "AGENTS_API_URL", "API_PORT", "ELEVENLABS_API_KEY", "ELEVENLABS_API_URL", "GLOBALAPIBASEURL", "JWT_EXPIRES_IN", "JWT_SECRET", "MCP_SERVER_URL", "MONGODB_URI", "POLLING_INTERVAL_MS", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SLM_API_URL", "SLM_PASSWORD", "SLM_USERNAME", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    "tranops-ui": ["TENANT_ID", "ACTIVE_COLOR", "BASE_URL", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "VITE_API_URL", "VITE_WS_URL"],
-    "voxflow": ["TENANT_ID", "ACTIVE_COLOR", "BASE_PATH", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "RIDE_API_AUTH_TOKEN", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    "wfm-api-gateway": ["TENANT_ID", "ACTIVE_COLOR", "ALLOWED_ORIGINS", "FABREQ_COMMAND_ENDPOINT_MAP", "GLOBALAPIBASEURL", "LOG_LEVEL", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SERVER_HOST", "SERVER_NAME", "SERVER_PORT", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    "wfm-microservice": ["TENANT_ID", "ACTIVE_COLOR", "CONFIG_API_URL", "GLOBALAPIBASEURL", "GLOBAL_CONN_POOL_CONFIG", "JWT_SECRETS_MAP", "MICROSERVICE_NAME", "NODE_ENV", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SERVER_HOST", "SERVER_PORT", "START_PORT", "TENANT_IDS", "TENANT_KEY", "TZ"],
-    "wfm-ui": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "NEXT_PUBLIC_SOCKET_URL", "NEXT_PUBLIC_VERSION", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SERVER_HOST", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "scheduler-agent": ["TENANT_ID", "ACTIVE_COLOR", "CONDUCTOR_API_KEY", "CONDUCTOR_BASE_URL", "CORS_ORIGINS", "GLOBALAPIBASEURL", "MEETING_API_KEY", "MEETING_API_URL", "MEETING_JOIN_BASE_URL", "PORT", "PRISM_BASE_URL", "PRISM_BRIDGE_ENABLED", "PRISM_POLL_INTERVAL_MS", "RADICALE_AGENT_PASS", "RADICALE_AGENT_USER", "RADICALE_BASE_URL", "SESSION_TTL_MINUTES", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "tranops-backend": ["TENANT_ID", "ACTIVE_COLOR", "AGENTS_API_URL", "API_PORT", "ELEVENLABS_API_KEY", "ELEVENLABS_API_URL", "GLOBALAPIBASEURL", "JWT_EXPIRES_IN", "JWT_SECRET", "MCP_SERVER_URL", "MONGODB_URI", "POLLING_INTERVAL_MS", "SLM_API_URL", "SLM_PASSWORD", "SLM_USERNAME", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "tranops-ui": ["TENANT_ID", "ACTIVE_COLOR", "BASE_URL", "GLOBALAPIBASEURL", "PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "VITE_API_URL", "VITE_WS_URL"],
+    "voxflow": ["TENANT_ID", "ACTIVE_COLOR", "BASE_PATH", "GLOBALAPIBASEURL", "PORT", "RIDE_API_AUTH_TOKEN", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "wfm-api-gateway": ["TENANT_ID", "ACTIVE_COLOR", "ALLOWED_ORIGINS", "FABREQ_COMMAND_ENDPOINT_MAP", "GLOBALAPIBASEURL", "LOG_LEVEL", "NODE_ENV", "PORT", "SERVER_HOST", "SERVER_NAME", "SERVER_PORT", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "wfm-microservice": ["TENANT_ID", "ACTIVE_COLOR", "CONFIG_API_URL", "GLOBALAPIBASEURL", "GLOBAL_CONN_POOL_CONFIG", "JWT_SECRETS_MAP", "MICROSERVICE_NAME", "NODE_ENV", "SERVER_HOST", "SERVER_PORT", "START_PORT", "TENANT_IDS", "TENANT_KEY", "TZ"],
+    "wfm-ui": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "NEXT_PUBLIC_SOCKET_URL", "NEXT_PUBLIC_VERSION", "NODE_ENV", "PORT", "SERVER_HOST", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
 }
 
 # Which keys, across ALL services above, get a fresh value generated per
@@ -301,18 +322,13 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
     # This tenant's own qraie-redis-shared instance -- every service that
     # talks to Redis (including qraie-redis-shared itself, via its
     # `--requirepass $(REDIS_PASSWORD)` command) MUST agree on the exact
-    # same host/port/password, or the redis-server's own auth rejects every
-    # client. REDIS_HOST/PORT used to fall through to platform_defaults
-    # (a single literal meant to be the same for every tenant) and
-    # REDIS_PASSWORD was generated independently per service -- both wrong,
-    # since the chart deploys a separate qraie-redis-shared pod per tenant,
-    # not one shared platform-wide instance. Host mirrors the chart's own
-    # "tenant-app.slug" helper (helm-chart-bridge/templates/_helpers.tpl):
-    # Kubernetes Service names can't start with a digit, so a tenant_slug
-    # like "00001-verify02" gets a "t-" prefix there, and this must match.
-    redis_dns_slug = f"t-{tenant_slug}" if tenant_slug[:1].isdigit() else tenant_slug
-    tenant_redis_host = f"{redis_dns_slug}-qraie-redis-shared"
-    tenant_redis_port = "6379"
+    # same password, or the redis-server's own auth rejects every client.
+    # REDIS_HOST/PORT are NOT generated here anymore -- they're fully
+    # deterministic from the tenant's own slug (same "tenant-app.slug" this
+    # Redis's own Service name uses), so helm-chart-bridge/templates/
+    # deployment.yaml computes them directly instead of round-tripping
+    # through Vault (see redisSharedServices/redisOwnServices in
+    # values.yaml). Only REDIS_PASSWORD still needs to be a real secret.
     tenant_redis_password = _generate_secret()
 
     for service, keys in QRAIE_BRIDGE_SERVICE_KEYS.items():
@@ -323,10 +339,6 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 data[k] = tenant_domain
             elif k == "MONGODB_URI":
                 data[k] = mongodb_uri
-            elif k == "REDIS_HOST":
-                data[k] = tenant_redis_host
-            elif k == "REDIS_PORT":
-                data[k] = tenant_redis_port
             elif k == "REDIS_PASSWORD":
                 data[k] = tenant_redis_password
             elif k in QRAIE_BRIDGE_TENANT_DERIVED_KEYS:

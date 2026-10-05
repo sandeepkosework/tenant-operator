@@ -54,15 +54,16 @@ def _redact(data: dict) -> dict:
 
 
 # service name -> which collection (service group) its document lands in.
-# "common" is vault_service's own tenant-wide common-config entry (see
-# QRAIE_BRIDGE_SERVICE_KEYS["common"]), not one of the ~32 chart services --
-# given its own collection rather than folded into any one app group.
-# Every other grouping mirrors the chart's own ingressPath prefixes where a
-# service has one (e.g. /workplace/, /controlops/, /galaxy/), or groups by
-# service-name family for internal services with no ingress path of their
-# own (redis sidecars, an app's paired *-microservice/*-server).
+# "service-common" is vault_service's own per-tenant common-config entry
+# (see QRAIE_BRIDGE_SERVICE_KEYS["service-common"]), not one of the ~32
+# chart services -- given its own collection rather than folded into any
+# one app group. Every other grouping mirrors the chart's own ingressPath
+# prefixes where a service has one (e.g. /workplace/, /controlops/,
+# /galaxy/), or groups by service-name family for internal services with no
+# ingress path of their own (redis sidecars, an app's paired
+# *-microservice/*-server).
 QRAIE_BRIDGE_SERVICE_GROUPS: dict[str, str] = {
-    "common": "common",
+    "service-common": "service-common",
 
     "bridge": "bridge",
     "qraie-redis-shared": "bridge",
