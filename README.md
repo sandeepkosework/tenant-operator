@@ -66,8 +66,12 @@ tenant-operator/
 │   ├── config.py                     all settings (pydantic-settings), env-var driven
 │   ├── vault_bootstrap.py            loads this operator's OWN config from Vault, pre-Settings
 │   ├── socketio_app.py               Socket.IO transport for tenant status push
+│   ├── auth.py                       admin login token + X-API-Key check (guards every API route)
+│   ├── static/ui.html                built-in web UI served at /ui (login, tenant table, progress bars, delete)
 │   ├── database.py                   SQLAlchemy engine/session (works against SQLite or Postgres)
 │   ├── api/
+│   │   ├── auth.py                   POST /api/v1/auth/login
+│   │   ├── ui.py                     GET /ui
 │   │   ├── tenant.py                 POST/GET/PUT/DELETE /api/v1/tenant + GET .../{id}/vault
 │   │   ├── cluster.py                GET /api/v1/cluster[/{name}] -- SpokeCluster CR view
 │   │   ├── vault.py                  PUT/GET /api/v1/vault/qraie-bridge-defaults -- shared per-service config
@@ -220,9 +224,108 @@ Key fields:
   (not meant to be precise — `SYNCING` alone can take anywhere from seconds
   to the full provisioning timeout).
 
+## Authentication
+
+Every API route and the Socket.IO endpoint require authentication. Only
+`/health` (probes), `POST /api/v1/auth/login`, and the `/ui` page itself
+(which holds no data) are open. Configure it in the `tenant-operator-secrets`
+Secret (see `deploy/secret.example.yaml`):
+
+| Setting | Purpose |
+|---|---|
+| `ADMIN_PASSWORD` | Password for the web UI / `POST /auth/login`. |
+| `ADMIN_USERNAME` | Login username (default `admin`). |
+| `API_KEY` | Optional static key for scripts/curl, sent as `X-API-Key`. Same access as the login token. |
+| `ADMIN_TOKEN_SECRET` / `ADMIN_TOKEN_TTL_SECONDS` | Token signing secret (defaults to `ADMIN_PASSWORD`) and lifetime (default 28800 = 8h). |
+
+### Getting and setting the credentials
+
+Neither value is issued by the operator — you choose them and store them in
+the `tenant-operator-secrets` Secret; the operator only compares what
+callers send against what is configured.
+
+1. **Generate the API key** (once):
+   ```bash
+   openssl rand -hex 32
+   ```
+2. **Store both values in the secret** (or put them in the manifest from
+   `deploy/secret.example.yaml` and `kubectl apply` it):
+   ```bash
+   kubectl -n tenant-operator patch secret tenant-operator-secrets \
+     -p '{"stringData":{"ADMIN_PASSWORD":"<password>","API_KEY":"<generated-key>"}}'
+   kubectl -n tenant-operator rollout restart deploy/tenant-operator
+   ```
+   The restart is required — the operator reads them from its environment
+   at startup. (They can alternatively be set in Vault at
+   `secret/tenant-operator/config` as `admin_password` / `api_key`; real
+   environment variables win over Vault.)
+3. **Hand the API key only to the callers that need it** (scripts, CI, the
+   portal) via *their* secret store. To read it back later:
+   ```bash
+   kubectl -n tenant-operator get secret tenant-operator-secrets \
+     -o jsonpath='{.data.API_KEY}' | base64 -d
+   ```
+
+**Which to use:** `ADMIN_PASSWORD` is for humans (web UI, interactive
+curl); `API_KEY` is for automation. Either alone is enough for its own use
+case — a key-only setup works for curl/scripts but gives no `/ui` login.
+
+**Rotation:** change the value in the secret, restart the operator, then
+update the callers. The old value stops working at restart. Rotating
+`ADMIN_PASSWORD` (or `ADMIN_TOKEN_SECRET`) also invalidates every
+outstanding login token.
+
+**Limitations:**
+- There is **one shared API key**, not per-caller keys, so one caller can't
+  be revoked without rotating it for all. Everyone with the key has full
+  access, including delete.
+- Login tokens are stateless and valid until they expire (8h default); there
+  is no server-side logout/revocation.
+- Credentials travel in headers — serve the operator over HTTPS (terminate
+  TLS at the ingress), otherwise they are sent in clear text.
+- `/docs` and `/openapi.json` are not protected (schema only, no data).
+- No login rate-limiting or lockout.
+
+**Fails closed:** if neither `ADMIN_PASSWORD` nor `API_KEY` is set, every
+protected route returns `503`. Missing/invalid credentials return `401`.
+
+Two ways to call the API:
+
+```bash
+# A) static API key (best for scripts)
+curl -H "X-API-Key: $API_KEY" http://<operator-host>/api/v1/tenant
+
+# B) login for a short-lived bearer token
+TOKEN=$(curl -s -X POST http://<operator-host>/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"<ADMIN_PASSWORD>"}' | jq -r .token)
+curl -H "Authorization: Bearer $TOKEN" http://<operator-host>/api/v1/tenant
+```
+
+### Web UI (`/ui`)
+
+Open `http://<operator-host>/ui`, sign in with `ADMIN_USERNAME` /
+`ADMIN_PASSWORD`. It lists tenants with status and a progress bar
+(refreshes every 3s; green = RUNNING, red = FAILED) and has a Delete button
+(asks you to type the tenant slug to confirm). Make sure your ingress routes
+`/ui` to the operator. ### API docs (`/docs`)
+
+Interactive API documentation is served at `/docs` (Swagger UI; `/doc`
+redirects there) and `/redoc` (read-only), with the raw schema at
+`/openapi.json`. It lists every endpoint with a summary, description,
+request/response schemas and error codes, grouped by tag, plus the
+authentication guide and status lifecycle. Click **Authorize** and either
+paste a bearer token or enter the `X-API-Key` to use *Try it out*. The docs
+pages themselves are open (schema only, no data); the endpoints they call
+are not. Route `/docs`, `/redoc`, `/openapi.json` and `/doc` through your
+ingress to reach them.
+
 ## API
 
+All routes below except `/health` require authentication (see above).
+
 ```
+POST   /api/v1/auth/login        -> { token } (open; body { username, password })
 POST   /api/v1/tenant            -> 202 Accepted, { tenantId, status: PENDING }
 GET    /api/v1/tenant/{id}       -> current tenant record incl. status + progress
 GET    /api/v1/tenant            -> list, filterable by ?environment=&status_filter=
@@ -245,7 +348,7 @@ today.
 ### Creating a tenant
 
 ```json
-POST /api/v1/tenant
+POST /api/v1/tenant   (needs `X-API-Key` or `Authorization: Bearer`, see "Authentication")
 {
   "tenantId": "acme",
   "displayName": "Acme Corporation",
@@ -307,7 +410,7 @@ For a live loading bar without polling, use Socket.IO
 ```js
 import { io } from "socket.io-client";
 
-const socket = io("http://localhost:8000");
+const socket = io("http://localhost:8000", { auth: { token } }); // or { apiKey }
 socket.emit("subscribe", { tenantId: id });
 socket.on("status", ({ status, progress, errorMessage }) => {
   updateLoadingBar(progress);
@@ -637,6 +740,7 @@ Selected settings worth knowing about explicitly:
 
 | Setting | Default | Notes |
 |---|---|---|
+| `ADMIN_PASSWORD` / `API_KEY` | unset | Auth — see "Authentication". At least one must be set or every API route returns 503. |
 | `ENVIRONMENT` | `stage` | Which environment *this* deployment serves — drives spoke capacity thresholds. One deployment = one environment. |
 | `DATABASE_URL` | `postgresql+psycopg2://...` | Points at the Helm chart's own lightweight in-chart Postgres by default (auto-assembled, see `helm-charts/README.md`'s "Persistence" section); set it yourself to use a real external Postgres instead. SQLite is no longer supported in the chart. |
 | `VAULT_ENABLED` | `false` | Gates every real Vault write in `vault_service.py`; `false` means log/echo only. |

@@ -31,6 +31,19 @@ class Settings(BaseSettings):
     # frontend origin(s) for a real deployment.
     cors_allow_origins: list[str] = ["*"]
 
+    # --- Admin login for the built-in web UI (/ui) and the whole API ---
+    # ADMIN_PASSWORD (keep it in the tenant-operator-secrets Secret) and/or
+    # API_KEY must be set: every route except /health, /auth/login and the /ui page
+    # needs the bearer token from POST /auth/login, and with no password set
+    # they all return 503 (fail closed).
+    admin_username: str = "admin"
+    admin_password: Optional[str] = None
+    admin_token_secret: Optional[str] = None   # defaults to admin_password
+    # Optional static key for scripts/curl: send `X-API-Key: <value>` instead
+    # of logging in. Grants the same access as the admin token.
+    api_key: Optional[str] = None
+    admin_token_ttl_seconds: int = 8 * 3600
+
     # --- Which environment THIS operator deployment serves ---
     # One operator deployment == one environment. Set via env var
     # `environment=prod` or `environment=stage` (case-insensitive).

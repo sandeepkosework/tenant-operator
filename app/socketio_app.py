@@ -23,6 +23,7 @@ import uuid
 
 import socketio
 
+from app.auth import api_key_valid, verify_token
 from app.config import get_settings
 from app.database import SessionLocal
 from app.models.tenant import Tenant
@@ -52,7 +53,12 @@ async def _relay_status(sid: str, tenant_id: str, q: "queue.Queue[dict]") -> Non
 
 
 @sio.event
-async def connect(sid, environ):
+async def connect(sid, environ, auth=None):
+    # Client: io(url, { auth: { token } }) or { auth: { apiKey } }. Returning False rejects the connection.
+    auth = auth or {}
+    if not (verify_token(auth.get("token", "")) or api_key_valid(auth.get("apiKey"))):
+        logger.warning("socket.io connection rejected (missing/invalid token) sid=%s", sid)
+        return False
     logger.info("socket.io client connected sid=%s", sid)
 
 
