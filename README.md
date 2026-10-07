@@ -827,3 +827,33 @@ contents are environment-specific credentials.
 - **Namespace-per-tenant assumes single-tenant-per-namespace charts**
   labelled `app.kubernetes.io/instance=<tenant.slug>` — adjust the label
   selector in `kubernetes_service.py` if a chart labels differently.
+
+## Pre-provisioning checks (`services/preflight.py`)
+
+A tenant's SQL Server database/login is named after the bare tenant name
+(`DB_NAME`/`DB_USER` = the `tenantId`, no sequence number) and its MongoDB
+database is `<tenantId>-bridge`. Tenant deletion removes the namespace but
+never drops those databases, so before anything is created for a new tenant
+the operator checks that none of these already exist, and fails the tenant at
+once with a message that says which one does:
+
+- SQL Server: a database or login named `<tenantId>`
+- MongoDB: the database `<tenantId>-bridge` already has collections
+- the spoke: a namespace `tenant-<tenantId>-<n>` (with its PVCs), or a
+  PersistentVolume still claimed from one
+
+Example `errorMessage`: `preflight failed, nothing was created: SQL database
+'hbss' already exists on 192.168.85.205; MongoDB database 'hbss-bridge'
+already exists with 17 collection(s)`. A check that cannot be completed is
+reported as `could not verify ...` instead of being skipped. The SQL check
+runs as a short read-only Job on the hub and reads its answer from the
+container termination message, so it needs only the existing Job
+create/get/list and Pod get/list permissions.
+
+Set `PREFLIGHT_ENABLED=false` to bypass it (for example when deliberately
+re-provisioning onto an existing database). To reuse a `tenantId` otherwise,
+drop its SQL database + login and its Mongo database first.
+
+The tenant's SQL login password (`DB_PASSWORD`) is generated from letters,
+digits and `_` only: symbols in it were mangled on the way through `sqlcmd -v`
+into `CREATE LOGIN`, leaving a login whose password did not match Vault.

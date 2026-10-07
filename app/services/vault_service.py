@@ -75,6 +75,28 @@ def _generate_secret(length: int = 24) -> str:
     return "".join(chars)
 
 
+def _generate_db_password(length: int = 24) -> str:
+    """Password for a tenant's SQL Server login. Letters, digits and "_"
+    only -- _generate_secret()'s symbols (! @ # % ^ & * - =) get mangled on
+    the way into the login: meta_builder_job.py passes the value through
+    sqlcmd -v and splices it into CREATE LOGIN ... WITH PASSWORD = '...',
+    and some symbol combinations end up creating the login with a different
+    password than the one stored in Vault, so the tenant's own Jobs and
+    services then fail with "Login failed for user". Still satisfies MSSQL's
+    complexity policy (upper + lower + digit + non-alphanumeric "_")."""
+    classes = [string.ascii_uppercase, string.ascii_lowercase, string.digits, "_"]
+    alphabet = string.ascii_letters + string.digits + "_"
+    guaranteed = [pysecrets.choice(c) for c in classes]
+    rest = [pysecrets.choice(alphabet) for _ in range(length - len(guaranteed))]
+    chars = guaranteed + rest
+    pysecrets.SystemRandom().shuffle(chars)
+    # Start with a letter so no tool ever has to treat it as a number or flag.
+    if not chars[0].isalpha():
+        i = next(i for i, c in enumerate(chars) if c.isalpha())
+        chars[0], chars[i] = chars[i], chars[0]
+    return "".join(chars)
+
+
 def _write(path: str, data: dict) -> None:
     client = _get_client()
     client.secrets.kv.v2.create_or_update_secret(
@@ -197,13 +219,21 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
 
 # Keys computed deterministically from tenant_slug, never sourced from
 # platform defaults -- these identify the tenant itself (TENANT_ID/
-# TENANT_KEY/TENANT_IDS) or its own database/login (DB_USER/DB_NAME), and
-# MUST be unique per tenant. Unlike QRAIE_BRIDGE_GENERATED_KEYS (a random
-# credential), a platform default here would mean every tenant shares the
-# same identity/DB_USER/DB_NAME -- e.g. meta_builder_job.py's seeding Job
-# would then operate on the SAME database/login for every tenant, silently
-# overwriting each other's data and (for DB_USER) each other's password.
-QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_KEY", "TENANT_IDS", "DB_USER", "DB_NAME", "DB_SCHEMA"}
+# TENANT_KEY/TENANT_IDS) and MUST be unique per tenant. Unlike
+# QRAIE_BRIDGE_GENERATED_KEYS (a random credential), a platform default
+# here would mean every tenant shares the same identity.
+QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_KEY", "TENANT_IDS"}
+
+# The tenant's own SQL Server database/login (DB_USER/DB_NAME/DB_SCHEMA) is
+# named after the bare tenant name (the tenantId from the create request,
+# e.g. "hbss"), NOT the sequence-suffixed slug ("hbss-15"). Like the keys
+# above these are never sourced from platform defaults -- a platform default
+# would make meta_builder_job.py's seeding Job operate on the SAME
+# database/login for every tenant. Because the name carries no sequence
+# number, two tenants created with the same tenantId share one database and
+# login; services/preflight.py therefore refuses to provision a tenant whose
+# database/login already exists (tenant deletion does not drop it).
+QRAIE_BRIDGE_SQL_NAME_KEYS = {"DB_USER", "DB_NAME", "DB_SCHEMA"}
 
 
 def read_qraie_bridge_platform_defaults() -> dict[str, dict]:
@@ -329,6 +359,10 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 data[k] = tenant_redis_port
             elif k == "REDIS_PASSWORD":
                 data[k] = tenant_redis_password
+            elif k == "DB_PASSWORD":
+                data[k] = _generate_db_password()
+            elif k in QRAIE_BRIDGE_SQL_NAME_KEYS:
+                data[k] = tenant_name
             elif k in QRAIE_BRIDGE_TENANT_DERIVED_KEYS:
                 data[k] = tenant_slug
             elif k in QRAIE_BRIDGE_GENERATED_KEYS:

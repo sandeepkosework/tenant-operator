@@ -200,6 +200,12 @@ class Settings(BaseSettings):
     cluster_max_tenants: int = 1000
 
     # --- Provisioning behavior ---
+    # Pre-provisioning check that a new tenant's SQL database/login, MongoDB
+    # database and spoke namespace/PVC/PV don't already exist (see
+    # services/preflight.py). Set PREFLIGHT_ENABLED=false to skip it, e.g.
+    # when deliberately re-provisioning onto an existing database.
+    preflight_enabled: bool = True
+    preflight_sql_timeout_seconds: int = 120
     provisioning_poll_interval_seconds: int = 5
     provisioning_timeout_seconds: int = 900          # 15 min ceiling before FAILED
     allowed_environments: list[str] = ["dev", "stage", "prod"]

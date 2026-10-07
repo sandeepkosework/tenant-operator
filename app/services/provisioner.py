@@ -28,6 +28,7 @@ from app.services import (
     meta_builder_job,
     mongo_service,
     notifications,
+    preflight,
     spoke_cr,
     spoke_scaler,
     status_bus,
@@ -195,6 +196,19 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
                 tenant.tenant_name, cluster.name, cluster.region, projected_count,
                 settings.spoke_capacity(tenant.environment),
             )
+
+            # Refuse early, with a precise reason, if this tenant's SQL
+            # database/login, MongoDB database, or namespace/PVC/PV already
+            # exist (see services/preflight.py) -- nothing has been created
+            # for the tenant yet at this point (no Tenant CR, Vault secrets
+            # or GitOps manifest), so there is nothing to clean up.
+            problems = preflight.check_tenant_resources(tenant, cluster.context)
+            if problems:
+                _set_status(
+                    db, tenant, TenantStatus.FAILED,
+                    error="preflight failed, nothing was created: " + "; ".join(problems),
+                )
+                return
 
             # Capacity check for the spoke we just placed this tenant on. Fires a
             # parallel/non-blocking new-spoke provisioning job in prod, or a
