@@ -6,6 +6,7 @@ import sql from "mssql";
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import bcrypt from "bcrypt";
+import crypto from "crypto";
 import {
     BridgeSchema,
     AuthSchema,
@@ -41,7 +42,12 @@ async function getTenantConn(tenantId) {
     }
 
     const dbName = `${tenantId}-bridge`;
-    const uri = `${process.env.QRAIEAI_MONGODB_URI}${dbName}?authSource=admin`;
+    // directConnection=true: the shared Mongo is a replica set that advertises
+    // its members by compose hostnames (mongo1/mongo2/mongo3) which don't
+    // resolve from a pod, so discovery would fail. Override with
+    // MONGO_URI_OPTIONS if the target Mongo needs different options.
+    const mongoOptions = process.env.MONGO_URI_OPTIONS || "authSource=admin&directConnection=true";
+    const uri = `${process.env.QRAIEAI_MONGODB_URI}${dbName}?${mongoOptions}`;
 
     tenantConn = mongoose.createConnection(uri, {
         maxPoolSize: 10,
@@ -195,6 +201,10 @@ async function bridgeMetaBuilderService(conn, tenantId, tenantName, domain, emai
             TENANT_EMAIL: email,
             DOMAIN_NAME: domain,
             STG_ENV: isStaging ? "stg" : "",
+            PHONE_SYSTEM_ENV: isStaging ? "STG" : "PROD",
+            // Optional third-party API token for the tenant's services. Not
+            // committed: supply it as the PERPLEXITY_TOKEN env var on the Job.
+            PERPLEXITY_TOKEN: process.env.PERPLEXITY_TOKEN || "",
 
             NEXT_PORT: BRIDGE_PORT,
             MICROSERVICE_PORT: MICROSERVICE_QRAIE_PORT,
@@ -258,7 +268,7 @@ async function bridgeMetaBuilderService(conn, tenantId, tenantName, domain, emai
 }
 
 async function ensureDefaultSequences(conn) {
-    const Sequence = conn.model("sequence", SequenceSchema);
+    const Sequence = conn.model("wfm_sequences", SequenceSchema);
 
     const defaultSeq = [
         { sequenceCode: "UR", sequenceName: "users", sequenceNumber: 500 },
@@ -276,7 +286,7 @@ async function ensureDefaultSequences(conn) {
 }
 
 async function getNext(conn, code) {
-    const Sequence = conn.model("sequences", SequenceSchema);
+    const Sequence = conn.model("wfm_sequences", SequenceSchema);
     const seq = await Sequence.findOneAndUpdate(
         { sequenceCode: code },
         { $inc: { sequenceNumber: 1 } },
@@ -286,21 +296,134 @@ async function getNext(conn, code) {
     return `${code}${seq.sequenceNumber}`;
 }
 
+async function seedAclData(conn, tenantId) {
+    const RelationMapSchema = new mongoose.Schema({
+        relation:     { type: String, required: true, unique: true },
+        capabilities: { type: [String], default: [] },
+        description:  { type: String, default: '' },
+        color:        { type: String, default: '#6B7280' },
+        priority:     { type: Number, default: 50 },
+        role:         { type: String, default: null },
+        propagates:   { type: Boolean, default: false },
+        isSystem:     { type: Boolean, default: false },
+        updatedBy:    { type: String, default: 'system' },
+    }, { collection: 'acl_relation_maps' });
 
+    const NamespaceSchema = new mongoose.Schema({
+        prefix:     { type: String, required: true, unique: true },
+        label:      { type: String, required: true },
+        description:{ type: String, default: '' },
+        color:      { type: String, default: '#6B7280' },
+        kind:       { type: String, enum: ['subject', 'resource', 'any'], default: 'resource' },
+        isBoundary: { type: Boolean, default: false },
+        isSystem:   { type: Boolean, default: false },
+    }, { collection: 'acl_namespaces' });
 
-async function tenantDatabaseInitializer(conn, tenantId, tenantName, password, email, domain, qraieBotPassword, isStaging) {
+    const TripleSchema = new mongoose.Schema({
+        subject:   { type: String, required: true },
+        relation:  { type: String, required: true },
+        object:    { type: String, required: true },
+        notes:     { type: String, default: '' },
+        createdBy: { type: String, default: 'system' },
+    }, { collection: 'acl_triples' });
+    TripleSchema.index({ subject: 1, relation: 1, object: 1 }, { unique: true });
+
+    const RelationMap = conn.model('acl_relation_maps', RelationMapSchema);
+    const Namespace   = conn.model('acl_namespaces',    NamespaceSchema);
+    const Triple      = conn.model('acl_triples',       TripleSchema);
+
+    await Promise.all([
+        RelationMap.deleteMany({}),
+        Namespace.deleteMany({}),
+        Triple.deleteMany({}),
+    ]);
+
+    await RelationMap.insertMany([
+        { relation: 'member_of', capabilities: [], description: 'Group membership � subject is a member of the object group',              color: '#34D399', priority: 0,  role: 'membership', propagates: false, isSystem: true,  updatedBy: 'system' },
+        { relation: 'contains',  capabilities: [], description: 'Resource hierarchy � object contains the subject resource',               color: '#F87171', priority: 0,  role: 'hierarchy',  propagates: true,  isSystem: true,  updatedBy: 'system' },
+        { relation: 'viewer',    capabilities: ['read'],                                       description: 'Read-only access to the resource',                            color: '#7A8099', priority: 80, role: null,         propagates: false, isSystem: false, updatedBy: 'system' },
+        { relation: 'executor',  capabilities: ['read', 'execute'],                            description: 'Can read and run/invoke the resource',                        color: '#A78BFA', priority: 60, role: null,         propagates: false, isSystem: false, updatedBy: 'system' },
+        { relation: 'editor',    capabilities: ['read', 'execute', 'edit', 'add_kb', 'create'],description: 'Can read, run, edit and add knowledge base documents',        color: '#2DD4BF', priority: 40, role: null,         propagates: false, isSystem: false, updatedBy: 'admin'  },
+        { relation: 'manager',   capabilities: ['read', 'create', 'edit', 'disable', 'execute'],description: 'Can manage eReps and ActionServer servers � no purge',       color: '#F0A500', priority: 30, role: null,         propagates: false, isSystem: false, updatedBy: 'admin'  },
+        { relation: 'owner',     capabilities: ['read', 'execute', 'edit', 'add_kb', 'manage_acl', 'create', 'disable', 'purge'], description: 'Full control including deletion and permission management', color: '#F0A500', priority: 10, role: null, propagates: false, isSystem: false, updatedBy: 'admin' },
+    ]);
+
+    await Namespace.insertMany([
+        { prefix: 'user:',         label: 'User',           description: 'Individual human user account',                                               color: '#2DD4BF', kind: 'subject',   isBoundary: false, isSystem: true  },
+        { prefix: 'group:',        label: 'Group',          description: 'Collection of users � grants apply to all members via member_of',             color: '#34D399', kind: 'subject',   isBoundary: false, isSystem: true  },
+        { prefix: 'agent:',        label: 'Agent',          description: 'AI agent � can be subject (orchestrator) or object (target) of a triple',     color: '#A78BFA', kind: 'any',       isBoundary: false, isSystem: true  },
+        { prefix: 'tool:',         label: 'Tool',           description: 'Callable tool or API an agent can invoke',                                    color: '#F0A500', kind: 'resource',  isBoundary: false, isSystem: true  },
+        { prefix: 'module:',       label: 'Module',         description: 'Top-level application module � acts as a resource container',                 color: '#F87171', kind: 'resource',  isBoundary: false, isSystem: false },
+        { prefix: 'feature:',      label: 'Feature',        description: 'A specific feature or capability within a module',                            color: '#60A5FA', kind: 'resource',  isBoundary: false, isSystem: false },
+        { prefix: 'actionserver:', label: 'ActionServer',   description: 'ActionServer server managed by Galaxy',                                       color: '#E879F9', kind: 'resource',  isBoundary: false, isSystem: false },
+        { prefix: 'erep:',         label: 'eRep',           description: 'AI representative � security boundary: tool access is managed independently', color: '#A78BFA', kind: 'any',       isBoundary: true,  isSystem: false },
+        { prefix: 'kb:',           label: 'Knowledge Base', description: 'Document store or knowledge base attached to an agent',                       color: '#E879F9', kind: 'resource',  isBoundary: false, isSystem: false },
+        { prefix: 'project:',      label: 'Project',        description: 'Resource container � grants on a project cascade to contained resources',     color: '#F87171', kind: 'resource',  isBoundary: false, isSystem: false },
+        { prefix: 'workspace:',    label: 'Workspace',      description: 'Multi-step agent workflow or pipeline',                                       color: '#044e0d', kind: 'resource',  isBoundary: false, isSystem: false },
+    ]);
+
+    const triples = [
+        // module:galaxy ? features
+        { subject: 'module:galaxy',       relation: 'contains', object: 'feature:galaxy.create-erep',         notes: '' },
+        { subject: 'module:galaxy',       relation: 'contains', object: 'feature:galaxy.update-erep',         notes: '' },
+        { subject: 'module:galaxy',       relation: 'contains', object: 'feature:galaxy.disable-erep',        notes: '' },
+        { subject: 'module:galaxy',       relation: 'contains', object: 'feature:galaxy.create-actionserver', notes: '' },
+        { subject: 'module:galaxy',       relation: 'contains', object: 'feature:galaxy.update-actionserver', notes: '' },
+        { subject: 'module:galaxy',       relation: 'contains', object: 'feature:galaxy.delete-actionserver', notes: '' },
+        // module:controlops ? features
+        { subject: 'module:controlops',   relation: 'contains', object: 'feature:controlops.create-workspace', notes: '' },
+        { subject: 'module:controlops',   relation: 'contains', object: 'feature:controlops.update-workspace', notes: '' },
+        { subject: 'module:controlops',   relation: 'contains', object: 'feature:controlops.run-workspace',    notes: '' },
+        { subject: 'module:controlops',   relation: 'contains', object: 'feature:controlops.delete-workspace', notes: '' },
+        // module:organization ? features
+        { subject: 'module:organization', relation: 'contains', object: 'feature:organization.create-employee',    notes: '' },
+        { subject: 'module:organization', relation: 'contains', object: 'feature:organization.update-employee',    notes: '' },
+        { subject: 'module:organization', relation: 'contains', object: 'feature:organization.create-department',  notes: '' },
+        { subject: 'module:organization', relation: 'contains', object: 'feature:organization.delete-department',  notes: '' },
+        { subject: 'module:organization', relation: 'contains', object: 'feature:organization.create-workorder',   notes: '' },
+        { subject: 'module:organization', relation: 'contains', object: 'feature:organization.update-workorder',   notes: '' },
+        { subject: 'module:organization', relation: 'contains', object: 'feature:organization.dispatch-workorder', notes: '' },
+        // Admin group owns all modules
+        { subject: 'group:admins', relation: 'owner', object: 'module:galaxy',        notes: 'Full access to Galaxy' },
+        { subject: 'group:admins', relation: 'owner', object: 'module:controlops',    notes: 'Full access to CtrlOps' },
+        { subject: 'group:admins', relation: 'owner', object: 'module:organization',  notes: 'Full access to Organization' },
+        { subject: 'group:admins', relation: 'owner', object: 'module:workplace',     notes: 'Full access to Workplace' },
+        // Role-based group grants
+        { subject: 'group:galaxy-managers',       relation: 'manager', object: 'module:galaxy',       notes: '' },
+        { subject: 'group:galaxy-viewers',        relation: 'viewer',  object: 'module:galaxy',       notes: '' },
+        { subject: 'group:controlops-editors',    relation: 'editor',  object: 'module:controlops',   notes: '' },
+        { subject: 'group:controlops-managers',   relation: 'manager', object: 'module:controlops',   notes: '' },
+        { subject: 'group:controlops-viewers',    relation: 'viewer',  object: 'module:controlops',   notes: '' },
+        { subject: 'group:organization-managers', relation: 'manager', object: 'module:organization', notes: '' },
+        { subject: 'group:organization-viewers',  relation: 'viewer',  object: 'module:organization', notes: '' },
+        // Tenant admin day-one access
+        { subject: `user:${tenantId}`, relation: 'member_of', object: 'group:admins', notes: 'Tenant admin bootstrapped on setup' },
+    ];
+
+    for (const t of triples) {
+        try {
+            await Triple.create({ ...t, createdBy: 'system' });
+        } catch (err) {
+            if (err.code !== 11000) console.warn('ACL triple skip:', err.message);
+        }
+    }
+
+    console.log(`? ACL seed complete for tenant ${tenantId}`);
+}
+
+async function tenantDatabaseInitializer(conn, tenantId, tenantName, password, email, domain, qraieBotPassword, isStaging, sqlConfig = {}) {
     const dbName = `${tenantId}-bridge`;
 
-    const AuthColl = conn.model("auth", AuthSchema);
+    const AuthColl = conn.model("wfm_auth", AuthSchema);
 
-    const Users = conn.model("users", UserSchema);
+    const Users = conn.model("wfm_users", UserSchema);
 
     const createdCollections = [];
 
     try {
         // ============ 1) CREATE SEQUENCES =============
         await ensureDefaultSequences(conn);
-        createdCollections.push("sequences");
+        createdCollections.push("wfm_sequences");
 
         // ============ 2) CREATE ADMIN USER =============
 
@@ -324,7 +447,7 @@ async function tenantDatabaseInitializer(conn, tenantId, tenantName, password, e
 
         await Users.updateOne({ userId }, update, { upsert: true });
 
-        createdCollections.push("users");
+        createdCollections.push("wfm_users");
 
         // ============ 3) AUTH CREATION =============
 
@@ -357,7 +480,7 @@ async function tenantDatabaseInitializer(conn, tenantId, tenantName, password, e
             { upsert: true }
         );
 
-        createdCollections.push("auth");
+        createdCollections.push("wfm_auth");
 
         // ============ 4) CREATE WFM LOOKUP + BASE COLLECTIONS =============
         await wfmLookupSeeder(conn, tenantId, userId);
@@ -381,7 +504,21 @@ async function tenantDatabaseInitializer(conn, tenantId, tenantName, password, e
 
 
         createdCollections.push("controlops_actors");
-        // ============ 8) RETURN SUMMARY =============
+        // ============ 8) SEED ACL DATA =============
+        await seedAclData(conn, tenantId);
+        createdCollections.push("acl_relation_maps", "acl_namespaces", "acl_triples");
+        // ============ 9) SEED IOT SECURITY CONFIG =============
+        await configSeeder(conn, tenantId);
+        createdCollections.push("iot_security");
+        // ============ 10) SEED CONTROLOPS DATA CONNECTION REGISTRY =============
+        await dataConnectionSeeder(conn, tenantId, sqlConfig);
+        createdCollections.push("controlops_database_registry");
+        // ============ 11) CREATE IOT EVENTS COLLECTION =============
+        // iot_events has a model but no default rows -- create it explicitly
+        // so the collection exists as soon as the tenant is onboarded.
+        await conn.model("iot_events", IoTEventSchema).createCollection();
+        createdCollections.push("iot_events");
+        // ============ 12) RETURN SUMMARY =============
         return {
             success: true,
             db: dbName,
@@ -437,7 +574,7 @@ async function wfmLookupSeeder(conn, tenantId, adminUserId) {
     const WfmActivityType = conn.model("wfm_activitytypes", WfmActivityTypeSchema);
     const Employee = conn.model("wfm_employees", EmployeeSchema);
 
-    // 2️⃣ Insert base lookups
+    // 2�⃣ Insert base lookups
     const activitytypes = [
         {
             "name": "Paid Absences",
@@ -531,7 +668,7 @@ async function wfmLookupSeeder(conn, tenantId, adminUserId) {
             { upsert: true }
         );
     }
-    // 3️⃣ Insert base paycode
+    // 3�⃣ Insert base paycode
     const paycodes = [
         {
             "publicId": "PC547",
@@ -1086,7 +1223,7 @@ async function wfmLookupSeeder(conn, tenantId, adminUserId) {
     // Insert all docs at once
     await WfmPayCode.insertMany(toInsert);
 
-    // 4️⃣ Department / Activity type base sample
+    // 4�⃣ Department / Activity type base sample
 
     const departments = [
         {
@@ -1095,7 +1232,7 @@ async function wfmLookupSeeder(conn, tenantId, adminUserId) {
         },
         {
             "listitemvalue": "FIN001",
-            "listitemtext": "Finance"
+            "listitemtext": "Finance & Accounting"
         },
         {
             "listitemvalue": "DEV001",
@@ -1122,24 +1259,8 @@ async function wfmLookupSeeder(conn, tenantId, adminUserId) {
             "listitemtext": "Ereps"
         },
         {
-            "listitemvalue": "D002",
-            "listitemtext": "Finance & Accounting"
-        },
-        {
-            "listitemvalue": "D001",
-            "listitemtext": "Finance & Accounting"
-        },
-        {
             "listitemvalue": "D015",
             "listitemtext": "Production / Manufacturing"
-        },
-        {
-            "listitemvalue": "D013",
-            "listitemtext": "Human Resources"
-        },
-        {
-            "listitemvalue": "OPS002",
-            "listitemtext": "Human Resources"
         }
     ]
 
@@ -1206,52 +1327,52 @@ async function iotLookupSeeder(conn, tenantId) {
     );
 
     const defaults = [
-    {
-        event_type: 'face_recognition',
-        emotion_code: null,
-        description: 'Face detected/recognized'
-    },
-    {
-        event_type: 'emotion_monitoring',
-        emotion_code: 'EV2.1',
-        description: 'Neutral'
-    },
-    {
-        event_type: 'emotion_monitoring',
-        emotion_code: 'EV2.2',
-        description: 'Happiness'
-    },
-    {
-        event_type: 'emotion_monitoring',
-        emotion_code: 'EV2.3',
-        description: 'Anger'
-    },
-    {
-        event_type: 'emotion_monitoring',
-        emotion_code: 'EV2.4',
-        description: 'Contempt'
-    },
-    {
-        event_type: 'emotion_monitoring',
-        emotion_code: 'EV2.5',
-        description: 'Disgust'
-    },
-    {
-        event_type: 'emotion_monitoring',
-        emotion_code: 'EV2.6',
-        description: 'Fear'
-    },
-    {
-        event_type: 'emotion_monitoring',
-        emotion_code: 'EV2.7',
-        description: 'Sadness'
-    },
-    {
-        event_type: 'emotion_monitoring',
-        emotion_code: 'EV2.8',
-        description: 'Surprise'
-    }
-];
+        {
+            event_type: 'face_recognition',
+            emotion_code: null,
+            description: 'Face detected/recognized'
+        },
+        {
+            event_type: 'emotion_monitoring',
+            emotion_code: 'EV2.1',
+            description: 'Neutral'
+        },
+        {
+            event_type: 'emotion_monitoring',
+            emotion_code: 'EV2.2',
+            description: 'Happiness'
+        },
+        {
+            event_type: 'emotion_monitoring',
+            emotion_code: 'EV2.3',
+            description: 'Anger'
+        },
+        {
+            event_type: 'emotion_monitoring',
+            emotion_code: 'EV2.4',
+            description: 'Contempt'
+        },
+        {
+            event_type: 'emotion_monitoring',
+            emotion_code: 'EV2.5',
+            description: 'Disgust'
+        },
+        {
+            event_type: 'emotion_monitoring',
+            emotion_code: 'EV2.6',
+            description: 'Fear'
+        },
+        {
+            event_type: 'emotion_monitoring',
+            emotion_code: 'EV2.7',
+            description: 'Sadness'
+        },
+        {
+            event_type: 'emotion_monitoring',
+            emotion_code: 'EV2.8',
+            description: 'Surprise'
+        }
+    ];
 
 
     for (const record of defaults) {
@@ -1303,6 +1424,208 @@ async function iotDeviceSeeder(conn, tenantId) {
 
     console.log(`✓ iot_devices seeded for tenant ${tenantId}`);
 }
+const ConfigSchema = new mongoose.Schema({
+    _id:    { type: String },
+    client: {
+        id:             { type: String },
+        secret:         { type: String },
+        registeredAt:   { type: Date },
+        lastTokenAt:    { type: Date }
+    },
+    jwt: {
+        accessSecret:   { type: String },
+        accessTtl:      { type: String },
+        refreshSecret:  { type: String },
+        refreshTtl:     { type: String }
+    },
+    admin: {
+        secret: { type: String }
+    },
+    loconav: {
+        userAuthentication: { type: String, default: "" }
+    },
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now }
+}, { collection: "iot_security" });
+
+const DataConnectionSchema = new mongoose.Schema({
+    name:           { type: String, required: true },
+    connectionInfo: {
+        type:        { type: String },
+        host:        { type: String },
+        port:        { type: Number },
+        database:    { type: String },
+        serviceName: { type: String, default: null },
+        sid:         { type: String, default: null }
+    },
+    credentials: {
+        username: { type: String },
+        password: { type: String }
+    },
+    businessObjects:  { type: [mongoose.Schema.Types.Mixed], default: [] },
+    conceptMapping:   { type: mongoose.Schema.Types.Mixed, default: {} },
+    metadata: {
+        tablesCount:   { type: Number, default: 0 },
+        objectsCount:  { type: Number, default: 0 },
+        lastAnalyzed:  { type: Date },
+        lastConnected: { type: Date }
+    },
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now }
+}, { collection: "controlops_database_registry" });
+
+async function configSeeder(conn, tenantId) {
+    const Config = conn.model("iot_security", ConfigSchema);
+
+    const doc = {
+        _id: "config",
+        client: {
+            id:           tenantId,
+            secret:       process.env.IOT_CLIENT_SECRET || crypto.randomBytes(30).toString("hex"),
+            registeredAt: new Date(),
+            lastTokenAt:  new Date()
+        },
+        jwt: {
+            accessSecret:  "",
+            accessTtl:     "90d",
+            refreshSecret: "",
+            refreshTtl:    "270d"
+        },
+        admin: {
+            secret: process.env.IOT_ADMIN_SECRET || crypto.randomBytes(18).toString("hex")
+        },
+        loconav: {
+            userAuthentication: ""
+        },
+        createdAt: new Date(),
+        updatedAt: new Date()
+    };
+
+    await Config.updateOne(
+        { _id: "config" },
+        { $setOnInsert: doc },
+        { upsert: true }
+    );
+
+    console.log(`? configs seeded for tenant ${tenantId}`);
+}
+
+async function dataConnectionSeeder(conn, tenantId, configData = {}) {
+    const DataConnection = conn.model("controlops_database_registry", DataConnectionSchema);
+
+    const doc = {
+        name: "Qraie Ticketing DB",
+        businessObjects: [
+            { name: "Ticket",     description: "A request or issue raised by a user within the system",       relatedTo: ["Reporter","Assignee","Comments","Attachments","Status","Priority"] },
+            { name: "Member",     description: "A user or employee involved in the system",                   relatedTo: ["Tickets","Comments","Attachments"] },
+            { name: "Project",    description: "A work initiative or assignment linked to a ticket",          relatedTo: ["Ticket","Meta Info"] },
+            { name: "Attachment", description: "A file attached to a ticket or comment",                     relatedTo: ["Ticket","Comment"] },
+            { name: "Comment",    description: "A message or note added to a ticket or comment",             relatedTo: ["Ticket","Attachments"] },
+            { name: "Issue Type", description: "A category or classification of a ticket",                   relatedTo: ["Ticket"] }
+        ],
+        conceptMapping: {
+            tables: [
+                { tableName: "ASK",                          concept: "Ticket",           description: "A request or issue raised by a user within the system" },
+                { tableName: "ASK_ATTACHMENT",               concept: "Attachment",       description: "A file attached to a ticket or comment" },
+                { tableName: "ASK_COMMENT_ATTACHMENT_STORE", concept: "Attachment",       description: "A file attached to a comment in a ticket" },
+                { tableName: "ASK_COMMENTS",                 concept: "Comment",          description: "A message or note added to a ticket or comment" },
+                { tableName: "ASK_HANDLER",                  concept: "Project Handler",  description: "Information about who handles or owns a ticket" },
+                { tableName: "ISSUE_TYPE_LOOKUP",            concept: "Issue Type",       description: "A category or classification of a ticket" }
+            ],
+            columns: [
+                { tableName: "ASK", columnName: "ask_id",            concept: "Ticket ID",            description: "Unique identifier for a ticket" },
+                { tableName: "ASK", columnName: "tenant_id",         concept: "Tenant ID",            description: "Identifier for the tenant or organization" },
+                { tableName: "ASK", columnName: "summary",           concept: "Summary",              description: "Brief description of the ticket" },
+                { tableName: "ASK", columnName: "reporter",          concept: "Reporter",             description: "Member who raised the ticket" },
+                { tableName: "ASK", columnName: "escalation_level",  concept: "Escalation Level",    description: "How high the priority of the ticket is" },
+                { tableName: "ASK", columnName: "module",            concept: "Module",               description: "The system module where the ticket originated" },
+                { tableName: "ASK", columnName: "description_detail",concept: "Detailed Description", description: "Full details of the ticket issue" },
+                { tableName: "ASK", columnName: "ETA",               concept: "Estimated Time of Arrival", description: "Expected time for resolution" },
+                { tableName: "ASK", columnName: "project_name",      concept: "Project Name",         description: "Name of the project associated with the ticket" },
+                { tableName: "ASK", columnName: "status",            concept: "Status",               description: "Current state of the ticket" },
+                { tableName: "ASK", columnName: "priority",          concept: "Priority",             description: "Urgency level of the ticket" },
+                { tableName: "ASK", columnName: "created_by",        concept: "Creator",              description: "Member who created the ticket" },
+                { tableName: "ASK", columnName: "created_at",        concept: "Creation Time",        description: "Timestamp when the ticket was created" },
+                { tableName: "ASK", columnName: "modified_by",       concept: "Modified By",          description: "Member who last updated the ticket" },
+                { tableName: "ASK", columnName: "modified_at",       concept: "Last Modified Time",   description: "Timestamp when the ticket was last updated" },
+                { tableName: "ASK", columnName: "issue_type_id",     concept: "Issue Type ID",        description: "Reference to the type of issue" },
+                { tableName: "ASK_ATTACHMENT", columnName: "attachment_id", concept: "Attachment ID", description: "Unique identifier for an attachment" },
+                { tableName: "ASK_ATTACHMENT", columnName: "ask_id",        concept: "Ticket ID",     description: "Reference to the ticket the attachment belongs to" },
+                { tableName: "ASK_ATTACHMENT", columnName: "tenant_id",     concept: "Tenant ID",     description: "Identifier for the tenant or organization" },
+                { tableName: "ASK_ATTACHMENT", columnName: "file_name",     concept: "File Name",     description: "Name of the attached file" },
+                { tableName: "ASK_ATTACHMENT", columnName: "file_path",     concept: "File Path",     description: "Path where the file is stored" },
+                { tableName: "ASK_ATTACHMENT", columnName: "file_type",     concept: "File Type",     description: "MIME type or format of the file" },
+                { tableName: "ASK_ATTACHMENT", columnName: "file_size",     concept: "File Size",     description: "Size of the attached file in bytes" },
+                { tableName: "ASK_ATTACHMENT", columnName: "file_hash",     concept: "File Hash",     description: "Unique hash value for file integrity" },
+                { tableName: "ASK_ATTACHMENT", columnName: "created_by",    concept: "Creator",       description: "Member who uploaded the attachment" },
+                { tableName: "ASK_ATTACHMENT", columnName: "created_at",    concept: "Upload Time",   description: "Timestamp when the attachment was uploaded" },
+                { tableName: "ASK_ATTACHMENT", columnName: "modified_by",   concept: "Modified By",   description: "Member who last updated the attachment" },
+                { tableName: "ASK_ATTACHMENT", columnName: "modified_at",   concept: "Last Modified Time", description: "Timestamp when the attachment was last updated" },
+                { tableName: "ASK_COMMENT_ATTACHMENT_STORE", columnName: "comment_attachment_id", concept: "Comment Attachment ID", description: "Unique identifier for an attachment in a comment" },
+                { tableName: "ASK_COMMENT_ATTACHMENT_STORE", columnName: "comment_id",  concept: "Comment ID",  description: "Reference to the comment the attachment belongs to" },
+                { tableName: "ASK_COMMENT_ATTACHMENT_STORE", columnName: "file_name",   concept: "File Name",   description: "Name of the attached file in a comment" },
+                { tableName: "ASK_COMMENT_ATTACHMENT_STORE", columnName: "file_path",   concept: "File Path",   description: "Path where the file is stored in a comment" },
+                { tableName: "ASK_COMMENT_ATTACHMENT_STORE", columnName: "file_type",   concept: "File Type",   description: "MIME type or format of the file in a comment" },
+                { tableName: "ASK_COMMENT_ATTACHMENT_STORE", columnName: "file_size",   concept: "File Size",   description: "Size of the attached file in bytes" },
+                { tableName: "ASK_COMMENT_ATTACHMENT_STORE", columnName: "file_hash",   concept: "File Hash",   description: "Unique hash value for file integrity in a comment" },
+                { tableName: "ASK_COMMENT_ATTACHMENT_STORE", columnName: "is_deleted",  concept: "Is Deleted",  description: "Flag indicating if the attachment is deleted" },
+                { tableName: "ASK_COMMENT_ATTACHMENT_STORE", columnName: "created_by",  concept: "Creator",     description: "Member who uploaded the attachment in a comment" },
+                { tableName: "ASK_COMMENT_ATTACHMENT_STORE", columnName: "created_at",  concept: "Upload Time", description: "Timestamp when the attachment was uploaded in a comment" },
+                { tableName: "ASK_COMMENTS", columnName: "comment_id",        concept: "Comment ID",        description: "Unique identifier for a comment" },
+                { tableName: "ASK_COMMENTS", columnName: "ask_id",            concept: "Ticket ID",         description: "Reference to the ticket the comment belongs to" },
+                { tableName: "ASK_COMMENTS", columnName: "tenant_id",         concept: "Tenant ID",         description: "Identifier for the tenant or organization" },
+                { tableName: "ASK_COMMENTS", columnName: "member_id",         concept: "Member",            description: "User who posted the comment" },
+                { tableName: "ASK_COMMENTS", columnName: "comment_text",      concept: "Comment Text",      description: "Text content of the comment" },
+                { tableName: "ASK_COMMENTS", columnName: "comment_type",      concept: "Comment Type",      description: "Type of comment" },
+                { tableName: "ASK_COMMENTS", columnName: "parent_comment_id", concept: "Parent Comment ID", description: "Reference to the comment that this comment replies to" },
+                { tableName: "ASK_COMMENTS", columnName: "is_deleted",        concept: "Is Deleted",        description: "Flag indicating if the comment is deleted" },
+                { tableName: "ASK_COMMENTS", columnName: "created_by",        concept: "Creator",           description: "Member who created the comment" },
+                { tableName: "ASK_COMMENTS", columnName: "created_at",        concept: "Creation Time",     description: "Timestamp when the comment was created" },
+                { tableName: "ASK_COMMENTS", columnName: "modified_by",       concept: "Modified By",       description: "Member who last updated the comment" },
+                { tableName: "ASK_COMMENTS", columnName: "modified_at",       concept: "Last Modified Time",description: "Timestamp when the comment was last updated" },
+                { tableName: "ASK_HANDLER", columnName: "ask_handler_id", concept: "Handler ID",    description: "Unique identifier for the handler" },
+                { tableName: "ASK_HANDLER", columnName: "tenant_id",      concept: "Tenant ID",     description: "Identifier for the tenant or organization" },
+                { tableName: "ASK_HANDLER", columnName: "ask_id",         concept: "Ticket ID",     description: "Reference to the ticket handled" },
+                { tableName: "ASK_HANDLER", columnName: "meta_info_id",   concept: "Meta Info ID",  description: "Reference to project metadata" },
+                { tableName: "ASK_HANDLER", columnName: "created_by",     concept: "Creator",       description: "Member who created the handler record" },
+                { tableName: "ASK_HANDLER", columnName: "created_at",     concept: "Creation Time", description: "Timestamp when the handler record was created" },
+                { tableName: "ASK_HANDLER", columnName: "modified_by",    concept: "Modified By",   description: "Member who last updated the handler record" },
+                { tableName: "ASK_HANDLER", columnName: "modified_at",    concept: "Last Modified Time", description: "Timestamp when the handler record was last updated" },
+                { tableName: "ASK_HANDLER", columnName: "ask_handler",    concept: "Handler",       description: "Member assigned to handle the ticket" },
+                { tableName: "ASK_HANDLER", columnName: "ask_owner",      concept: "Owner",         description: "Member assigned as owner of the ticket" }
+            ]
+        },
+        connectionInfo: {
+            type:        "sqlserver",
+            host:        configData.DB_HOST,
+            port:        Number(configData.DB_PORT),
+            database:    configData.DB_NAME || tenantId,
+            serviceName: null,
+            sid:         null
+        },
+        createdAt: new Date(),
+        credentials: {
+            username: configData.DB_USER,
+            password: configData.DB_PASSWORD
+        },
+        metadata: {
+            tablesCount:   5,
+            objectsCount:  6,
+            lastAnalyzed:  new Date(),
+            lastConnected: new Date()
+        },
+        updatedAt: new Date()
+    };
+
+    await DataConnection.updateOne(
+        { name: doc.name },
+        { $setOnInsert: doc },
+        { upsert: true }
+    );
+
+    console.log(`? data_connections seeded for tenant ${tenantId}`);
+}
+
 /* ===========================
    CONFIG
 =========================== */
@@ -1502,11 +1825,14 @@ async function runTenantDefaultInserts({
     const sqlTemplate = fs.readFileSync(sqlPath, "utf8");
 
     /* 🔁 Replace placeholders -- tenantid here is the bare tenant name
-       (business-data value, matches Mongo's tenantObj.tenantId convention),
-       NOT dbName (the slug), which is only used below for the SQL
-       identifier positions and the connection itself. */
+       (business-data value, matches Mongo's tenantObj.tenantId convention).
+       dbName (the SQL database/login name, which is the same bare tenant
+       name for new tenants) is only used below for the SQL identifier
+       positions and the connection itself. tenantid_upper is the upper-cased
+       tenant id the default-inserts script stores in its tenant_id columns. */
     const replacements = {
         tenantid: tenantId,
+        tenantid_upper: tenantId.toUpperCase(),
         tenant_name: tenantName,
         email: email,
         password: adminPasswordHash,
@@ -1665,9 +1991,11 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
         console.log("   SQL User :", DB_USER);
         console.log("   SQL DB   :", DB_NAME);
 
-        // DB_NAME (tenant.slug, e.g. "bridge-meta-test-16") is the real
-        // database/login meta_builder_job.py created -- NOT the bare
-        // tenantId used above for Mongo/domain purposes. The schema script
+        // DB_NAME is the real database/login meta_builder_job.py created --
+        // the bare tenant name (e.g. "hbss"), the same value as tenantId
+        // above for tenants created after the DB-name change (older tenants
+        // were created with the sequence-suffixed slug, e.g. "hbss-15",
+        // which is why this stays a separate value). The schema script
         // never stores tenantId as a data VALUE (only as identifiers), so
         // DB_NAME alone is correct for runTenantSchema. The inserts script
         // does both (identifiers AND business-data values like
@@ -1705,7 +2033,8 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
             EMAIL,
             DOMAIN,
             QraieCreds.qraieBot.password,
-            isStaging
+            isStaging,
+            configFile
         );
         console.log("✅ Mongo tenant DB initialized");
 

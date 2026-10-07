@@ -35,6 +35,14 @@ const WorkplaceSchema = new Schema({
   gatewayUrl: String,
   authTokenPassword: String,
   authTokenUsername: String,
+  MS_PORT: String,
+  MS_serverIPA: String,
+  PerplexityToken: String,
+  PerplexityURL: String,
+  NEXT_PUBLIC_VIDEO_API_BASE: String,
+  apiProtocol: String,
+  NEXT_PUBLIC_SOCKET_URL: String,
+  NEXT_PUBLIC_VERSION: String,
 }, { _id: false });
 
 const WfmDbConnSchema = new Schema(
@@ -95,7 +103,8 @@ const CtrlOpsSchema = new Schema({
   DB_USER: String,
   DB_PASSWORD: String,
   MONGODB_URI: String,
-  DB_NAME: String
+  DB_NAME: String,
+  phone_system_env: String,
 }, { _id: false });
 
 const DlmHrDlmSchema = new Schema({
@@ -162,18 +171,16 @@ const TokenSchema = new Schema({
 
 
 const AuthSchema = new Schema({
-  referenceId: { type: String, index: true },
   tenantId: { type: String, required: true, index: true },
   username: { type: String, required: true, unique: true },
   password: { type: String, required: true },
-  salt: { type: String },
   roles: { type: [RoleSchema], default: [] },
-  accessTokens: { type: [TokenSchema], default: [] },
-  refreshTokens: { type: [TokenSchema], default: [] },
+  accessTokens: { type: TokenSchema, default: {} },
+  refreshTokens: { type: TokenSchema, default: {} },
   createdOn: { type: Date, default: Date.now },
   updatedOn: { type: Date, default: Date.now }
 }, {
-  collection: 'auth'
+  collection: 'wfm_auth'
 });
 
 
@@ -196,7 +203,7 @@ const SequenceSchema = new Schema({
   sequenceName: { type: String, required: true },
   sequenceNumber: { type: Number, required: true }
 }, {
-  collection: 'sequences'
+  collection: 'wfm_sequences'
 });
 
 
@@ -227,7 +234,7 @@ const UserSchema = new Schema({
   loginCount: { type: LoginCountSchema, default: () => ({ allowed: 0, failed: 0 }) },
   phoneNumbers: { type: [PhoneNumberSchema], default: [] }
 }, {
-  collection: 'users'
+  collection: 'wfm_users'
 });
 
 
@@ -286,7 +293,8 @@ const WfmDepartmentSchema = new Schema(
     listitemvalue: {
       type: String,
       required: true,
-      trim: true
+      unique: true,
+      trim: true,
     },
     listitemtext: {
       type: String,
@@ -667,3 +675,5 @@ export {
   IoTEventSchema,
   IoTEventLookupSchema
 };
+
+
