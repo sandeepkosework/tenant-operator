@@ -287,9 +287,11 @@ is set once via `PUT /api/v1/vault/qraie-bridge-defaults/{service}` and
 copied into each new tenant's secrets at creation time. Tenant-specific
 values (database usernames/passwords, JWT secrets, Redis passwords, and
 identity fields derived from the tenant's own slug) are generated fresh per
-tenant instead. Secrets land at `secret/tenants/<tenant-slug>/<service>`
+tenant instead. Secrets land at `secret/k8s/<tenant-slug>/<service>`
 (one path per chart service, ~32 of them) plus
-`secret/tenants/<tenant-slug>/common` — consumed by the qraie-bridge
+`secret/k8s/<tenant-slug>/service-common` (prefix = `VAULT_TENANT_SECRET_PREFIX`,
+default `k8s`; set it to `k8s` in `config` — an older deployment may still have
+`tenants` there) — consumed by the qraie-bridge
 chart's own per-service `envFrom`, not Vault Agent injection for tenant
 workloads (Vault Agent injection in *this* chart is only for
 tenant-operator's own config bootstrap — see `vault.enabled` above).

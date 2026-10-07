@@ -53,7 +53,7 @@ list of tenants placed there and counts against capacity — see
   server, etc.). There is no second chart choice any more — see "The
   retired `workplace` chart" below.
 - It owns its own small bookkeeping database (`tenants` table — see
-  `app/models/tenant.py`), a Vault KV tree (`secret/tenants/<slug>/<service>`),
+  `app/models/tenant.py`), a Vault KV tree (`secret/k8s/<slug>/<service>`),
   and — optionally — a read-only-for-humans MongoDB mirror of that same
   Vault data, one database per tenant.
 
@@ -398,10 +398,16 @@ retrying for the full `PROVISIONING_TIMEOUT_SECONDS` (default 900s):
 ## qraie-bridge Vault integration
 
 `app/services/vault_service.py` writes one Vault KV v2 path per chart
-service: `secret/tenants/<tenant-slug>/<service>` (plus one extra
-tenant-wide `secret/tenants/<tenant-slug>/common` path for shared
-Redis/gateway config), consumed by the qraie-bridge chart's per-service
-`envFrom`. `QRAIE_BRIDGE_SERVICE_KEYS` (in code, not just ad-hoc `vault kv
+service: `secret/k8s/<tenant-slug>/<service>` (plus one extra
+tenant-wide `secret/k8s/<tenant-slug>/service-common` path for shared
+Redis/gateway config), consumed by the qraie-bridge chart's three-layer
+`envFrom` (org-wide `secret/k8s/tenant-common` — maintained by hand, never
+written by this operator — then `service-common`, then the service's own
+path; a later layer wins on a shared key). The prefix is `VAULT_TENANT_SECRET_PREFIX`
+(default `k8s`); it has to match the chart's `secret/k8s/<tenant.id>/...` paths. Tenants
+created before this layout live under the old `secret/tenants/<slug>/...`
+(shared path named `common`) and must be copied across with
+`scripts/migrate-vault-tenant-secrets.sh` before the chart is switched. `QRAIE_BRIDGE_SERVICE_KEYS` (in code, not just ad-hoc `vault kv
 put` commands) lists, per service, exactly which env keys its Vault path
 holds — currently ~32 services' worth, each expanded and cross-checked
 against the original docker-compose stack this chart was converted from.
@@ -455,7 +461,7 @@ secrets are written (`write_initial_qraie_bridge_tenant_secrets`):
    ```
 
    This only affects tenants provisioned **after** the call — an existing
-   tenant's `secret/tenants/<slug>/<service>` was written once at its own
+   tenant's `secret/k8s/<slug>/<service>` was written once at its own
    creation and is not kept in sync with later platform-default changes.
 
 Inspect what's currently stored for one tenant via

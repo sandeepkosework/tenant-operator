@@ -20,7 +20,7 @@ def put_qraie_bridge_platform_defaults(service: str, config: dict):
     """Overwrites the shared config for one qraie-bridge service, e.g.
     PUT .../tranops-backend {"SLM_API_URL": "...", "SLM_PASSWORD": "..."}.
     Only affects tenants provisioned AFTER this call -- existing tenants'
-    secret/tenants/<slug>/<service> paths are written once at creation, not
+    secret/k8s/<slug>/<service> paths are written once at creation, not
     kept in sync with this."""
     try:
         vault_service.write_qraie_bridge_platform_defaults(service, config)

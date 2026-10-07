@@ -108,7 +108,11 @@ class Settings(BaseSettings):
     vault_token_file: Optional[str] = None          # e.g. written by a Vault Agent sidecar
     vault_kv_mount: str = "secret"
     vault_config_path: str = "tenant-operator/config"   # where THIS operator's own config lives, if any
-    vault_tenant_secret_prefix: str = "tenants"          # secret/tenants/{tenantId}/<service>
+    # Where each tenant's secrets live: secret/{prefix}/{slug}/<service> plus
+    # secret/{prefix}/{slug}/service-common. helm-chart-bridge's three-layer
+    # secrets read secret/k8s/<tenant.id>/..., so this must be "k8s" for the
+    # chart and operator to agree (it was "tenants" for the older chart).
+    vault_tenant_secret_prefix: str = "k8s"
 
     # --- MongoDB env-config mirror (qraie-bridge only) ---
     # This is mongo_service.py writing every qraie-bridge tenant's actual resolved

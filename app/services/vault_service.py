@@ -1,7 +1,7 @@
 """
 Runtime Vault integration for this tenant's secrets -- see the
 "qraie-bridge tenant secrets" section below for the schema
-(secret/tenants/{tenant_slug}/<service>) that bridge-meta-builder (the
+(secret/k8s/{tenant_slug}/<service>) that bridge-meta-builder (the
 seeding Job) and each tenant's own workload read via Vault Agent/VSO.
 
 Only writes/reads for real when settings.vault_enabled is True; otherwise
@@ -124,7 +124,7 @@ def _redact(data: dict) -> dict:
 # --- qraie-bridge tenant secrets -------------------------------------------
 #
 # The "qraie-bridge" chart is a ~30-service conversion with its own, wide
-# Vault schema -- one path per service (secret/tenants/<slug>/<service>, see
+# Vault schema -- one path per service (secret/k8s/<slug>/<service>, see
 # charts/qraie-bridge/templates/vaultstaticsecret.yaml and each service's
 # `vault.injectKeys`/`vault.mode` in that chart's values.yaml).
 #
@@ -144,7 +144,12 @@ QRAIE_BRIDGE_PLATFORM_DEFAULTS_PATH = "qraie-bridge/platform-defaults"
 # see charts/qraie-bridge/values.yaml's per-service `vault.injectKeys`/
 # comments for where each of these was derived from.
 QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
-    "common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT"],
+    # Layer 2 of helm-chart-bridge's three-layer secrets (servicecommonSecrets):
+    # shared by every service of THIS tenant, read from
+    # secret/k8s/<slug>/service-common. Was named "common" before that chart
+    # change; the platform-defaults entry of the old name is still honoured
+    # (see read_qraie_bridge_platform_defaults).
+    "service-common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT"],
     # These two have no custom `env:` block in the chart (raw redis/
     # redisgears images) -- but every enabled service still gets an
     # ExternalSecret (templates/externalsecret.yaml loops over ALL of
@@ -248,6 +253,8 @@ def read_qraie_bridge_platform_defaults() -> dict[str, dict]:
         data = None
         if settings.vault_enabled:
             data = _read(f"{QRAIE_BRIDGE_PLATFORM_DEFAULTS_PATH}/{service}")
+            if data is None and service == "service-common":
+                data = _read(f"{QRAIE_BRIDGE_PLATFORM_DEFAULTS_PATH}/common")  # pre-rename name
         result[service] = data if data is not None else {k: "" for k in keys}
     return result
 
@@ -257,6 +264,8 @@ def write_qraie_bridge_platform_defaults(service: str, data: dict) -> None:
     shared (non-tenant-specific) config for one service -- e.g. the real
     SLM_API_URL/SLM_PASSWORD for tranops-backend, set once per environment,
     not per tenant."""
+    if service == "common":  # name used before the three-layer secrets change
+        service = "service-common"
     if service not in QRAIE_BRIDGE_SERVICE_KEYS:
         raise VaultServiceError(f"unknown qraie-bridge service: {service}")
     logger.info(
@@ -297,7 +306,7 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
     """Call once, right before the GitOps handoff -- same timing/reasoning
     as write_initial_tenant_secrets() above (the tenant's Vault Agent/VSO
     reads block pod startup until these paths exist). Writes
-    secret/tenants/{tenant_slug}/<service> for every qraie-bridge service,
+    secret/k8s/{tenant_slug}/<service> for every qraie-bridge service,
     merging this environment's shared platform defaults with freshly
     generated per-tenant credentials for the keys in
     QRAIE_BRIDGE_GENERATED_KEYS.
@@ -383,7 +392,7 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
 
 
 def read_qraie_bridge_tenant_secret(tenant_slug: str, service: str) -> dict | None:
-    """Reads back one service's already-written secret/tenants/{slug}/{service}
+    """Reads back one service's already-written secret/k8s/{slug}/{service}
     -- used by meta_builder_job.py to pull the tenant's own generated DB_*
     credentials (written by write_initial_qraie_bridge_tenant_secrets()
     before the GitOps handoff) into the seeding Job's env, without needing
