@@ -22,7 +22,7 @@ Write per-tenant secrets to Vault (+ mirror to MongoDB) → render values.yaml �
 Poll Argo CD + Kubernetes for health                       ApplicationSet detects the file,
         │                                                   creates/syncs the Application
         ▼                                                   automatically
-Tenant RUNNING → trigger meta-builder Job (real MSSQL DB/login seeding, when configured)
+Seed databases first (does not depend on pod health): meta-builder Job (real MSSQL DB/login, when configured)
         │
         ▼
 meta-builder Job succeeds → trigger bridge-meta-builder Job (real schema +
@@ -213,7 +213,7 @@ Key fields:
 - `status` — a `TenantStatus` enum driving the whole workflow:
 
   ```
-  PENDING -> VALIDATING -> GIT_COMMITTED -> SYNCING -> RUNNING
+  PENDING -> VALIDATING -> GIT_COMMITTED -> (DB seeding) -> SYNCING -> RUNNING
   any step -> FAILED (error_message set)
   RUNNING -> DELETING -> DELETED
   RUNNING -> UPDATING -> SYNCING -> RUNNING
@@ -457,15 +457,22 @@ task queue is called out below). For a fresh `POST /api/v1/tenant`:
    MongoDB right after (`mongo_service.write_tenant_env_config`).
 7. **Render + commit `values.yaml`** (`helm_values.py` + `git_service.py`)
    → **GIT_COMMITTED**.
-8. **SYNCING** — poll Argo CD + Kubernetes until healthy or timeout (see
-   "Argo CD failure monitoring" below) → **RUNNING** or **FAILED**.
-9. **Meta-builder Job** — only on reaching `RUNNING`: submits the real
-   MSSQL DB/login-seeding Job (see below), then **blocks** on it via
-   `meta_builder_job.wait_for_job()` before triggering the second,
-   bridge-meta-builder Job (schema + inserts + Mongo seed — see "Bridge
-   meta-builder Job" below). The second Job connects to MSSQL *as* the
-   tenant's own freshly-created login, which only exists once the first
-   Job has actually finished, not just been submitted — hence the block.
+8. **Meta-builder Jobs** — right after the GitOps commit and **before** the
+   pod-health wait: submits the real MSSQL DB/login-seeding Job (see
+   below), then **blocks** on it via `meta_builder_job.wait_for_job()`
+   before triggering the second, bridge-meta-builder Job (schema +
+   inserts + Mongo seed — see "Bridge meta-builder Job" below). The second
+   Job connects to MSSQL *as* the tenant's own freshly-created login, which
+   only exists once the first Job has actually finished — hence the block.
+   This runs before the wait because both Jobs need only the Vault secrets
+   and the SQL/Mongo servers, while services that connect to SQL Server
+   cannot become Ready until the login exists: seeding after `RUNNING`
+   deadlocks such a tenant. A seeding failure is logged and skips the
+   dependent Job; it does not fail the tenant by itself.
+9. **SYNCING** — poll Argo CD + Kubernetes until healthy or timeout (see
+   "Argo CD failure monitoring" below) → **RUNNING** or **FAILED**. A tenant
+   that ends `FAILED` still has its databases (the preflight check refuses
+   a reused name until they are dropped).
 
 `PUT /api/v1/tenant/{id}` (only accepted from `RUNNING`/`FAILED`) re-renders
 and re-commits `values.yaml` with the updated version/users/db size/service
