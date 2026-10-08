@@ -370,6 +370,10 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 data[k] = tenant_redis_password
             elif k == "DB_PASSWORD":
                 data[k] = _generate_db_password()
+            elif k == "DB_HOST" and settings.mssql_admin_host:
+                data[k] = settings.mssql_admin_host
+            elif k == "DB_PORT" and settings.mssql_admin_host:
+                data[k] = str(settings.mssql_admin_port)
             elif k in QRAIE_BRIDGE_SQL_NAME_KEYS:
                 data[k] = tenant_name
             elif k in QRAIE_BRIDGE_TENANT_DERIVED_KEYS:
