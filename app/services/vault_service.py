@@ -353,6 +353,9 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
     tenant_redis_host = f"{redis_dns_slug}-qraie-redis-shared"
     tenant_redis_port = "6379"
     tenant_redis_password = _generate_secret()
+    # One SQL login per tenant (created by the seeding Job from this value), so every
+    # service that connects to SQL Server must get the SAME password, not its own.
+    tenant_db_password = _generate_db_password()
 
     for service, keys in QRAIE_BRIDGE_SERVICE_KEYS.items():
         platform = platform_defaults.get(service, {})
@@ -369,7 +372,7 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
             elif k == "REDIS_PASSWORD":
                 data[k] = tenant_redis_password
             elif k == "DB_PASSWORD":
-                data[k] = _generate_db_password()
+                data[k] = tenant_db_password
             elif k == "DB_HOST" and settings.mssql_admin_host:
                 data[k] = settings.mssql_admin_host
             elif k == "DB_PORT" and settings.mssql_admin_host:
