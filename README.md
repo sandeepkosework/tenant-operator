@@ -525,6 +525,15 @@ against the original docker-compose stack this chart was converted from.
 service** — it's too large and too likely to drift to usefully duplicate
 here; below is the mechanism, not the full schema.
 
+**`TENANT_ID` is the bare tenant name, not the slug.** Every service's Vault
+secret gets `TENANT_ID=<tenant_name>` (e.g. `hbss-010`), matching what the seed
+Job uses for the Mongo database (`<tenant_name>-bridge`) and `tenantObj.tenantId`,
+and what infra-runner used. (It was the slug, `hbss-010-45`, which made the apps
+use a second, unseeded database, `hbss-010-45-bridge`.) `TENANT_KEY` and
+`TENANT_IDS`, which only `wfm-microservice` carries, are still the slug. Only
+newly created tenants are affected; an existing tenant's Vault secrets keep the
+slug until changed by hand.
+
 **`PerplexityToken` comes from `secret/k8s/tenant-common`.** Put
 `PerplexityToken` (the key name is the pod env var name, so keep it exact) in
 that hand-maintained path: the tenant pods receive it from there, and the
