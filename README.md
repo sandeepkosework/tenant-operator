@@ -525,6 +525,20 @@ against the original docker-compose stack this chart was converted from.
 service** — it's too large and too likely to drift to usefully duplicate
 here; below is the mechanism, not the full schema.
 
+**`PerplexityToken` comes from `secret/k8s/tenant-common`.** Put
+`PerplexityToken` (the key name is the pod env var name, so keep it exact) in
+that hand-maintained path: the tenant pods receive it from there, and the
+bridge meta-builder Job copies the same value into the tenant's
+`bridgeMetaInfo.workplace.PerplexityToken` in Mongo (passed as the
+`PERPLEXITY_TOKEN` env var; no image rebuild needed). The operator's Vault
+policy therefore needs **read** on `secret/data/k8s/tenant-common`. If the path,
+the key, or read access is missing, tenant creation still succeeds with an
+empty token and an `ERROR` is logged naming the exact path/key, e.g.
+`[vault] key 'PerplexityToken' is missing in secret/k8s/tenant-common`
+(with `VAULT_ENABLED=false` it is only a warning). The Mongo copy is a
+snapshot taken at creation; rotating the token later updates the pods (within
+the 1h refresh) but not existing tenants' Mongo documents.
+
 Every key falls into exactly one of three buckets when a new tenant's
 secrets are written (`write_initial_qraie_bridge_tenant_secrets`):
 
