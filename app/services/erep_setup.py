@@ -4,7 +4,7 @@ API once the tenant is RUNNING -- the equivalent of infra-runner's
 scripts/07_setup_erep.sh, which POSTed the same payload to
 https://<tenant host>/galaxy/erepapi/api/ereps after the services were up.
 
-Off by default (erep_setup_enabled=false). The call goes to the tenant's PUBLIC
+On by default (set erep_setup_enabled=false to skip). The call goes to the tenant's PUBLIC
 URL, so the operator must be able to reach it (DNS, TLS and egress from wherever
 the operator runs): the operator deliberately never talks to a spoke cluster's
 API to write anything, and the spokes are not reachable by in-cluster DNS from

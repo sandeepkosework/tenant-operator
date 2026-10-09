@@ -142,9 +142,9 @@ class Settings(BaseSettings):
     mongo_env_config_shared_db: Optional[str] = None
 
     # --- Default eRep ("Noah") creation after a tenant is RUNNING ---
-    # Equivalent of infra-runner's step 07. Off by default; see
+    # Equivalent of infra-runner's step 07. On by default; set false to skip. See
     # services/erep_setup.py for why this calls the tenant's PUBLIC URL.
-    erep_setup_enabled: bool = False
+    erep_setup_enabled: bool = True
     # Placeholders: {domain} (tenant.domain, the ingress host), {tenant}, {slug}.
     erep_setup_url_template: str = "https://{domain}/galaxy/erepapi/api/ereps"
     erep_setup_verify_tls: bool = True

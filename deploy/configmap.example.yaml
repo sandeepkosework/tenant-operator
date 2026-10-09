@@ -104,8 +104,8 @@ data:
   # Collapse the per-tenant env-config mirror into one shared database:
   # MONGO_ENV_CONFIG_SHARED_DB: "tenant-env-config"
 
-  # --- Default eRep ("Noah") after a tenant is RUNNING (off by default; see README) ---
-  # EREP_SETUP_ENABLED: "true"
+  # --- Default eRep ("Noah") after a tenant is RUNNING (ON by default; see README) ---
+  # EREP_SETUP_ENABLED: "false"        # set false to skip it
   # EREP_SETUP_REQUIRED: "false"        # true = a failed call marks the tenant FAILED
   # EREP_SETUP_URL_TEMPLATE: "https://{domain}/galaxy/erepapi/api/ereps"
   # EREP_SETUP_VERIFY_TLS: "true"

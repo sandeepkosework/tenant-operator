@@ -639,8 +639,8 @@ existing deployment doesn't move old per-tenant mirror databases.
 The equivalent of infra-runner's step 07: once a tenant is `RUNNING`, the
 operator POSTs a default eRep ("Noah", payload in
 `templates/erep_default_payload.json`, with a per-tenant email
-`erep-noah-<tenant_name>@example.com`) to the tenant's erep-server API. **Off by
-default** (`EREP_SETUP_ENABLED=false`).
+`erep-noah-<tenant_name>@example.com`) to the tenant's erep-server API. **On by
+default** -- set `EREP_SETUP_ENABLED=false` to skip it.
 
 - **URL:** `EREP_SETUP_URL_TEMPLATE`, default
   `https://{domain}/galaxy/erepapi/api/ereps` (`{domain}` = the tenant's ingress
@@ -652,6 +652,9 @@ default** (`EREP_SETUP_ENABLED=false`).
   in-cluster shortcut -- point the template at any address that works instead.
 - **Retries:** `EREP_SETUP_ATTEMPTS` (12) x `EREP_SETUP_RETRY_DELAY_SECONDS` (10)
   -- pods can be Ready before the ingress path is live.
+- **If the URL isn't reachable** (e.g. local dev, no DNS/TLS), every tenant
+  spends the full retry window (12 x 10s = 2 minutes) before the failure is
+  logged -- set `EREP_SETUP_ENABLED=false` there, or lower `EREP_SETUP_ATTEMPTS`.
 - **Failure policy:** by default a failure is logged and the tenant stays
   `RUNNING`; set `EREP_SETUP_REQUIRED=true` to mark it `FAILED` instead
   (infra-runner failed the whole run).
@@ -863,7 +866,7 @@ Selected settings worth knowing about explicitly:
 | `MONGO_ENV_CONFIG_URI` | unset | Full Mongo connection string, also the base for each tenant's derived `MONGODB_URI` (see above). |
 | `MONGO_ENV_CONFIG_SHARED_DB` | unset | Collapse the mirror into one shared database (collection `tenant_env_config`) instead of one database per tenant. |
 | `QRAIEAI_REGISTRY_ENABLED` | `false` | Keep one record per tenant in the shared registry database — see "Shared tenant registry". |
-| `EREP_SETUP_ENABLED` / `_REQUIRED` | `false` / `false` | Create the default eRep after a tenant is RUNNING; `_REQUIRED` fails the tenant if it can't — see "Default eRep setup". |
+| `EREP_SETUP_ENABLED` / `_REQUIRED` | `true` / `false` | Create the default eRep after a tenant is RUNNING; `_REQUIRED` fails the tenant if it can't — see "Default eRep setup". |
 | `EREP_SETUP_URL_TEMPLATE` | `https://{domain}/galaxy/erepapi/api/ereps` | Where the eRep is POSTed; also `_VERIFY_TLS`, `_ATTEMPTS`, `_RETRY_DELAY_SECONDS`, `_TIMEOUT_SECONDS`. |
 | `QRAIEAI_DB_NAME` / `QRAIEAI_REGISTRY_COLLECTION` | `qraieai` / `bridge_tenants` | Where the registry records go. |
 | `GIT_REPO_URL` / `GIT_BRANCH` / `GIT_TENANTS_DIR` | — | The GitOps repo and directory tenant manifests are committed into. |
