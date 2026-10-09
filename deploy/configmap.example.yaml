@@ -93,3 +93,13 @@ data:
   VAULT_ENABLED: "true"
   VAULT_KV_MOUNT: "secret"
   VAULT_TENANT_SECRET_PREFIX: "tenants"
+
+  # --- Shared Mongo registry / mirror (all optional, off by default; they use
+  # MONGO_ENV_CONFIG_URI from the Secret/Vault for the server and credentials) ---
+  # One record per tenant in a database shared by all tenants (see README,
+  # "Shared tenant registry"):
+  # QRAIEAI_REGISTRY_ENABLED: "true"
+  # QRAIEAI_DB_NAME: "qraieai"
+  # QRAIEAI_REGISTRY_COLLECTION: "bridge_tenants"
+  # Collapse the per-tenant env-config mirror into one shared database:
+  # MONGO_ENV_CONFIG_SHARED_DB: "tenant-env-config"

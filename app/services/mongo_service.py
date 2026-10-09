@@ -16,6 +16,8 @@ otherwise logs/echoes what would happen, same pattern as vault_service.py
 and crossplane_service.py.
 """
 import logging
+import time
+from datetime import datetime, timezone
 
 from app.config import get_settings
 
@@ -23,6 +25,10 @@ logger = logging.getLogger("tenant-operator.mongo_service")
 settings = get_settings()
 
 _client = None
+# Registry writes happen on every status change; if Mongo is unreachable, skip
+# further attempts for a while rather than stalling each one for the connect timeout.
+_registry_retry_after = 0.0
+_REGISTRY_BACKOFF_SECONDS = 60
 
 
 class MongoServiceError(Exception):
@@ -52,6 +58,9 @@ def _get_client():
 def _redact(data: dict) -> dict:
     return {k: ("***" if "password" in k.lower() or "secret" in k.lower() or "token" in k.lower() else v) for k, v in data.items()}
 
+
+# Collection used when mongo_env_config_shared_db collapses every tenant into one database.
+SHARED_ENV_CONFIG_COLLECTION = "tenant_env_config"
 
 # service name -> which collection (service group) its document lands in.
 # "service-common" is vault_service's own tenant-wide common-config entry (see
@@ -114,7 +123,8 @@ def write_tenant_env_config(tenant_slug: str, service_data: dict[str, dict]) -> 
     its resolved env dict), so this never re-derives or re-classifies
     anything, just mirrors what was already written to Vault.
 
-    Database = tenant_slug. Collection = that service's group
+    Database = tenant_slug (or, if mongo_env_config_shared_db is set, that one
+    shared database -- see below). Collection = that service's group
     (QRAIE_BRIDGE_SERVICE_GROUPS). Document _id = service name, so a
     service's doc is replaced (not duplicated) on a later tenant update
     that calls this again."""
@@ -131,6 +141,22 @@ def write_tenant_env_config(tenant_slug: str, service_data: dict[str, dict]) -> 
         return
 
     client = _get_client()
+
+    if settings.mongo_env_config_shared_db:
+        # One shared database for every tenant: a single collection, one
+        # document per (tenant, service) with _id "<slug>/<service>".
+        coll = client[settings.mongo_env_config_shared_db][SHARED_ENV_CONFIG_COLLECTION]
+        coll.create_index("tenant")
+        for service, data in service_data.items():
+            group = QRAIE_BRIDGE_SERVICE_GROUPS.get(service, service)
+            doc = {"_id": f"{tenant_slug}/{service}", "tenant": tenant_slug, "service": service, "group": group, **data}
+            coll.replace_one({"_id": doc["_id"]}, doc, upsert=True)
+            logger.info("[mongo] tenant=%s wrote %s.%s %s: %s", tenant_slug, settings.mongo_env_config_shared_db,
+                        SHARED_ENV_CONFIG_COLLECTION, doc["_id"], _redact(data))
+        logger.info("[mongo] tenant=%s env config ready (%d services, shared db=%s)",
+                    tenant_slug, len(service_data), settings.mongo_env_config_shared_db)
+        return
+
     db = client[tenant_slug]
     for service, data in service_data.items():
         group = QRAIE_BRIDGE_SERVICE_GROUPS.get(service, service)
@@ -139,3 +165,50 @@ def write_tenant_env_config(tenant_slug: str, service_data: dict[str, dict]) -> 
         logger.info("[mongo] tenant=%s wrote %s.%s: %s", tenant_slug, group, service, _redact(data))
 
     logger.info("[mongo] tenant=%s env config ready (%d services, db=%s)", tenant_slug, len(service_data), tenant_slug)
+
+
+def upsert_registry_record(tenant) -> None:
+    """Writes/refreshes this tenant's one record in the shared registry
+    database (settings.qraieai_db_name / qraieai_registry_collection),
+    _id = tenant slug. Called from provisioner._set_status, so the record
+    follows the tenant's status (PENDING ... RUNNING/FAILED ... DELETED);
+    a deleted tenant is marked, not removed.
+
+    Best-effort by design: any failure is logged and swallowed -- the
+    registry must never fail or slow down provisioning."""
+    global _registry_retry_after
+    if not settings.qraieai_registry_enabled:
+        return
+    if time.monotonic() < _registry_retry_after:
+        return
+    try:
+        now = datetime.now(timezone.utc)
+        coll = _get_client()[settings.qraieai_db_name][settings.qraieai_registry_collection]
+        coll.update_one(
+            {"_id": tenant.slug},
+            {
+                "$set": {
+                    "tenantId": str(tenant.id),
+                    "tenantName": tenant.tenant_name,
+                    "slug": tenant.slug,
+                    "displayName": tenant.display_name,
+                    "domain": tenant.domain,
+                    "environment": tenant.environment,
+                    "cluster": tenant.cluster,
+                    "namespace": tenant.namespace,
+                    "status": tenant.status.value,
+                    "errorMessage": tenant.error_message,
+                    "deletedAt": tenant.deleted_at,
+                    "source": "tenant-operator",
+                    "updatedAt": now,
+                },
+                "$setOnInsert": {"createdAt": now},
+            },
+            upsert=True,
+        )
+        logger.info("[mongo] tenant=%s registry record updated (%s.%s status=%s)",
+                    tenant.slug, settings.qraieai_db_name, settings.qraieai_registry_collection, tenant.status.value)
+    except Exception as e:  # noqa: BLE001 -- includes MongoServiceError/PyMongoError; must never propagate
+        _registry_retry_after = time.monotonic() + _REGISTRY_BACKOFF_SECONDS
+        logger.warning("[mongo] tenant=%s could not update registry record in %s: %s",
+                       tenant.slug, settings.qraieai_db_name, e)

@@ -135,6 +135,25 @@ class Settings(BaseSettings):
     # local/no-cluster testing shouldn't need a real Mongo either.
     mongo_env_config_enabled: bool = False
     mongo_env_config_uri: Optional[str] = None   # full connection string, e.g. mongodb://user:pass@host:27017/?authSource=admin
+    # Optional: collapse the per-tenant mirror above into ONE shared database.
+    # Unset (default) keeps one database per tenant, named after its slug. When
+    # set (e.g. "tenant-env-config"), every tenant's documents go into a single
+    # collection `tenant_env_config` of that database instead, _id "<slug>/<service>".
+    mongo_env_config_shared_db: Optional[str] = None
+
+    # --- Shared tenant registry (database `qraieai`) ---
+    # One small record per tenant in a database shared by ALL tenants, kept
+    # current as the tenant's status changes (and marked DELETED, not removed,
+    # on delete). Mirrors infra-runner, which wrote one record per tenant into
+    # the same database (its bridge_port_allocations collection). Uses the same
+    # server/credentials as the mirror (mongo_env_config_uri). Best-effort: a
+    # failure here is logged and never fails the tenant. Off by default.
+    qraieai_registry_enabled: bool = False
+    qraieai_db_name: str = "qraieai"
+    # NOT infra-runner's bridge_port_allocations -- that one holds VM port
+    # ranges (startPort/endPort) a legacy allocator may read; Kubernetes
+    # tenants have no ports to allocate, so they get their own collection.
+    qraieai_registry_collection: str = "bridge_tenants"
 
     # --- Crossplane (prod-only new-spoke OKE provisioning) ---
     # When a prod spoke crosses its scale-out threshold, the operator applies
