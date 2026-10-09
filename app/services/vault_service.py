@@ -222,11 +222,20 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
     "G_JWT_SECRETKEY", "G_RT_SECRETKEY",
 }
 
-# Keys computed deterministically from tenant_slug, never sourced from
+# Keys computed deterministically from the tenant, never sourced from
 # platform defaults -- these identify the tenant itself (TENANT_ID/
 # TENANT_KEY/TENANT_IDS) and MUST be unique per tenant. Unlike
 # QRAIE_BRIDGE_GENERATED_KEYS (a random credential), a platform default
 # here would mean every tenant shares the same identity.
+#
+# TENANT_ID is the exception to "from tenant_slug": it is the BARE tenant name
+# (e.g. "hbss-010"), not the slug ("hbss-010-45"). The apps derive their Mongo
+# database ("<TENANT_ID>-bridge") and look the tenant up by it, and the
+# bridge meta-builder seeds "<tenant_name>-bridge" under tenantObj.tenantId =
+# the bare name -- so a slug here made the apps use a second, unseeded database
+# ("<slug>-bridge") and miss the seeded data. infra-runner also used the bare name.
+# TENANT_KEY / TENANT_IDS still get the slug (see the loop in
+# write_initial_qraie_bridge_tenant_secrets).
 QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_KEY", "TENANT_IDS"}
 
 # The tenant's own SQL Server database/login (DB_USER/DB_NAME/DB_SCHEMA) is
@@ -378,6 +387,8 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
             elif k == "DB_PORT" and settings.mssql_admin_host:
                 data[k] = str(settings.mssql_admin_port)
             elif k in QRAIE_BRIDGE_SQL_NAME_KEYS:
+                data[k] = tenant_name
+            elif k == "TENANT_ID":
                 data[k] = tenant_name
             elif k in QRAIE_BRIDGE_TENANT_DERIVED_KEYS:
                 data[k] = tenant_slug

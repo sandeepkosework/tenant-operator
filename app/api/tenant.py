@@ -2,7 +2,6 @@ import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -47,16 +46,14 @@ def create_tenant(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Allocated here, not left to a DB default, since it must be a plain
-    # sequential int portable across SQLite (local/POC) and Postgres (real
-    # deployments) -- see Tenant.tenant_seq's comment for the accepted
-    # single-replica race-window tradeoff, same one tenant_name uniqueness
-    # already lives with elsewhere in this codebase.
-    next_seq = (db.query(func.max(Tenant.tenant_seq)).scalar() or 0) + 1
+    # No sequence number is allocated any more: tenant_seq stays NULL, so the
+    # tenant's slug (namespace, Vault path, git file, ...) is just its bare name.
+    # Name collisions with older, sequence-suffixed tenants are rejected in
+    # validate_create_request. See Tenant.slug.
 
     tenant = Tenant(
         tenant_name=req.tenantId,
-        tenant_seq=next_seq,
+        tenant_seq=None,
         display_name=req.displayName,
         email=req.email,
         domain=req.domain,

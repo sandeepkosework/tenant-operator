@@ -25,6 +25,17 @@ def validate_create_request(req: TenantCreateRequest, db: Session) -> None:
     if existing is not None:
         raise ValidationError(f"tenant '{req.tenantId}' already exists (status={existing.status})")
 
+    # New tenants have no sequence suffix, so their slug IS their name. It must
+    # not equal the slug of an older tenant that still exists -- e.g. a new
+    # tenant "acme-2" would collide with the existing "acme" (seq 2), whose slug
+    # is "acme-2" (same namespace, Vault path, git file and Argo CD Application).
+    for other in db.query(Tenant).filter(Tenant.status != TenantStatus.DELETED).all():
+        if other.slug == req.tenantId:
+            raise ValidationError(
+                f"tenant '{req.tenantId}' would collide with the existing tenant '{other.tenant_name}' "
+                f"(slug '{other.slug}', same namespace/Vault path) -- choose a different tenantId"
+            )
+
     if settings.environment not in settings.allowed_environments:
         raise ValidationError(
             f"this operator's environment '{settings.environment}' is not in allowed list "

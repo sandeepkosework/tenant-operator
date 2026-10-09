@@ -22,6 +22,7 @@ from app.services import (
     argocd_service,
     bridge_meta_builder_job,
     cluster_selector,
+    erep_setup,
     git_service,
     helm_values,
     kubernetes_service,
@@ -205,6 +206,20 @@ def _seed_tenant_databases(tenant: Tenant, admin_password: str) -> None:
         )
 
 
+def _setup_default_erep(db: Session, tenant: Tenant) -> None:
+    """Step 07 of the old infra-runner flow: create the default eRep through the
+    tenant's erep-server API. A failure only fails the tenant when
+    erep_setup_required is set; otherwise it is logged and the tenant stays RUNNING."""
+    try:
+        erep_setup.setup_default_erep(tenant)
+    except erep_setup.ErepSetupError as e:
+        if settings.erep_setup_required:
+            logger.error("tenant=%s default eRep setup failed: %s", tenant.tenant_name, e)
+            _set_status(db, tenant, TenantStatus.FAILED, error=f"default eRep setup failed: {e}")
+        else:
+            logger.warning("tenant=%s default eRep setup failed (tenant stays RUNNING): %s", tenant.tenant_name, e)
+
+
 def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
     """
     Entry point for a fresh tenant creation. Run as a background task.
@@ -323,6 +338,8 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             _commit_tenant_info(
                 tenant, cluster, message=f"tenant-operator: {tenant.tenant_name} reached {tenant.status.value}",
             )
+            if tenant.status == TenantStatus.RUNNING:
+                _setup_default_erep(db, tenant)
             logger.info("[step] tenant=%s provisioning finished: %s", tenant.tenant_name, tenant.status.value)
         except cluster_selector.NoAvailableClusterError as e:
             _set_status(db, tenant, TenantStatus.FAILED, error=str(e))

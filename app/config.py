@@ -141,6 +141,20 @@ class Settings(BaseSettings):
     # collection `tenant_env_config` of that database instead, _id "<slug>/<service>".
     mongo_env_config_shared_db: Optional[str] = None
 
+    # --- Default eRep ("Noah") creation after a tenant is RUNNING ---
+    # Equivalent of infra-runner's step 07. On by default; set false to skip. See
+    # services/erep_setup.py for why this calls the tenant's PUBLIC URL.
+    erep_setup_enabled: bool = True
+    # Placeholders: {domain} (tenant.domain, the ingress host), {tenant}, {slug}.
+    erep_setup_url_template: str = "https://{domain}/galaxy/erepapi/api/ereps"
+    erep_setup_verify_tls: bool = True
+    erep_setup_attempts: int = 12            # x retry delay = how long to wait for the URL to come up
+    erep_setup_retry_delay_seconds: int = 10
+    erep_setup_timeout_seconds: int = 30
+    # False: a failed eRep call is logged and the tenant stays RUNNING.
+    # True: it marks the tenant FAILED (infra-runner failed the whole run).
+    erep_setup_required: bool = False
+
     # --- Shared tenant registry (database `qraieai`) ---
     # One small record per tenant in a database shared by ALL tenants, kept
     # current as the tenant's status changes (and marked DELETED, not removed,

@@ -1,0 +1,51 @@
+{
+  "department": "Custom Department",
+  "eRepDetails": {
+    "status": "active",
+    "progress": "2",
+    "firstName": "Noah",
+    "lastName": "Jackson",
+    "email": "{{EREP_EMAIL}}",
+    "systemPrompt": "Assist users with daily task automation and reporting.",
+    "workOrderDetails": {
+      "id": "wo-6789",
+      "title": "Customer Ticket Management Setup",
+      "category": "Automation",
+      "description": "Setup automation workflows for handling support tickets using AI agents.",
+      "keyResponsibilities": [
+        "Design automation pipeline",
+        "Integrate ticket management APIs",
+        "Test workflow end-to-end"
+      ],
+      "requirementAndQualification": [
+        "Knowledge of REST APIs",
+        "Experience with automation tools"
+      ],
+      "roles": ["A HR Agent"],
+      "capabilities": ["Talk to AI"]
+    },
+    "sensoryInfo": {
+      "conversation_config": {
+        "agent": {
+          "first_message": "Hello! I’m your ElevenLabs voice assistant. How can I help you today?",
+          "prompt": {
+            "prompt": "You are an AI voice assistant designed to assist users in a friendly and efficient manner."
+          },
+          "language": "en"
+        },
+        "tts": {
+          "voice_id": "cjVigY5qzO86Huf0OWal"
+        },
+        "turn": {
+          "turn_timeout": 7,
+          "silence_end_call_timeout": -1,
+          "turn_eagerness": "balanced"
+        },
+        "conversation": {
+          "max_duration_seconds": 600
+        }
+      },
+      "name": "Default ElevenLabs Agent"
+    }
+  }
+}
