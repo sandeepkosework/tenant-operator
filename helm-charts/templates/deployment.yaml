@@ -21,6 +21,10 @@ spec:
     metadata:
       labels:
         {{- include "tenant-operator.labels" . | nindent 8 }}
+        # Only on the pod template, not in spec.selector (a Deployment's selector is
+        # immutable). The Service below selects on this so it doesn't also pick up
+        # the in-chart Postgres pod, which carries the same base labels.
+        app.kubernetes.io/component: operator
       annotations:
         {{- if .Values.vault.enabled }}
         vault.hashicorp.com/agent-inject: "true"
