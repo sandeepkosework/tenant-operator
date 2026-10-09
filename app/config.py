@@ -161,8 +161,9 @@ class Settings(BaseSettings):
     # on delete). Mirrors infra-runner, which wrote one record per tenant into
     # the same database (its bridge_port_allocations collection). Uses the same
     # server/credentials as the mirror (mongo_env_config_uri). Best-effort: a
-    # failure here is logged and never fails the tenant. Off by default.
-    qraieai_registry_enabled: bool = False
+    # failure here is logged and never fails the tenant. On by default; it does
+    # nothing (one warning) until mongo_env_config_uri is set. Set false to disable.
+    qraieai_registry_enabled: bool = True
     qraieai_db_name: str = "qraieai"
     # NOT infra-runner's bridge_port_allocations -- that one holds VM port
     # ranges (startPort/endPort) a legacy allocator may read; Kubernetes

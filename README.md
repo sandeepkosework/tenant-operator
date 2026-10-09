@@ -668,8 +668,10 @@ default** -- set `EREP_SETUP_ENABLED=false` to skip it.
 
 Like infra-runner, which wrote one record per tenant into a shared `qraieai`
 database, the operator can keep one small record per tenant in a database
-shared by **all** tenants. Off by default (`QRAIEAI_REGISTRY_ENABLED=false`);
-uses the same server and credentials as the mirror (`MONGO_ENV_CONFIG_URI`).
+shared by **all** tenants. **On by default** (set `QRAIEAI_REGISTRY_ENABLED=false`
+to disable); uses the same server and credentials as the mirror
+(`MONGO_ENV_CONFIG_URI`), and does nothing -- with a single warning -- until that
+is set.
 
 - **Where:** database `QRAIEAI_DB_NAME` (default `qraieai`), collection
   `QRAIEAI_REGISTRY_COLLECTION` (default `bridge_tenants`), one document per
@@ -865,7 +867,7 @@ Selected settings worth knowing about explicitly:
 | `MONGO_ENV_CONFIG_ENABLED` | `false` | Gates the read-only MongoDB mirror in `mongo_service.py`. |
 | `MONGO_ENV_CONFIG_URI` | unset | Full Mongo connection string, also the base for each tenant's derived `MONGODB_URI` (see above). |
 | `MONGO_ENV_CONFIG_SHARED_DB` | unset | Collapse the mirror into one shared database (collection `tenant_env_config`) instead of one database per tenant. |
-| `QRAIEAI_REGISTRY_ENABLED` | `false` | Keep one record per tenant in the shared registry database — see "Shared tenant registry". |
+| `QRAIEAI_REGISTRY_ENABLED` | `true` | Keep one record per tenant in the shared registry database — see "Shared tenant registry". |
 | `EREP_SETUP_ENABLED` / `_REQUIRED` | `true` / `false` | Create the default eRep after a tenant is RUNNING; `_REQUIRED` fails the tenant if it can't — see "Default eRep setup". |
 | `EREP_SETUP_URL_TEMPLATE` | `https://{domain}/galaxy/erepapi/api/ereps` | Where the eRep is POSTed; also `_VERIFY_TLS`, `_ATTEMPTS`, `_RETRY_DELAY_SECONDS`, `_TIMEOUT_SECONDS`. |
 | `QRAIEAI_DB_NAME` / `QRAIEAI_REGISTRY_COLLECTION` | `qraieai` / `bridge_tenants` | Where the registry records go. |
