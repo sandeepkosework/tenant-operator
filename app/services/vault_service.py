@@ -149,7 +149,11 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     # secret/k8s/<slug>/service-common. Was named "common" before that chart
     # change; the platform-defaults entry of the old name is still honoured
     # (see read_qraie_bridge_platform_defaults).
-    "service-common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT"],
+    # FABREQ_COMMAND_ENDPOINT_MAP is derived per tenant (the in-cluster address of
+    # wfm-microservice) and lives HERE, in the layer every service of the tenant
+    # shares, not in wfm-api-gateway's own secret -- an own-secret key would sit
+    # above this layer and, if empty, override it. See write_initial_*.
+    "service-common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT", "FABREQ_COMMAND_ENDPOINT_MAP"],
     # These two have no custom `env:` block in the chart (raw redis/
     # redisgears images) -- but every enabled service still gets an
     # ExternalSecret (templates/externalsecret.yaml loops over ALL of
@@ -201,7 +205,7 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     "tranops-backend": ["TENANT_ID", "ACTIVE_COLOR", "AGENTS_API_URL", "API_PORT", "ELEVENLABS_API_KEY", "ELEVENLABS_API_URL", "GLOBALAPIBASEURL", "JWT_EXPIRES_IN", "JWT_SECRET", "MCP_SERVER_URL", "MONGODB_URI", "POLLING_INTERVAL_MS", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SLM_API_URL", "SLM_PASSWORD", "SLM_USERNAME", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "tranops-ui": ["TENANT_ID", "ACTIVE_COLOR", "BASE_URL", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "VITE_API_URL", "VITE_WS_URL"],
     "voxflow": ["TENANT_ID", "ACTIVE_COLOR", "BASE_PATH", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "RIDE_API_AUTH_TOKEN", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    "wfm-api-gateway": ["TENANT_ID", "ACTIVE_COLOR", "ALLOWED_ORIGINS", "FABREQ_COMMAND_ENDPOINT_MAP", "GLOBALAPIBASEURL", "LOG_LEVEL", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SERVER_HOST", "SERVER_NAME", "SERVER_PORT", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "wfm-api-gateway": ["TENANT_ID", "ACTIVE_COLOR", "ALLOWED_ORIGINS", "GLOBALAPIBASEURL", "LOG_LEVEL", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SERVER_HOST", "SERVER_NAME", "SERVER_PORT", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "wfm-microservice": ["TENANT_ID", "ACTIVE_COLOR", "CONFIG_API_URL", "GLOBALAPIBASEURL", "GLOBAL_CONN_POOL_CONFIG", "JWT_SECRETS_MAP", "MICROSERVICE_NAME", "NODE_ENV", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SERVER_HOST", "SERVER_PORT", "START_PORT", "TENANT_IDS", "TENANT_KEY", "TZ"],
     "wfm-ui": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "NEXT_PUBLIC_SOCKET_URL", "NEXT_PUBLIC_VERSION", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SERVER_HOST", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
 }
@@ -248,6 +252,18 @@ QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_KEY", "TENANT_IDS"}
 # login; services/preflight.py therefore refuses to provision a tenant whose
 # database/login already exists (tenant deletion does not drop it).
 QRAIE_BRIDGE_SQL_NAME_KEYS = {"DB_USER", "DB_NAME", "DB_SCHEMA"}
+
+
+# wfm-microservice's containerPort in helm-chart-bridge's values.yaml (the Service
+# port is the same). Keep in step with the chart.
+WFM_MICROSERVICE_PORT = 9001
+
+
+def _k8s_service_slug(tenant_slug: str) -> str:
+    """The prefix the chart puts on every Kubernetes Service name for a tenant
+    (templates/_helpers.tpl "tenant-app.slug"): a Service name can't start with a
+    digit, so a slug like "00042-acme" becomes "t-00042-acme"."""
+    return f"t-{tenant_slug}" if tenant_slug[:1].isdigit() else tenant_slug
 
 
 def read_qraie_bridge_platform_defaults() -> dict[str, dict]:
@@ -358,8 +374,13 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
     # "tenant-app.slug" helper (helm-chart-bridge/templates/_helpers.tpl):
     # Kubernetes Service names can't start with a digit, so a tenant_slug
     # like "00001-verify02" gets a "t-" prefix there, and this must match.
-    redis_dns_slug = f"t-{tenant_slug}" if tenant_slug[:1].isdigit() else tenant_slug
+    redis_dns_slug = _k8s_service_slug(tenant_slug)
     tenant_redis_host = f"{redis_dns_slug}-qraie-redis-shared"
+    # Where the wfm-api-gateway reaches wfm-microservice: the chart's per-tenant
+    # Service "<slug>-wfm-microservice" on the container port. The old compose file
+    # had the container name "http://wfm-microservice:9001", which doesn't resolve
+    # on Kubernetes.
+    wfm_microservice_url = f"http://{redis_dns_slug}-wfm-microservice:{WFM_MICROSERVICE_PORT}"
     tenant_redis_port = "6379"
     tenant_redis_password = _generate_secret()
     # One SQL login per tenant (created by the seeding Job from this value), so every
@@ -374,6 +395,8 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 data[k] = tenant_domain
             elif k == "MONGODB_URI":
                 data[k] = mongodb_uri
+            elif k == "FABREQ_COMMAND_ENDPOINT_MAP":
+                data[k] = wfm_microservice_url
             elif k == "REDIS_HOST":
                 data[k] = tenant_redis_host
             elif k == "REDIS_PORT":

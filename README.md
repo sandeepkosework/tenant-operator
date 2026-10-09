@@ -576,6 +576,18 @@ paths, which it already does at tenant creation) or the script
 CLI and `jq`). Secrets are read at pod start and refreshed from Vault
 hourly: after changing Vault, restart the pods.
 
+**`FABREQ_COMMAND_ENDPOINT_MAP` is derived per tenant and lives in `service-common`.**
+It is the address the `wfm-api-gateway` uses to reach `wfm-microservice`: the chart's
+per-tenant Kubernetes Service, `http://<tenant>-wfm-microservice:9001` (a tenant id
+starting with a digit gets the chart's `t-` prefix, e.g.
+`http://t-00042-acme-wfm-microservice:9001`). The old compose value
+`http://wfm-microservice:9001` was a Docker container name and doesn't resolve on
+Kubernetes. The operator writes it into `secret/k8s/<tenant>/service-common` -- the
+layer every service of the tenant shares -- and no longer into the gateway's own
+secret, where an empty copy would override it. A platform default for this key is
+ignored. The port is `WFM_MICROSERVICE_PORT` in `vault_service.py`; keep it in step
+with the chart's `wfm-microservice` containerPort.
+
 **`TENANT_ID` is the bare tenant name, not the slug.** Every service's Vault
 secret gets `TENANT_ID=<tenant_name>` (e.g. `hbss-010`), matching what the seed
 Job uses for the Mongo database (`<tenant_name>-bridge`) and `tenantObj.tenantId`,
