@@ -239,11 +239,11 @@ def _check_argocd(tenant_name: str) -> list[str]:
     """The Argo CD Application is what actually runs the tenant's services; if
     one named after this tenant exists it is a live (or half-deleted) tenant."""
     try:
-        status = argocd_service.get_application_status(tenant_name)
+        exists = argocd_service.application_exists(tenant_name)
     except argocd_service.ArgoCDServiceError as e:
         return [f"could not verify Argo CD application '{tenant_name}' ({str(e)[:160]})"]
-    if status.get("exists"):
-        return [f"Argo CD application '{tenant_name}' already exists (health={status.get('health')}, sync={status.get('sync')})"]
+    if exists:
+        return [f"Argo CD application '{tenant_name}' already exists"]
     return []
 
 

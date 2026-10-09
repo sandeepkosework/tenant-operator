@@ -40,6 +40,30 @@ def _client() -> httpx.Client:
     )
 
 
+def application_exists(application_name: str) -> bool:
+    """True if an Argo CD Application with exactly this name exists.
+
+    Uses the LIST endpoint filtered by name, not GET /applications/{name}: when
+    no project is supplied, Argo CD answers 403 (not 404) for an application
+    that does not exist, whatever the caller's permissions, so that it never
+    reveals whether a name is taken. A filtered list returns 200 with no items
+    instead, which is unambiguous. Needs only `applications, get` permission.
+
+    Raises ArgoCDUnreachableError / ArgoCDServiceError if Argo CD can't be
+    asked or refuses -- the caller must not treat that as "does not exist"."""
+    try:
+        with _client() as client:
+            resp = client.get("/api/v1/applications", params={"name": application_name})
+    except httpx.HTTPError as e:
+        raise ArgoCDUnreachableError(f"could not reach Argo CD: {e}") from e
+    if resp.status_code >= 500:
+        raise ArgoCDUnreachableError(f"Argo CD returned {resp.status_code} (server error) listing applications")
+    if resp.status_code != 200:
+        raise ArgoCDServiceError(f"Argo CD returned {resp.status_code} listing applications named '{application_name}': {resp.text[:200]}")
+    items = resp.json().get("items") or []
+    return any((item.get("metadata") or {}).get("name") == application_name for item in items)
+
+
 def get_application_status(application_name: str) -> dict:
     """
     Returns a dict like:
