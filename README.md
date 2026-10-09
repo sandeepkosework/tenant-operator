@@ -67,7 +67,7 @@ tenant-operator/
 │   ├── vault_bootstrap.py            loads this operator's OWN config from Vault, pre-Settings
 │   ├── socketio_app.py               Socket.IO transport for tenant status push
 │   ├── auth.py                       admin login token + X-API-Key check (guards every API route)
-│   ├── static/ui.html                built-in web UI served at /ui (login, tenant table, progress bars, delete)
+│   ├── static/ui.html                built-in web UI served at /ui (tenant table, step-by-step creation progress, delete)
 │   ├── database.py                   SQLAlchemy engine/session (works against SQLite or Postgres)
 │   ├── api/
 │   │   ├── auth.py                   POST /api/v1/auth/login
@@ -306,11 +306,35 @@ curl -H "Authorization: Bearer $TOKEN" http://<operator-host>/api/v1/tenant
 
 ### Web UI (`/ui`)
 
-Open `http://<operator-host>/ui`, sign in with `ADMIN_USERNAME` /
-`ADMIN_PASSWORD`. It lists tenants with status and a progress bar
-(refreshes every 3s; green = RUNNING, red = FAILED) and has a Delete button
-(asks you to type the tenant slug to confirm). Make sure your ingress routes
-`/ui` to the operator. ### API docs (`/docs`)
+Open `http://<operator-host>/ui` and sign in with `ADMIN_USERNAME` /
+`ADMIN_PASSWORD`. It refreshes itself every few seconds (paused while the tab
+is hidden) and shows:
+
+- **Summary tiles** — total, running, in progress and failed tenants; click one
+  to filter. A search box matches name, domain and cluster; "Show deleted"
+  includes deleted tenants.
+- **Tenant table** — status badge, a progress bar with the **current step**
+  (or "Failed at: <step>" with the bar stopped where it failed), cluster and
+  namespace, and how long ago it was created.
+- **Details drawer** (click a row) — the tenant's creation as a step-by-step
+  timeline: *validate request, select cluster, check for existing resources,
+  register tenant, write secrets to Vault, commit manifest to GitOps, create and
+  seed databases, deploy and wait for pods, create default eRep, ready*. Each
+  step shows its state (done / running / warning / skipped / failed), how long it
+  took, and its latest message, such as the cluster it was placed on, the git
+  commit, or the Argo CD health while waiting. A failed tenant shows the error
+  and the step that failed. Below are an activity log of every event and the
+  tenant's details (ID, namespace, git commit, ...) with copy buttons.
+- **Delete** — asks you to type the tenant name to confirm.
+
+Older tenants created before step tracking have no history; the drawer says so
+and the table falls back to the coarse status. The same data is available at
+`GET /api/v1/tenant/{id}/progress` (ordered steps with state, timings, message,
+an overall `percent`, and the raw `events`). Events are stored in the
+`tenant_events` table, created automatically at startup, and are recorded
+best-effort -- a failure to record one never affects provisioning.
+
+### API docs (`/docs`)
 
 Interactive API documentation is served at `/docs` (Swagger UI; `/doc`
 redirects there) and `/redoc` (read-only), with the raw schema at
