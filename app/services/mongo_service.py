@@ -28,6 +28,7 @@ _client = None
 # Registry writes happen on every status change; if Mongo is unreachable, skip
 # further attempts for a while rather than stalling each one for the connect timeout.
 _registry_retry_after = 0.0
+_registry_no_uri_logged = False
 _REGISTRY_BACKOFF_SECONDS = 60
 
 
@@ -176,8 +177,15 @@ def upsert_registry_record(tenant) -> None:
 
     Best-effort by design: any failure is logged and swallowed -- the
     registry must never fail or slow down provisioning."""
-    global _registry_retry_after
+    global _registry_retry_after, _registry_no_uri_logged
     if not settings.qraieai_registry_enabled:
+        return
+    if not settings.mongo_env_config_uri:
+        # On by default, so a deployment without Mongo configured must not warn on
+        # every status change -- say it once.
+        if not _registry_no_uri_logged:
+            logger.warning("[mongo] tenant registry is enabled but mongo_env_config_uri is not set -- skipping")
+            _registry_no_uri_logged = True
         return
     if time.monotonic() < _registry_retry_after:
         return
