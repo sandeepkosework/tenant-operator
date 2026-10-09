@@ -14,9 +14,16 @@ through provisioning.
 Checked:
   - SQL Server: database and login named <tenant_name>
   - MongoDB:    database <tenant_name>-bridge has any collections
-  - spoke:      namespace tenant-<tenant_name>-<n> (any sequence number)
-                still exists, with the PVCs inside it, and any
-                PersistentVolume still claimed from such a namespace
+  - spoke:      namespace tenant-<tenant_name> or tenant-<tenant_name>-<n>
+                (older tenants carry a sequence number) still exists, with
+                the PVCs inside it, and any PersistentVolume still claimed
+                from such a namespace -- on EVERY spoke of this environment
+                when called from the API (check_tenant_exists)
+  - Argo CD:    an Application named <tenant_name> (what runs the services)
+
+check_tenant_exists() runs all of this synchronously from POST /tenant, before
+anything -- including the tenant's row in the operator's own database -- is
+created, so the caller gets an immediate error and nothing is left behind.
 
 Every check that can't be completed (SQL Server unreachable, no permission
 to list PVs, ...) is reported as "could not verify ..." rather than skipped
@@ -38,7 +45,7 @@ from kubernetes.client import ApiException
 
 from app.config import get_settings
 from app.models.tenant import Tenant
-from app.services import kubernetes_service
+from app.services import argocd_service, cluster_selector, kubernetes_service
 from app.services.meta_builder_job import _SQLCMD_BIN, _SQLCMD_IMAGE, _get_hub_api_client
 
 logger = logging.getLogger("tenant-operator.preflight")
@@ -190,7 +197,8 @@ def _check_mongo(tenant_name: str) -> list[str]:
 
 def _check_spoke(cluster_context: str, tenant_name: str) -> list[str]:
     core_v1 = client.CoreV1Api(kubernetes_service._get_api_client(cluster_context))
-    pattern = re.compile(rf"^tenant-{re.escape(tenant_name)}-\d+$")
+    # tenant-<name> (new tenants, no sequence number) or tenant-<name>-<n> (older ones)
+    pattern = re.compile(rf"^tenant-{re.escape(tenant_name)}(-\d+)?$")
     problems: list[str] = []
 
     try:
@@ -221,27 +229,37 @@ def _check_spoke(cluster_context: str, tenant_name: str) -> list[str]:
     )
     if claimed:
         problems.append(
-            f"{len(claimed)} PersistentVolume(s) still claimed from namespace(s) tenant-{tenant_name}-<n>: "
+            f"{len(claimed)} PersistentVolume(s) still claimed from namespace(s) tenant-{tenant_name}[-<n>]: "
             f"{', '.join(claimed[:5])}{'...' if len(claimed) > 5 else ''}"
         )
     return problems
 
 
-def check_tenant_resources(tenant: Tenant, cluster_context: str) -> list[str]:
-    """Returns a list of human-readable problems; empty means clear to provision."""
-    if not settings.preflight_enabled:
-        logger.info("[preflight] tenant=%s disabled (PREFLIGHT_ENABLED=false)", tenant.tenant_name)
-        return []
+def _check_argocd(tenant_name: str) -> list[str]:
+    """The Argo CD Application is what actually runs the tenant's services; if
+    one named after this tenant exists it is a live (or half-deleted) tenant."""
+    try:
+        status = argocd_service.get_application_status(tenant_name)
+    except argocd_service.ArgoCDServiceError as e:
+        return [f"could not verify Argo CD application '{tenant_name}' ({str(e)[:160]})"]
+    if status.get("exists"):
+        return [f"Argo CD application '{tenant_name}' already exists (health={status.get('health')}, sync={status.get('sync')})"]
+    return []
+
+
+def _run_checks(tenant: Tenant, spoke_contexts: list[str]) -> list[str]:
     name = tenant.tenant_name
     if not _NAME_RE.match(name):
         return [f"tenant name '{name}' is not a valid lowercase DNS label"]
 
     problems: list[str] = []
-    checks = (
+    checks = [
         ("SQL Server", lambda: _check_sql(tenant)),
         ("MongoDB", lambda: _check_mongo(name)),
-        ("spoke cluster", lambda: _check_spoke(cluster_context, name)),
-    )
+        ("Argo CD", lambda: _check_argocd(name)),
+    ]
+    for ctx in spoke_contexts:
+        checks.append((f"spoke cluster '{ctx}'", lambda ctx=ctx: _check_spoke(ctx, name)))
     for label, check in checks:
         try:
             problems.extend(check())
@@ -251,5 +269,30 @@ def check_tenant_resources(tenant: Tenant, cluster_context: str) -> list[str]:
     if problems:
         logger.error("[preflight] tenant=%s FAILED: %s", name, "; ".join(problems))
     else:
-        logger.info("[preflight] tenant=%s clear: no existing database, login, namespace, PVC or PV", name)
+        logger.info("[preflight] tenant=%s clear: no existing database, login, namespace, PVC, PV or Argo CD application", name)
     return problems
+
+
+def check_tenant_exists(tenant_name: str, environment: str) -> tuple[list[str], list[str]]:
+    """Called by POST /tenant BEFORE anything is created. Looks for any trace of
+    this tenant id -- SQL database/login, MongoDB database, Argo CD application,
+    and a namespace/PVC/PV on every spoke of `environment` -- and returns
+    (existing, unverified): what already exists, and what could not be checked
+    at all (unreachable cluster/server). Both empty means clear to create."""
+    if not settings.preflight_enabled:
+        logger.info("[preflight] tenant=%s disabled (PREFLIGHT_ENABLED=false)", tenant_name)
+        return [], []
+    contexts = [c.context for c in cluster_selector.load_cluster_registry() if environment in c.environments]
+    problems = _run_checks(Tenant(tenant_name=tenant_name), contexts)
+    unverified = [p for p in problems if p.startswith("could not verify")]
+    return [p for p in problems if p not in unverified], unverified
+
+
+def check_tenant_resources(tenant: Tenant, cluster_context: str) -> list[str]:
+    """Returns a list of human-readable problems; empty means clear to provision.
+    Re-check run by the provisioner (against the one cluster the tenant was just
+    placed on) in case something appeared after the API's own check."""
+    if not settings.preflight_enabled:
+        logger.info("[preflight] tenant=%s disabled (PREFLIGHT_ENABLED=false)", tenant.tenant_name)
+        return []
+    return _run_checks(tenant, [cluster_context])

@@ -1079,22 +1079,39 @@ contents are environment-specific credentials.
 A tenant's SQL Server database/login is named after the bare tenant name
 (`DB_NAME`/`DB_USER` = the `tenantId`, no sequence number) and its MongoDB
 database is `<tenantId>-bridge`. Tenant deletion removes the namespace but
-never drops those databases, so before anything is created for a new tenant
-the operator checks that none of these already exist, and fails the tenant at
-once with a message that says which one does:
+never drops those databases, so a reused `tenantId` would collide with the
+earlier tenant's data -- or, worse, overwrite a live tenant's namespace,
+secrets and git file.
+
+**`POST /api/v1/tenant` therefore checks, synchronously and before creating
+anything** (not even the tenant's row in the operator's own database), whether
+any trace of that `tenantId` exists:
 
 - SQL Server: a database or login named `<tenantId>`
 - MongoDB: the database `<tenantId>-bridge` already has collections
-- the spoke: a namespace `tenant-<tenantId>-<n>` (with its PVCs), or a
-  PersistentVolume still claimed from one
+- Argo CD: an Application named `<tenantId>` (what runs the tenant's services)
+- every spoke of this operator's environment: a namespace `tenant-<tenantId>`
+  (or an older `tenant-<tenantId>-<n>`) with its PVCs, or a PersistentVolume
+  still claimed from one
 
-Example `errorMessage`: `preflight failed, nothing was created: SQL database
-'hbss' already exists on 192.168.85.205; MongoDB database 'hbss-bridge'
-already exists with 17 collection(s)`. A check that cannot be completed is
-reported as `could not verify ...` instead of being skipped. The SQL check
-runs as a short read-only Job on the hub and reads its answer from the
-container termination message, so it needs only the existing Job
-create/get/list and Pod get/list permissions.
+Results:
+
+- **409 Conflict** -- something exists. Example `detail`: `tenant id 'hbss' already
+  exists: SQL database 'hbss' already exists on 192.168.85.205; namespace
+  'tenant-hbss' already exists on cluster 'stg-spoke'. Nothing was created.`
+- **503** -- a check could not be completed (a spoke, Argo CD, SQL Server or
+  Mongo is unreachable), so the name can't be proven unused; nothing is created.
+  Note that one unreachable spoke blocks creation of any tenant until it is
+  reachable again or removed from `clusters.yaml`.
+- **202** -- clear; provisioning starts.
+
+The provisioner repeats the check against the cluster the tenant is placed on
+right before it writes anything, in case something appeared in between; a
+failure there marks the tenant `FAILED` ("preflight failed, nothing was
+created"). The SQL check runs as a short read-only Job on the hub and reads its
+answer from the container termination message, so it needs only the existing
+Job create/get/list and Pod get/list permissions -- which makes `POST /tenant`
+take a few seconds (up to `PREFLIGHT_SQL_TIMEOUT_SECONDS`) longer than before.
 
 Set `PREFLIGHT_ENABLED=false` to bypass it (for example when deliberately
 re-provisioning onto an existing database). To reuse a `tenantId` otherwise,

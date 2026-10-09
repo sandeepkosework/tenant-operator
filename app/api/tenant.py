@@ -13,7 +13,7 @@ from app.models.schemas import (
     TenantResponse,
     TenantUpdateRequest,
 )
-from app.services import helm_values, provisioner, vault_service
+from app.services import helm_values, preflight, provisioner, vault_service
 from app.services.validation import ValidationError, validate_create_request
 
 logger = logging.getLogger("tenant-operator.api.tenant")
@@ -45,6 +45,23 @@ def create_tenant(
         validate_create_request(req, db)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # Look for ANY trace of this tenant id (SQL/Mongo database, namespace on any
+    # spoke, Argo CD application, ...) before creating anything -- not even the
+    # tenant's row in our own database -- so the caller gets an immediate error
+    # and nothing is left behind or touched on an existing tenant.
+    existing, unverified = preflight.check_tenant_exists(req.tenantId, settings.environment)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"tenant id '{req.tenantId}' already exists: " + "; ".join(existing) + ". Nothing was created.",
+        )
+    if unverified:
+        raise HTTPException(
+            status_code=503,
+            detail=f"could not verify that tenant id '{req.tenantId}' is unused, so nothing was created: "
+                   + "; ".join(unverified),
+        )
 
     # No sequence number is allocated any more: tenant_seq stays NULL, so the
     # tenant's slug (namespace, Vault path, git file, ...) is just its bare name.
