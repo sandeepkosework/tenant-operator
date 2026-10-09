@@ -684,6 +684,39 @@ live deployment, this Job will fail for *every* tenant, not just be skipped
 (unlike the `MSSQL_ADMIN_*` gating above, which fails soft) — set them
 before relying on this Job in any real deployment.
 
+**Failure handling and re-runs.** Both seeding Jobs run right after the GitOps
+commit (before the pod-health wait) and are waited on, not fire-and-forget: if
+the DB-creation Job or this Job fails (retries exhausted), can't be
+submitted, or times out, the tenant is marked `FAILED` immediately, with
+`errorMessage` naming the Job and the `kubectl logs` command -- instead of
+waiting out the pod timeout, or reaching `RUNNING` with an empty database
+(the schema/data Job isn't something the pods' health depends on). A
+deliberate *skip* -- no `MSSQL_ADMIN_*`/`MONGO_ENV_CONFIG_URI`, or no
+`controlops-server` secret -- is still just logged, not a failure. Job
+failure is judged from the Job's terminal `Failed` condition, not
+`status.failed` (which is already >0 after the first failed pod while
+`backoffLimit` is still retrying).
+
+`tenantBridgeMeta.js` is safe to re-run, so Job retries (`backoffLimit: 2`) and
+manual re-runs don't collide:
+
+- It first checks the tenant's SQL database: **already seeded** (all schema
+  tables + a `TENANT` row) → exits 0 without touching anything; **partial**
+  (some but not all tables, e.g. from a manual run) → fails with a clear
+  message rather than guessing.
+- All Mongo seeding runs **before** the SQL write and is idempotent (upserts;
+  the admin user, default employees and paycodes are reused/skipped if they
+  already exist; no extra `UR`/`E`/`PC` sequence numbers are burned).
+- The schema + default inserts are then applied in **one SQL transaction**
+  (SQL Server DDL is transactional), so a failure leaves the database
+  unchanged and a retry starts clean. The bot/web credentials are regenerated
+  on each attempt and overwrite the previous attempt's in Mongo, so Mongo and
+  SQL always agree once an attempt succeeds.
+
+**Rebuild the image after changing anything in `meta-builder/`**
+(`bridge_meta_builder_image_tag`, currently `0.1.11`): the Job runs the code
+baked into that image, not this directory.
+
 **Verification status**: the schema/inserts/Mongo-seed logic above was
 fully verified against a real MSSQL server and a real MongoDB by manually
 constructing and applying both Jobs' `batch/v1` YAML by hand (bypassing

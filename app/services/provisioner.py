@@ -169,26 +169,39 @@ def _seed_tenant_databases(tenant: Tenant, admin_password: str) -> None:
     and the full Mongo seed. Called right after the GitOps commit, before the
     pod-health wait -- see the comment at the call site. Needs only the Vault
     secrets already written for this tenant and the SQL/Mongo servers, so it
-    does not depend on how the tenant's pods turn out. A failure here is
-    logged and skips the dependent Job but does not fail the tenant by
-    itself; the pod wait that follows still decides RUNNING/FAILED."""
+    does not depend on how the tenant's pods turn out.
+
+    Raises meta_builder_job.SeedJobError if either Job can't be submitted,
+    fails (retries exhausted) or times out, so provision_tenant marks the
+    tenant FAILED with the reason right away instead of waiting out the pod
+    timeout -- or, worse, reaching RUNNING with an empty database (the
+    schema/data Job isn't something the pods' health depends on). A deliberate
+    skip (no SQL/Mongo config, no controlops-server secret) is not a failure."""
     logger.info("[step] tenant=%s triggering DB seeding job", tenant.tenant_name)
     db_job_name = meta_builder_job.trigger_meta_builder_job(tenant, admin_password)
+    if not db_job_name:
+        return
+
     # Blocking, not fire-and-forget: bridge_meta_builder_job's Job connects
     # to the tenant's database AS the tenant's own login -- the one
     # db_job_name above is what actually creates -- so it can't run until
     # that Job has genuinely finished, not just been submitted.
-    if db_job_name and not meta_builder_job.wait_for_job(db_job_name):
-        logger.warning(
-            "[step] tenant=%s DB seeding job did not succeed -- skipping bridge meta-builder job",
-            tenant.tenant_name,
+    if not meta_builder_job.wait_for_job(db_job_name):
+        raise meta_builder_job.SeedJobError(
+            f"database creation Job '{db_job_name}' failed -- "
+            f"see its pod logs (kubectl logs -n {settings.meta_builder_job_namespace} job/{db_job_name})"
         )
-    elif db_job_name:
-        # Real schema + SQL default-data inserts + full Mongo seed
-        # (bridgeMetaInfo, admin user/auth, WFM lookups, ControlOps actors,
-        # IoT lookups/devices).
-        logger.info("[step] tenant=%s triggering bridge meta-builder job", tenant.tenant_name)
-        bridge_meta_builder_job.trigger_bridge_meta_builder_job(tenant, admin_password)
+
+    # Real schema + SQL default-data inserts + full Mongo seed
+    # (bridgeMetaInfo, admin user/auth, WFM lookups, ControlOps actors,
+    # IoT lookups/devices).
+    logger.info("[step] tenant=%s triggering bridge meta-builder job", tenant.tenant_name)
+    bridge_job_name = bridge_meta_builder_job.trigger_bridge_meta_builder_job(tenant, admin_password)
+    if bridge_job_name and not bridge_meta_builder_job.wait_for_job(bridge_job_name):
+        raise meta_builder_job.SeedJobError(
+            f"schema/data seeding Job '{bridge_job_name}' failed -- "
+            f"see its pod logs (kubectl logs -n {settings.bridge_meta_builder_job_namespace} job/{bridge_job_name})"
+        )
 
 
 def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
@@ -314,6 +327,9 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             _set_status(db, tenant, TenantStatus.FAILED, error=str(e))
         except git_service.GitServiceError as e:
             _set_status(db, tenant, TenantStatus.FAILED, error=str(e))
+        except meta_builder_job.SeedJobError as e:
+            logger.error("tenant=%s database seeding failed: %s", tenant.tenant_name, e)
+            _set_status(db, tenant, TenantStatus.FAILED, error=f"database seeding failed: {e}")
         except Exception as e:  # noqa: BLE001
             logger.exception("tenant=%s unexpected provisioning failure", tenant.tenant_name)
             _set_status(db, tenant, TenantStatus.FAILED, error=f"unexpected error: {e}")
