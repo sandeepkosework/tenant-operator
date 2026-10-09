@@ -634,6 +634,33 @@ database (the seed assumes one database per tenant: global `UR`/`E`/`PC`
 counters, fixed actor/device IDs, paycodes with no tenant field). Switching an
 existing deployment doesn't move old per-tenant mirror databases.
 
+## Default eRep setup (`app/services/erep_setup.py`)
+
+The equivalent of infra-runner's step 07: once a tenant is `RUNNING`, the
+operator POSTs a default eRep ("Noah", payload in
+`templates/erep_default_payload.json`, with a per-tenant email
+`erep-noah-<tenant_name>@example.com`) to the tenant's erep-server API. **Off by
+default** (`EREP_SETUP_ENABLED=false`).
+
+- **URL:** `EREP_SETUP_URL_TEMPLATE`, default
+  `https://{domain}/galaxy/erepapi/api/ereps` (`{domain}` = the tenant's ingress
+  host; `{tenant}` and `{slug}` also available). Success is HTTP 200/201.
+- **Reachability:** it calls the tenant's *public* URL, so wherever the operator
+  runs it needs DNS, a trusted TLS cert (or `EREP_SETUP_VERIFY_TLS=false`) and
+  egress to that host. The operator never writes to a spoke cluster's API and the
+  spokes aren't reachable by in-cluster DNS from the hub, so there is no
+  in-cluster shortcut -- point the template at any address that works instead.
+- **Retries:** `EREP_SETUP_ATTEMPTS` (12) x `EREP_SETUP_RETRY_DELAY_SECONDS` (10)
+  -- pods can be Ready before the ingress path is live.
+- **Failure policy:** by default a failure is logged and the tenant stays
+  `RUNNING`; set `EREP_SETUP_REQUIRED=true` to mark it `FAILED` instead
+  (infra-runner failed the whole run).
+- **Not idempotent**, like infra-runner's: it runs once at the end of creation,
+  is not retried after a success, and is not called on update. Re-running it by
+  hand would create a second eRep.
+- **Auth:** infra-runner sent no credentials and neither does this. If the
+  erep-server API requires auth, this step needs a header added.
+
 ## Shared tenant registry (database `qraieai`)
 
 Like infra-runner, which wrote one record per tenant into a shared `qraieai`
@@ -836,6 +863,8 @@ Selected settings worth knowing about explicitly:
 | `MONGO_ENV_CONFIG_URI` | unset | Full Mongo connection string, also the base for each tenant's derived `MONGODB_URI` (see above). |
 | `MONGO_ENV_CONFIG_SHARED_DB` | unset | Collapse the mirror into one shared database (collection `tenant_env_config`) instead of one database per tenant. |
 | `QRAIEAI_REGISTRY_ENABLED` | `false` | Keep one record per tenant in the shared registry database — see "Shared tenant registry". |
+| `EREP_SETUP_ENABLED` / `_REQUIRED` | `false` / `false` | Create the default eRep after a tenant is RUNNING; `_REQUIRED` fails the tenant if it can't — see "Default eRep setup". |
+| `EREP_SETUP_URL_TEMPLATE` | `https://{domain}/galaxy/erepapi/api/ereps` | Where the eRep is POSTed; also `_VERIFY_TLS`, `_ATTEMPTS`, `_RETRY_DELAY_SECONDS`, `_TIMEOUT_SECONDS`. |
 | `QRAIEAI_DB_NAME` / `QRAIEAI_REGISTRY_COLLECTION` | `qraieai` / `bridge_tenants` | Where the registry records go. |
 | `GIT_REPO_URL` / `GIT_BRANCH` / `GIT_TENANTS_DIR` | — | The GitOps repo and directory tenant manifests are committed into. |
 | `GIT_BRIDGE_TENANTS_DIR` | `bridge-tenants` | **Currently unused by any live code path** — `_tenants_dir_for()` in `provisioner.py` always returns `GIT_TENANTS_DIR` now that there's only one chart/one tenant flow. Kept because `git_service.py`'s functions already accept a `tenants_dir` override and nothing currently calls them with it; harmless to leave set. |
