@@ -149,11 +149,11 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     # secret/k8s/<slug>/service-common. Was named "common" before that chart
     # change; the platform-defaults entry of the old name is still honoured
     # (see read_qraie_bridge_platform_defaults).
-    # FABREQ_COMMAND_ENDPOINT_MAP is derived per tenant (the in-cluster address of
-    # wfm-microservice) and lives HERE, in the layer every service of the tenant
+    # FABREQ_COMMAND_ENDPOINT_MAP and MCP_SERVER_URL are derived per tenant (the
+    # in-cluster addresses of wfm-microservice and mcp-server) and live HERE, in the layer every service of the tenant
     # shares, not in wfm-api-gateway's own secret -- an own-secret key would sit
     # above this layer and, if empty, override it. See write_initial_*.
-    "service-common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT", "FABREQ_COMMAND_ENDPOINT_MAP"],
+    "service-common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT", "FABREQ_COMMAND_ENDPOINT_MAP", "MCP_SERVER_URL"],
     # These two have no custom `env:` block in the chart (raw redis/
     # redisgears images) -- but every enabled service still gets an
     # ExternalSecret (templates/externalsecret.yaml loops over ALL of
@@ -179,7 +179,7 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     "iot-broker-data": ["TENANT_ID", "BROKER_SERVICE_URL", "IOT_VLM_BASE_URL", "LOCONAV_WEBHOOK_ALLOW_INSECURE", "LOCONAV_WEBHOOK_AUTO_CREATE_DEVICE", "LOCONAV_WEBHOOK_SECRET", "LOCONAV_WEBHOOK_SECRETS", "MONGODB_URI", "NODE_ENV", "PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "iot-broker-loconav-vision": ["TENANT_ID", "DATA_SERVICE_URL", "FRONTEND_URL", "NODE_ENV", "PORT", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "iot-broker-web": ["TENANT_ID", "BASE_URL", "FRONTEND_URL", "PUBLIC_URL", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PORT", "VITE_BASE_PATH", "VITE_DATA_SERVICE_URL", "VITE_SOCKET_IO_PATH", "VITE_SOCKET_URL", "VITE_WEB_PORTAL_URL"],
-    "mcp-client": ["TENANT_ID", "ACTIVE_COLOR", "CONF_URL", "GLOBALAPIBASEURL", "MCP_SERVER_URL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "mcp-client": ["TENANT_ID", "ACTIVE_COLOR", "CONF_URL", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "mcp-server": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "MCP_SERVER_PORT", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "TZ"],
     # Expanded from a 7-key stub to the real set this service reads --
     # Jira-bot integration (BOT_EMAIL/TOKEN), management-routing config
@@ -202,7 +202,7 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     "qraie-ui": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "NODE_ENV", "NEXT_PUBLIC_SOCKET_URL", "NEXT_PUBLIC_VERSION"],
     "radicale": ["TENANT_ID", "RADICALE_CONFIG", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PORT"],
     "scheduler-agent": ["TENANT_ID", "ACTIVE_COLOR", "CONDUCTOR_API_KEY", "CONDUCTOR_BASE_URL", "CORS_ORIGINS", "GLOBALAPIBASEURL", "MEETING_API_KEY", "MEETING_API_URL", "MEETING_JOIN_BASE_URL", "PORT", "PRISM_BASE_URL", "PRISM_BRIDGE_ENABLED", "PRISM_POLL_INTERVAL_MS", "RADICALE_AGENT_PASS", "RADICALE_AGENT_USER", "RADICALE_BASE_URL", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SESSION_TTL_MINUTES", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    "tranops-backend": ["TENANT_ID", "ACTIVE_COLOR", "AGENTS_API_URL", "API_PORT", "ELEVENLABS_API_KEY", "ELEVENLABS_API_URL", "GLOBALAPIBASEURL", "JWT_EXPIRES_IN", "JWT_SECRET", "MCP_SERVER_URL", "MONGODB_URI", "POLLING_INTERVAL_MS", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SLM_API_URL", "SLM_PASSWORD", "SLM_USERNAME", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    "tranops-backend": ["TENANT_ID", "ACTIVE_COLOR", "AGENTS_API_URL", "API_PORT", "ELEVENLABS_API_KEY", "ELEVENLABS_API_URL", "GLOBALAPIBASEURL", "JWT_EXPIRES_IN", "JWT_SECRET", "MONGODB_URI", "POLLING_INTERVAL_MS", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SLM_API_URL", "SLM_PASSWORD", "SLM_USERNAME", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "tranops-ui": ["TENANT_ID", "ACTIVE_COLOR", "BASE_URL", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "VITE_API_URL", "VITE_WS_URL"],
     "voxflow": ["TENANT_ID", "ACTIVE_COLOR", "BASE_PATH", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "RIDE_API_AUTH_TOKEN", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "wfm-api-gateway": ["TENANT_ID", "ACTIVE_COLOR", "ALLOWED_ORIGINS", "GLOBALAPIBASEURL", "LOG_LEVEL", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SERVER_HOST", "SERVER_NAME", "SERVER_PORT", "START_PORT", "TZ", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
@@ -257,6 +257,21 @@ QRAIE_BRIDGE_SQL_NAME_KEYS = {"DB_USER", "DB_NAME", "DB_SCHEMA"}
 # wfm-microservice's containerPort in helm-chart-bridge's values.yaml (the Service
 # port is the same). Keep in step with the chart.
 WFM_MICROSERVICE_PORT = 9001
+# mcp-server's containerPort in the chart (its MCP_SERVER_PORT/PORT env, same Service port).
+MCP_SERVER_PORT = 10011
+
+
+def _service_common_derived(tenant_slug: str) -> dict[str, str]:
+    """Keys that live ONLY in a tenant's service-common secret, with the value
+    derived from the tenant: the in-cluster addresses of two services. They must
+    not also appear in any service's own secret, which sits above service-common
+    in the pod's env and would override it (an empty copy blanks it; another
+    service's own value silently replaces it)."""
+    svc = _k8s_service_slug(tenant_slug)
+    return {
+        "FABREQ_COMMAND_ENDPOINT_MAP": f"http://{svc}-wfm-microservice:{WFM_MICROSERVICE_PORT}",
+        "MCP_SERVER_URL": f"http://{svc}-mcp-server:{MCP_SERVER_PORT}/mcp",
+    }
 
 
 def _k8s_service_slug(tenant_slug: str) -> str:
@@ -380,7 +395,7 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
     # Service "<slug>-wfm-microservice" on the container port. The old compose file
     # had the container name "http://wfm-microservice:9001", which doesn't resolve
     # on Kubernetes.
-    wfm_microservice_url = f"http://{redis_dns_slug}-wfm-microservice:{WFM_MICROSERVICE_PORT}"
+    service_common_derived = _service_common_derived(tenant_slug)
     tenant_redis_port = "6379"
     tenant_redis_password = _generate_secret()
     # One SQL login per tenant (created by the seeding Job from this value), so every
@@ -395,8 +410,8 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 data[k] = tenant_domain
             elif k == "MONGODB_URI":
                 data[k] = mongodb_uri
-            elif k == "FABREQ_COMMAND_ENDPOINT_MAP":
-                data[k] = wfm_microservice_url
+            elif k in service_common_derived:
+                data[k] = service_common_derived[k]
             elif k == "REDIS_HOST":
                 data[k] = tenant_redis_host
             elif k == "REDIS_PORT":
@@ -523,6 +538,50 @@ def prune_empty_tenant_secrets(tenant_slug: str, apply: bool = False) -> dict:
             total += len(removed)
     logger.info("[vault] tenant=%s prune-empty %s: %d key(s)", tenant_slug, "APPLIED" if apply else "dry run", total)
     return {"tenant": tenant_slug, "applied": apply, "totalKeysRemoved" if apply else "totalKeysToRemove": total, "services": services}
+
+
+def sync_service_common_derived_keys(tenant_slug: str, apply: bool = False) -> dict:
+    """For a tenant created before FABREQ_COMMAND_ENDPOINT_MAP and MCP_SERVER_URL
+    moved to service-common: sets both in secret/<prefix>/<slug>/service-common (to
+    the derived in-cluster addresses) and REMOVES them from every other path,
+    whatever their value, so nothing overrides the shared one. Dry run unless
+    apply=True. A path left with no keys at all is skipped (it must keep one).
+    The removed values are reported (they are URLs, not secrets) so you can see
+    what each service had -- e.g. tranops-backend's own MCP_SERVER_URL, which
+    it will no longer have."""
+    if not settings.vault_enabled:
+        raise VaultServiceError("VAULT_ENABLED=false -- there is nothing in Vault to change")
+    derived = _service_common_derived(tenant_slug)
+    base = f"{settings.vault_tenant_secret_prefix}/{tenant_slug}"
+    services: dict[str, dict] = {}
+    for service in QRAIE_BRIDGE_SERVICE_KEYS:
+        path = f"{base}/{service}"
+        data = _read(path)
+        if data is None:
+            services[service] = {"status": "missing"}
+            continue
+        if service == "service-common":
+            changes = {k: v for k, v in derived.items() if data.get(k) != v}
+            if not changes:
+                services[service] = {"status": "ok", "set": {}}
+                continue
+            if apply:
+                _write(path, {**data, **changes})
+            services[service] = {"status": "updated" if apply else "would_update", "set": changes}
+            continue
+        removed = {k: data[k] for k in derived if k in data}
+        if not removed:
+            services[service] = {"status": "ok", "removed": {}}
+            continue
+        kept = {k: v for k, v in data.items() if k not in derived}
+        if not kept:
+            services[service] = {"status": "skipped", "removed": {}, "note": "removing the keys would leave the path empty"}
+            continue
+        if apply:
+            _write(path, kept)
+        services[service] = {"status": "removed" if apply else "would_remove", "removed": removed}
+    logger.info("[vault] tenant=%s sync-shared-keys %s", tenant_slug, "APPLIED" if apply else "dry run")
+    return {"tenant": tenant_slug, "applied": apply, "derived": derived, "services": services}
 
 
 def read_tenant_secrets(tenant_id: str) -> dict:

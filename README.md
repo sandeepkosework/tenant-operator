@@ -576,17 +576,34 @@ paths, which it already does at tenant creation) or the script
 CLI and `jq`). Secrets are read at pod start and refreshed from Vault
 hourly: after changing Vault, restart the pods.
 
-**`FABREQ_COMMAND_ENDPOINT_MAP` is derived per tenant and lives in `service-common`.**
-It is the address the `wfm-api-gateway` uses to reach `wfm-microservice`: the chart's
-per-tenant Kubernetes Service, `http://<tenant>-wfm-microservice:9001` (a tenant id
-starting with a digit gets the chart's `t-` prefix, e.g.
-`http://t-00042-acme-wfm-microservice:9001`). The old compose value
-`http://wfm-microservice:9001` was a Docker container name and doesn't resolve on
-Kubernetes. The operator writes it into `secret/k8s/<tenant>/service-common` -- the
-layer every service of the tenant shares -- and no longer into the gateway's own
-secret, where an empty copy would override it. A platform default for this key is
-ignored. The port is `WFM_MICROSERVICE_PORT` in `vault_service.py`; keep it in step
-with the chart's `wfm-microservice` containerPort.
+**`FABREQ_COMMAND_ENDPOINT_MAP` and `MCP_SERVER_URL` are derived per tenant and live only
+in `service-common`.** They are the in-cluster addresses of two services -- the chart's
+per-tenant Kubernetes Services, not the Docker container names the old compose file
+used (`http://wfm-microservice:9001`, `http://mcp-server:10011/mcp`, which don't resolve
+on Kubernetes):
+
+| Key | Value for tenant `hbss-013` |
+|---|---|
+| `FABREQ_COMMAND_ENDPOINT_MAP` | `http://hbss-013-wfm-microservice:9001` |
+| `MCP_SERVER_URL` | `http://hbss-013-mcp-server:10011/mcp` |
+
+(A tenant id starting with a digit gets the chart's `t-` prefix:
+`http://t-00042-acme-mcp-server:10011/mcp`.) The operator writes them into
+`secret/k8s/<tenant>/service-common` -- the layer every service of the tenant shares --
+and into **no other** path, because a service's own secret sits above `service-common`
+in the pod's environment and would override it. Platform defaults for these keys are
+ignored. The ports are `WFM_MICROSERVICE_PORT` and `MCP_SERVER_PORT` in
+`vault_service.py`; keep them in step with the chart.
+
+**Every service therefore receives `MCP_SERVER_URL` -- including `tranops-backend`,
+which used to have its own, different value** (the old compose used
+`https://mcp-slm-client.qryde.net/get_conversations` for it). If `tranops-backend`
+needs its own address it can no longer get it from Vault by this key.
+
+Tenants created before this: `POST /api/v1/tenant/{id}/vault/sync-shared-keys` sets both
+keys in `service-common` and **removes them from every other path of the tenant,
+whatever their value** (the report lists what each path had). Dry run by default; add
+`?apply=true` to write. Then let the chart re-sync and restart the tenant's pods.
 
 **`TENANT_ID` is the bare tenant name, not the slug.** Every service's Vault
 secret gets `TENANT_ID=<tenant_name>` (e.g. `hbss-010`), matching what the seed
