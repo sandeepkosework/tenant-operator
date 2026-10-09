@@ -551,6 +551,21 @@ against the original docker-compose stack this chart was converted from.
 service** — it's too large and too likely to drift to usefully duplicate
 here; below is the mechanism, not the full schema.
 
+**Empty keys are not written to Vault.** A pod's environment is built from three
+secrets -- `secret/k8s/tenant-common`, then `<tenant>/service-common`, then the
+service's own `<tenant>/<service>` -- and a later one wins on a key it defines,
+*even with an empty string*. The operator used to write every key of every
+service (empty where no platform default was configured), so an empty
+`GLOBALAPIBASEURL` in the service's own secret silently overrode the real value
+set once in `tenant-common`. It now writes only keys that have a value, so a
+shared value in `tenant-common` (or `service-common`) reaches the pods. A key with
+no value anywhere is simply absent from the pod's environment instead of empty.
+Tenants created before this change keep their empty keys until removed:
+`scripts/prune-empty-vault-keys.sh <tenant-slug>` shows what it would remove from
+that tenant's Vault paths (dry run) and `... --apply` rewrites them (needs the
+`vault` CLI and `jq`). Secrets are read at pod start and refreshed from Vault
+hourly: after changing Vault, restart the pods.
+
 **`TENANT_ID` is the bare tenant name, not the slug.** Every service's Vault
 secret gets `TENANT_ID=<tenant_name>` (e.g. `hbss-010`), matching what the seed
 Job uses for the Mongo database (`<tenant_name>-bridge`) and `tenantObj.tenantId`,

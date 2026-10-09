@@ -396,13 +396,23 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 data[k] = _generate_secret()
             else:
                 data[k] = platform.get(k, "")
+        # Don't write keys that have no value. The pod's env is built from three
+        # secrets (tenant-common < service-common < this service's own) and a later
+        # one wins on a key it defines -- even with an empty string -- so an empty
+        # GLOBALAPIBASEURL here would silently override the real value an
+        # operator set once in secret/k8s/tenant-common. Left out, the lower layer
+        # supplies it. (If NOTHING has a value the keys are written anyway: the
+        # path has to exist or the pod's ExternalSecret can't sync.)
+        payload = {k: v for k, v in data.items() if v != ""} or data
+        skipped = len(data) - len(payload)
         logger.info(
-            "[vault] tenant=%s writing qraie-bridge secret %s/%s%s: %s",
+            "[vault] tenant=%s writing qraie-bridge secret %s/%s%s: %s%s",
             tenant_slug, base, service, " (echoed, vault_enabled=false)" if not settings.vault_enabled else "",
-            _redact(data),
+            _redact(payload),
+            f" (+{skipped} empty key(s) not written, so tenant-common/service-common can supply them)" if skipped else "",
         )
         if settings.vault_enabled:
-            _write(f"{base}/{service}", data)
+            _write(f"{base}/{service}", payload)
         written[service] = data
 
     logger.info("[vault] tenant=%s qraie-bridge secrets ready (%d services)", tenant_slug, len(QRAIE_BRIDGE_SERVICE_KEYS))
