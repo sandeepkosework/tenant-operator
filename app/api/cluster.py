@@ -7,7 +7,7 @@ from app.services import cluster_selector, spoke_cr
 router = APIRouter(prefix="/cluster", tags=["cluster"])
 
 
-@router.get("")
+@router.get("", summary="List spoke clusters", responses={401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}})
 def list_clusters(db: Session = Depends(get_db)):
     """Current SpokeCluster CR content for every registered spoke -- tenant list + count per environment."""
     return [
@@ -16,7 +16,7 @@ def list_clusters(db: Session = Depends(get_db)):
     ]
 
 
-@router.get("/{name}")
+@router.get("/{name}", summary="Get one spoke cluster", responses={404: {"description": "Cluster not in registry"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}})
 def get_cluster(name: str, db: Session = Depends(get_db)):
     cluster = next((c for c in cluster_selector.load_cluster_registry() if c.name == name), None)
     if cluster is None:

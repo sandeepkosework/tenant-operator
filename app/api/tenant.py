@@ -22,7 +22,21 @@ router = APIRouter(prefix="/tenant", tags=["tenant"])
 settings = get_settings()
 
 
-@router.post("", response_model=TenantCreateAccepted, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "",
+    response_model=TenantCreateAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Create (onboard) a tenant",
+    description=(
+        "Validates the request, allocates a sequential number, stores the tenant row as `PENDING` and "
+        "returns **immediately** (202). Provisioning continues in the background: pick a spoke cluster, "
+        "write Vault secrets, commit the per-tenant `values.yaml` to the GitOps repo, let Argo CD sync it, "
+        "then seed the tenant database.\n\n"
+        "Poll `GET /tenant/{id}` (or subscribe on Socket.IO) to follow progress.\n\n"
+        "`password` is the tenant admin's initial password; it is used in memory only and never stored."
+    ),
+    responses={400: {"description": "Validation failed (bad name, duplicate active tenant, unknown service, ...)"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
+)
 def create_tenant(
     req: TenantCreateRequest,
     background_tasks: BackgroundTasks,
@@ -73,7 +87,13 @@ def create_tenant(
     return TenantCreateAccepted(tenantId=tenant.id, status=tenant.status)
 
 
-@router.get("/{tenant_id}", response_model=TenantResponse)
+@router.get(
+    "/{tenant_id}",
+    response_model=TenantResponse,
+    summary="Get one tenant",
+    description="Current record for a tenant, including `status`, `progress` (0-100, for a progress bar), `errorMessage` when FAILED, cluster and namespace.",
+    responses={404: {"description": "Tenant not found"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
+)
 def get_tenant(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
@@ -81,7 +101,12 @@ def get_tenant(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
     return tenant
 
 
-@router.get("/{tenant_id}/vault")
+@router.get(
+    "/{tenant_id}/vault",
+    summary="Get a tenant's Vault secrets",
+    description="Current Vault secrets for the tenant, one path per qraie-bridge service (platform defaults merged with tenant-specific generated credentials). **Returns sensitive values.**",
+    responses={404: {"description": "Tenant not found"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
+)
 def get_tenant_vault(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
     """Current Vault secrets for this tenant -- one path per qraie-bridge
     chart service, platform defaults + tenant-specific (generated
@@ -93,7 +118,13 @@ def get_tenant_vault(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
     return vault_service.read_tenant_secrets(tenant.slug)
 
 
-@router.get("", response_model=list[TenantResponse])
+@router.get(
+    "",
+    response_model=list[TenantResponse],
+    summary="List tenants",
+    description="All tenants (including DELETED ones), newest first. Filter with `environment` and/or `status_filter`.",
+    responses={401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}},
+)
 def list_tenants(
     environment: str | None = None,
     status_filter: TenantStatus | None = None,
@@ -107,7 +138,13 @@ def list_tenants(
     return query.order_by(Tenant.created_at.desc()).all()
 
 
-@router.put("/{tenant_id}", response_model=TenantResponse)
+@router.put(
+    "/{tenant_id}",
+    response_model=TenantResponse,
+    summary="Update a tenant",
+    description="Change version, user count, database size or the enabled-service selection. Only allowed while the tenant is `RUNNING` or `FAILED`. Returns the current record immediately; the change is applied in the background (status goes to `UPDATING`).",
+    responses={404: {"description": "Tenant not found"}, 409: {"description": "Tenant is not RUNNING/FAILED"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
+)
 def update_tenant(
     tenant_id: uuid.UUID,
     req: TenantUpdateRequest,
@@ -137,7 +174,13 @@ def update_tenant(
     return tenant
 
 
-@router.delete("/{tenant_id}", status_code=status.HTTP_202_ACCEPTED)
+@router.delete(
+    "/{tenant_id}",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Delete a tenant",
+    description="Starts teardown in the background: removes the tenant's manifest from git, lets Argo CD prune it and deletes the namespace. Status goes to `DELETING`, then `DELETED` (the row is soft-deleted). **Destructive.**",
+    responses={404: {"description": "Tenant not found"}, 409: {"description": "Deletion already in progress"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
+)
 def delete_tenant(tenant_id: uuid.UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tenant Operator</title>
+<style>
+  :root{--bg:#f5f6f8;--card:#fff;--text:#1c2330;--muted:#6b7480;--line:#e3e6eb;--accent:#2b6cb0;--ok:#2f9e5e;--bad:#d64545;--warn:#d9902f}
+  @media(prefers-color-scheme:dark){:root{--bg:#14171c;--card:#1d2128;--text:#e6e9ee;--muted:#8b94a1;--line:#2c323b;--accent:#5a9be0}}
+  *{box-sizing:border-box}body{margin:0;font:14px system-ui,sans-serif;background:var(--bg);color:var(--text)}
+  header{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;background:var(--card);border-bottom:1px solid var(--line)}
+  h1{font-size:18px;margin:0}main{padding:24px;max-width:1200px;margin:auto}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px}
+  #login{max-width:340px;margin:12vh auto}#login input{width:100%;padding:9px;margin:6px 0 12px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text)}
+  button{padding:8px 14px;border:0;border-radius:6px;background:var(--accent);color:#fff;cursor:pointer;font:inherit}
+  button.danger{background:var(--bad)}button.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}button:disabled{opacity:.5;cursor:default}
+  table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+  th{color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase}
+  .bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;min-width:120px}.bar>div{height:100%;background:var(--accent);transition:width .6s}
+  .bar.ok>div{background:var(--ok)}.bar.bad>div{background:var(--bad)}
+  .badge{padding:2px 8px;border-radius:10px;font-size:12px;border:1px solid var(--line)}
+  .RUNNING{color:var(--ok)}.FAILED{color:var(--bad)}.DELETING,.DELETED{color:var(--warn)}
+  .err{color:var(--bad);font-size:12px;margin-top:4px;max-width:340px}.muted{color:var(--muted)}
+  #msg{color:var(--bad);margin-bottom:8px}
+</style>
+</head>
+<body>
+<div id="login" class="card" hidden>
+  <h1>Tenant Operator</h1><p class="muted">Admin login</p>
+  <div id="msg"></div>
+  <form id="loginForm">
+    <label>Username<input id="u" autocomplete="username" required></label>
+    <label>Password<input id="p" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header><h1>Tenant Operator</h1><div><a href="/docs" target="_blank" class="muted">API docs</a> &nbsp; <span id="count" class="muted"></span> <button class="ghost" id="logout">Sign out</button></div></header>
+  <main><div class="card">
+    <p id="loadErr" class="err" hidden></p>
+    <table><thead><tr><th>Tenant</th><th>Cluster</th><th>Status</th><th>Progress</th><th>Created</th><th></th></tr></thead>
+    <tbody id="rows"></tbody></table>
+    <p id="empty" class="muted" hidden>No tenants.</p>
+  </div></main>
+</div>
+
+<script>
+const API = "/api/v1";
+let token = sessionStorage.getItem("token") || "";
+const $ = id => document.getElementById(id);
+const authHdr = () => token ? {Authorization: "Bearer " + token} : {};
+let timer;
+
+function show(which){ $("login").hidden = which !== "login"; $("app").hidden = which !== "app"; }
+
+function start(){ token ? enter() : show("login"); }
+function enter(){ show("app"); refresh(); clearInterval(timer); timer = setInterval(refresh, 3000); }
+
+$("loginForm").onsubmit = async e => {
+  e.preventDefault(); $("msg").textContent = "";
+  const r = await fetch(API + "/auth/login", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({username:$("u").value, password:$("p").value})});
+  if (!r.ok){ $("msg").textContent = (await r.json()).detail || "Login failed"; return; }
+  token = (await r.json()).token; sessionStorage.setItem("token", token); $("p").value = ""; enter();
+};
+$("logout").onclick = () => { token = ""; sessionStorage.removeItem("token"); clearInterval(timer); show("login"); };
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function showErr(m){ $("loadErr").textContent = m; $("loadErr").hidden = !m; }
+
+async function refresh(){
+  try {
+    const r = await fetch(API + "/tenant", {headers: authHdr()});
+    if (r.status === 401){ $("logout").click(); return; }
+    if (!r.ok){ showErr(`Could not load tenants: HTTP ${r.status} ${(await r.json().catch(() => ({}))).detail || ""}`); return; }
+    showErr("");
+    const list = (await r.json()).filter(t => t.status !== "DELETED");
+    $("count").textContent = list.length + " tenant(s)";
+    $("empty").hidden = list.length > 0;
+    $("rows").innerHTML = list.map(t => {
+      const cls = t.status === "RUNNING" ? "ok" : t.status === "FAILED" ? "bad" : "";
+      const busy = ["DELETING","PENDING","VALIDATING","GIT_COMMITTED","SYNCING","UPDATING"].includes(t.status);
+      return `<tr>
+        <td><b>${esc(t.displayName || t.tenantName)}</b><div class="muted">${esc(t.slug)}</div></td>
+        <td>${esc(t.cluster || "-")}</td>
+        <td><span class="badge ${t.status}">${t.status}</span>${t.errorMessage ? `<div class="err">${esc(t.errorMessage)}</div>` : ""}</td>
+        <td><div class="bar ${cls}"><div style="width:${t.progress}%"></div></div><span class="muted">${t.progress}%</span></td>
+        <td class="muted">${new Date(t.createdAt).toLocaleString()}</td>
+        <td><button class="danger" data-id="${t.id}" data-name="${esc(t.slug)}" ${t.status === "DELETING" ? "disabled" : ""}>Delete</button></td></tr>`;
+    }).join("");
+  } catch (e) { showErr("Could not reach the operator: " + e.message); }
+}
+
+$("rows").onclick = async e => {
+  const b = e.target.closest("button[data-id]"); if (!b) return;
+  if (prompt(`Type the tenant name to confirm deletion:\n${b.dataset.name}`) !== b.dataset.name) return;
+  const r = await fetch(`${API}/tenant/${b.dataset.id}`, {method:"DELETE", headers: authHdr()});
+  if (r.status === 401){ alert("Session expired — please sign in again."); $("logout").click(); return; }
+  if (!r.ok) alert((await r.json()).detail || "Delete failed");
+  refresh();
+};
+
+start();
+</script>
+</body>
+</html>

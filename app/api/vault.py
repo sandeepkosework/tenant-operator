@@ -5,7 +5,7 @@ from app.services import vault_service
 router = APIRouter(prefix="/vault", tags=["vault"])
 
 
-@router.get("/qraie-bridge-defaults")
+@router.get("/qraie-bridge-defaults", summary="Get shared qraie-bridge defaults", responses={401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}})
 def get_qraie_bridge_platform_defaults():
     """Current shared (non-tenant-specific) config for every qraie-bridge
     service -- external API creds, business URLs, etc. that are the same
@@ -15,7 +15,7 @@ def get_qraie_bridge_platform_defaults():
     return vault_service.read_qraie_bridge_platform_defaults()
 
 
-@router.put("/qraie-bridge-defaults/{service}")
+@router.put("/qraie-bridge-defaults/{service}", summary="Set shared defaults for one service", responses={400: {"description": "Unknown service or invalid keys"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}})
 def put_qraie_bridge_platform_defaults(service: str, config: dict):
     """Overwrites the shared config for one qraie-bridge service, e.g.
     PUT .../tranops-backend {"SLM_API_URL": "...", "SLM_PASSWORD": "..."}.
