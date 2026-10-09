@@ -167,6 +167,12 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
         {"name": "QRAIEAI_MONGODB_URI", "value": mongo_base_uri},
         {"name": "JWT_SECRETKEY", "value": jwt_secret.get("G_JWT_SECRETKEY", "")},
         {"name": "RT_SECRETKEY", "value": jwt_secret.get("G_RT_SECRETKEY", "")},
+        # Third-party (Perplexity) API token, seeded into the tenant's
+        # bridgeMetaInfo.workplace.PerplexityToken. Same value the tenant's pods
+        # get from secret/k8s/tenant-common (key PerplexityToken); an ERROR is
+        # logged if it isn't there (the tenant is still created, with an empty
+        # token). See vault_service.read_tenant_common_value().
+        {"name": "PERPLEXITY_TOKEN", "value": vault_service.read_tenant_common_value("PerplexityToken")},
         {"name": "DLM_SECRET_KEY", "value": settings.bridge_dlm_secret_key or ""},
         {"name": "SLM_KB_AUTH_PASSWORD", "value": settings.bridge_slm_kb_auth_password or ""},
         {"name": "IS_STAGING", "value": "true" if settings.environment == "stage" else "false"},

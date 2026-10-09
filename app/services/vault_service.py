@@ -410,6 +410,41 @@ def read_qraie_bridge_tenant_secret(tenant_slug: str, service: str) -> dict | No
     return _read(f"{settings.vault_tenant_secret_prefix}/{tenant_slug}/{service}")
 
 
+# The org-wide layer of helm-chart-bridge's three-layer secrets
+# (secret/<prefix>/tenant-common) -- maintained by hand, never written by
+# this operator. It is read here only to copy a value the chart delivers to
+# the pods (e.g. PerplexityToken) into data this operator seeds elsewhere.
+TENANT_COMMON_PATH = "tenant-common"
+
+
+def read_tenant_common_value(key: str) -> str:
+    """One value from secret/<prefix>/tenant-common, or "" if it can't be
+    had. Never raises: a missing value must not abort tenant creation, so
+    every reason it's missing is logged as an ERROR naming the exact Vault
+    path and key to fix (Vault being disabled is only a WARNING -- that's a
+    deliberate dev setting, not a missing secret)."""
+    path = f"{settings.vault_kv_mount}/{settings.vault_tenant_secret_prefix}/{TENANT_COMMON_PATH}"
+    if not settings.vault_enabled:
+        logger.warning("[vault] %s not read from %s: VAULT_ENABLED=false", key, path)
+        return ""
+    try:
+        data = _read(f"{settings.vault_tenant_secret_prefix}/{TENANT_COMMON_PATH}")
+    except VaultServiceError as e:
+        logger.error("[vault] could not read %s for key '%s': %s", path, key, e)
+        return ""
+    if data is None:
+        logger.error("[vault] %s does not exist -- create it and add key '%s'", path, key)
+        return ""
+    value = data.get(key)
+    if not value:
+        logger.error(
+            "[vault] key '%s' is %s in %s -- add it (it is also what the tenant pods receive from this path)",
+            key, "empty" if key in data else "missing", path,
+        )
+        return ""
+    return value
+
+
 def read_tenant_secrets(tenant_id: str) -> dict:
     """GET /api/v1/tenant/{id}/vault. Reads back what's currently stored for
     this tenant -- every qraie-bridge service path -- or a note explaining
