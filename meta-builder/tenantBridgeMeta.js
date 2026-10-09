@@ -427,7 +427,10 @@ async function tenantDatabaseInitializer(conn, tenantId, tenantName, password, e
 
         // ============ 2) CREATE ADMIN USER =============
 
-        const userId = await getNext(conn, "UR");
+        // Reuse the admin user on a re-run instead of burning a new "UR"
+        // sequence number (and creating a duplicate user) every attempt.
+        const existingUser = await Users.findOne({ userName: tenantId }).lean();
+        const userId = existingUser ? existingUser.userId : await getNext(conn, "UR");
 
         const update = {
             $set: {
@@ -1184,7 +1187,14 @@ async function wfmLookupSeeder(conn, tenantId, adminUserId) {
 
     const toInsert = [];
 
+    // Re-run safe: skip paycodes that were already seeded (matched by name).
+    const existingPayCodeNames = new Set(
+        (await WfmPayCode.find({}, { name: 1 }).lean()).map((d) => d.name)
+    );
+
     for (const pc of paycodes) {
+        if (existingPayCodeNames.has(pc.name)) continue;
+
         // Increment sequence for each paycode
         const nextSeq = await getNext(conn, 'PC');
 
@@ -1221,7 +1231,9 @@ async function wfmLookupSeeder(conn, tenantId, adminUserId) {
     }
 
     // Insert all docs at once
-    await WfmPayCode.insertMany(toInsert);
+    if (toInsert.length > 0) {
+        await WfmPayCode.insertMany(toInsert);
+    }
 
     // 4�⃣ Department / Activity type base sample
 
@@ -1279,6 +1291,17 @@ async function wfmLookupSeeder(conn, tenantId, adminUserId) {
     });
 
     await WfmDepartment.insertMany(docs);
+
+    // Re-run safe: both default employees already exist -> nothing to add
+    // (and no new "E" sequence numbers get burned).
+    const existingEmployees = await Employee.countDocuments({
+        tenantId,
+        $or: [
+            { firstName: "admin", lastName: "noah" },
+            { firstName: tenantId, lastName: "admin" }
+        ]
+    });
+    if (existingEmployees >= 2) return true;
 
     // Generate sequential employee IDs
     const nextEmp1 = await getNext(conn, "E");   // 100001
@@ -1676,8 +1699,8 @@ function applySqlTemplate(template, values) {
     return sql;
 }
 
-async function executeSqlScript(sqlText, sqlDB, tenantId) {
-    const dbConfig = {
+function sqlConnectionConfig(sqlDB, database) {
+    return {
         user: sqlDB.DB_USER,
         password: sqlDB.DB_PASSWORD,
         server: sqlDB.DB_HOST,
@@ -1687,7 +1710,7 @@ async function executeSqlScript(sqlText, sqlDB, tenantId) {
         // a NodePort remap (30143 -> 1433), so the real port has to be
         // explicit.
         port: parseInt(sqlDB.DB_PORT, 10),
-        database: tenantId,
+        database,
         options: {
             // sqlcmd -C negotiates TLS and just trusts the server's
             // certificate without strict validation -- encrypt: false here
@@ -1706,25 +1729,65 @@ async function executeSqlScript(sqlText, sqlDB, tenantId) {
         requestTimeout: 300000,   // 5 minutes
         connectionTimeout: 30000 // 30 seconds
     };
+}
 
+// GO is a batch separator understood only by client tools (sqlcmd/SSMS),
+// which split on it and send each batch to the server separately -- the
+// server itself doesn't recognize GO as valid T-SQL and rejects it
+// ("Incorrect syntax near 'GO'") if sent verbatim in one .batch() call.
+function splitSqlBatches(sqlText) {
+    return sqlText
+        .split(/^\s*GO\s*$/im)
+        .map((b) => b.trim())
+        .filter((b) => b.length > 0);
+}
 
-    const pool = await sql.connect(dbConfig);
+function countCreateTables(schemaSql) {
+    return (schemaSql.match(/^\s*CREATE\s+TABLE\b/gim) || []).length;
+}
+
+// What state is this tenant's SQL database in?
+//   "empty"       no tables yet                        -> run schema + inserts
+//   "schema-only" every table exists, TENANT has no rows -> run inserts only
+//   "seeded"      tables + TENANT row already present  -> nothing to do
+//   "partial"     some but not all tables              -> unsafe to guess, fail
+// The seed below is applied in ONE transaction, so "partial" can only come
+// from a manual/legacy run -- never from a failed attempt of this script.
+async function getSqlSeedState(sqlDB, dbName, expectedTables) {
+    const pool = await new sql.ConnectionPool(sqlConnectionConfig(sqlDB, dbName)).connect();
     try {
-        // GO is a batch separator understood only by client tools
-        // (sqlcmd/SSMS), which split on it and send each batch to the
-        // server separately -- the server itself doesn't recognize GO as
-        // valid T-SQL and rejects it ("Incorrect syntax near 'GO'") if sent
-        // verbatim in one .batch() call. The schema script has one real GO
-        // (after `USE [tenantId]`, once the CREATE DATABASE header block is
-        // stripped above) -- split on any/all of them and run each batch in
-        // order on the same connection, matching what sqlcmd -i does.
-        const batches = sqlText
-            .split(/^\s*GO\s*$/im)
-            .map((b) => b.trim())
-            .filter((b) => b.length > 0);
-        for (const batch of batches) {
-            await pool.request().batch(batch);
+        const tables = (await pool.request().query("SELECT COUNT(*) AS n FROM sys.tables")).recordset[0].n;
+        if (tables === 0) return "empty";
+        if (tables < expectedTables) return "partial";
+        const tenants = (await pool.request().query("SELECT COUNT(*) AS n FROM dbo.TENANT")).recordset[0].n;
+        return tenants > 0 ? "seeded" : "schema-only";
+    } finally {
+        await pool.close();
+    }
+}
+
+// Applies the schema (when the DB is "empty") and the default inserts as a
+// single all-or-nothing transaction (SQL Server DDL is transactional), so a
+// failure leaves the database exactly as it was and the Job can simply be
+// retried -- no half-created tables, no duplicate-key errors on re-run.
+async function applySqlSeed({ sqlDB, dbName, schemaSql, insertsSql, state }) {
+    const pool = await new sql.ConnectionPool(sqlConnectionConfig(sqlDB, dbName)).connect();
+    const tx = new sql.Transaction(pool);
+    try {
+        await tx.begin();
+        const run = async (text) => {
+            for (const batch of splitSqlBatches(text)) {
+                await new sql.Request(tx).batch(batch);
+            }
+        };
+        if (state === "empty") {
+            await run(schemaSql);
         }
+        await run(insertsSql);
+        await tx.commit();
+    } catch (err) {
+        try { await tx.rollback(); } catch (_) { /* already rolled back */ }
+        throw err;
     } finally {
         await pool.close();
     }
@@ -1772,7 +1835,7 @@ function applySchemaTemplate(template, tenantId) {
     return sqlText;
 }
 
-async function runTenantSchema({ tenantId, sqlDB }) {
+function prepareTenantSchemaSql(tenantId) {
     if (!/^[a-zA-Z0-9_-]+$/.test(tenantId)) {
         throw new Error("Invalid tenantId");
     }
@@ -1782,19 +1845,18 @@ async function runTenantSchema({ tenantId, sqlDB }) {
         throw new Error(`Schema SQL file not found at ${schemaPath}`);
     }
 
-    const schemaTemplate = fs.readFileSync(schemaPath, "utf8");
-    const finalSql = applySchemaTemplate(schemaTemplate, tenantId);
-
-    await executeSqlScript(finalSql, sqlDB, tenantId);
+    return applySchemaTemplate(fs.readFileSync(schemaPath, "utf8"), tenantId);
 }
 
-async function runTenantDefaultInserts({
+// Builds the default-inserts SQL and the credentials it embeds (hashed) --
+// WITHOUT executing it. main() runs the Mongo seed with these same credentials
+// first and applies the SQL last, atomically (see applySqlSeed).
+async function prepareDefaultInserts({
     tenantId,
     dbName,
     tenantName,
     email,
     adminPassword,
-    sqlDB,
     timezone = DEFAULT_TZ
 }) {
     if (!/^[a-zA-Z0-9_-]+$/.test(tenantId)) {
@@ -1864,11 +1926,9 @@ async function runTenantDefaultInserts({
     // fs.writeFileSync(outputFilePath, finalSql, "utf8");
     // END TESTING
 
-    /* 🚀 Execute SQL */
-    await executeSqlScript(finalSql, sqlDB, dbName);
-
-    /* 🧾 Return credentials (DO NOT LOG IN PROD) */
+    /* 🧾 Return SQL + credentials (DO NOT LOG IN PROD) */
     return {
+        insertsSql: finalSql,
         tenantId,
         adminEmail: email,
         adminPassword: adminPassword,
@@ -1956,6 +2016,38 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
         const tenantId = TENANT_ID.toLowerCase();
 
         /* =========================
+           STEP 0b: Is this tenant's SQL database already seeded?
+        ========================= */
+
+        // The real database/login meta_builder_job.py created. Read straight
+        // from env (the same values bridgeMetaBuilderService() echoes back in
+        // configFile below) so a re-run can bail out BEFORE touching Mongo --
+        // re-seeding Mongo with freshly generated bot credentials would no
+        // longer match the ones already stored in SQL.
+        const sqlDB = {
+            DB_USER: requireEnv("DB_USER"),
+            DB_PASSWORD: requireEnv("DB_PASSWORD"),
+            DB_HOST: requireEnv("DB_HOST"),
+            DB_PORT: requireEnv("DB_PORT")
+        };
+        const sqlDbName = requireEnv("DB_NAME");
+
+        const schemaSql = prepareTenantSchemaSql(sqlDbName);
+        const sqlState = await getSqlSeedState(sqlDB, sqlDbName, countCreateTables(schemaSql));
+        console.log("🗃️  SQL seed state:", sqlState);
+
+        if (sqlState === "seeded") {
+            console.log("ℹ️  SQL database is already seeded -- nothing to do (safe re-run).");
+            process.exit(0);
+        }
+        if (sqlState === "partial") {
+            throw new Error(
+                `SQL database [${sqlDbName}] has some but not all schema tables -- refusing to guess. ` +
+                "Drop the partially created tables (or the database) and re-run."
+            );
+        }
+
+        /* =========================
            STEP 1: Mongo Connection
         ========================= */
 
@@ -1978,53 +2070,33 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
         );
         console.log("✅ BridgeMetaInfo saved");
 
-
-
         /* =========================
-           STEP 3: SQL Schema + Default Inserts
+           STEP 3: Build SQL default inserts + generate bot/web credentials
+           (not executed yet -- see STEP 5)
         ========================= */
 
-        const { DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME } = configFile;
-
-        console.log("   SQL Host :", DB_HOST);
-        console.log("   SQL Port :", DB_PORT);
-        console.log("   SQL User :", DB_USER);
-        console.log("   SQL DB   :", DB_NAME);
-
-        // DB_NAME is the real database/login meta_builder_job.py created --
-        // the bare tenant name (e.g. "hbss"), the same value as tenantId
-        // above for tenants created after the DB-name change (older tenants
-        // were created with the sequence-suffixed slug, e.g. "hbss-15",
-        // which is why this stays a separate value). The schema script
-        // never stores tenantId as a data VALUE (only as identifiers), so
-        // DB_NAME alone is correct for runTenantSchema. The inserts script
-        // does both (identifiers AND business-data values like
-        // MEMBER.username/TENANT.tenant_id) -- runTenantDefaultInserts
-        // takes both and keeps them separate, so those stored values stay
-        // the bare tenantId, matching Mongo's own tenantObj.tenantId
-        // convention, while the identifiers/connection still use DB_NAME.
-        console.log("📄 STEP 3a: Running SQL schema (CREATE TABLE)...");
-        await runTenantSchema({
-            tenantId: DB_NAME,
-            sqlDB: { DB_USER, DB_PASSWORD, DB_HOST, DB_PORT }
-        });
-        console.log("✅ SQL schema applied");
-
-        console.log("📄 STEP 3b: Running SQL default inserts...");
-        const QraieCreds = await runTenantDefaultInserts({
+        // tenantId (bare tenant name) is stored as business-data VALUES
+        // (MEMBER.username, TENANT.tenant_id, ...), matching Mongo's own
+        // tenantObj.tenantId convention; sqlDbName (DB_NAME) is used for
+        // every SQL IDENTIFIER and the connection itself. The two are kept
+        // separate on purpose -- see prepareDefaultInserts().
+        console.log("🔐 STEP 3: Preparing SQL default inserts + credentials...");
+        const QraieCreds = await prepareDefaultInserts({
             tenantId,
-            dbName: DB_NAME,
+            dbName: sqlDbName,
             tenantName: TENANT_NAME,
             email: EMAIL,
-            adminPassword: ADMIN_PW,
-            sqlDB: { DB_USER, DB_PASSWORD, DB_HOST, DB_PORT }
+            adminPassword: ADMIN_PW
         });
 
         /* =========================
            STEP 4: Mongo Tenant Init
         ========================= */
 
-        console.log("🗄️ STEP 3: Initializing Mongo tenant DB...");
+        // All Mongo seeding runs BEFORE the SQL write and is idempotent, so
+        // a failed attempt can simply be retried (fresh credentials just
+        // overwrite the previous attempt's in Mongo).
+        console.log("🗄️ STEP 4: Initializing Mongo tenant DB...");
         await tenantDatabaseInitializer(
             conn,
             tenantId,
@@ -2038,13 +2110,26 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
         );
         console.log("✅ Mongo tenant DB initialized");
 
-
-        console.log("✅ SQL default inserts completed");
         await updateGatewaySecretsInBridgeMeta(
             await getTenantConn(tenantId),
             tenantId,
             QraieCreds.qraieBot.hashPassword
         );
+
+        /* =========================
+           STEP 5: SQL schema + default inserts (single transaction)
+        ========================= */
+
+        console.log(`📄 STEP 5: Applying SQL (${sqlState === "empty" ? "schema + " : ""}default inserts) in one transaction...`);
+        await applySqlSeed({
+            sqlDB,
+            dbName: sqlDbName,
+            schemaSql,
+            insertsSql: QraieCreds.insertsSql,
+            state: sqlState
+        });
+        console.log("✅ SQL seed applied");
+
         /* =========================
            DONE
         ========================= */

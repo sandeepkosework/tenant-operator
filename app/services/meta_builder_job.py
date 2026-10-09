@@ -30,7 +30,6 @@ which this module reads back from Vault rather than needing its own copy
 threaded through provisioner.py.
 """
 import logging
-import threading
 import time
 
 from kubernetes import client, config as k8s_config
@@ -161,43 +160,66 @@ def build_meta_builder_job(tenant: Tenant, db_secret: dict) -> dict:
     }
 
 
-def _poll_job_to_completion(api_client: client.ApiClient, job_name: str, namespace: str) -> bool:
-    """Shared polling core for both the background fire-and-forget watch
-    (_watch_job) and the blocking wait_for_job() below. Returns True only
-    on a confirmed Succeeded; False on Failed or timeout."""
+class SeedJobError(Exception):
+    """A DB seeding Job could not be submitted, failed, or timed out.
+    provisioner.py turns this into a FAILED tenant instead of leaving it
+    RUNNING with an empty database."""
+
+
+def _job_outcome(job) -> str | None:
+    """"succeeded", "failed", or None while still running/retrying.
+
+    Uses the Job's terminal conditions, NOT status.failed: that field is a
+    count of failed pods, which is already >0 after the first failed attempt
+    even though backoffLimit may still retry it."""
+    status = job.status
+    for cond in status.conditions or []:
+        if cond.status == "True" and cond.type == "Complete":
+            return "succeeded"
+        if cond.status == "True" and cond.type == "Failed":
+            return "failed"
+    if status.succeeded:
+        return "succeeded"
+    return None
+
+
+def _poll_job_to_completion(
+    api_client: client.ApiClient,
+    job_name: str,
+    namespace: str,
+    label: str = "meta-builder",
+    timeout_seconds: int | None = None,
+) -> bool:
+    """Shared polling core for the background watch (_watch_job) and the
+    blocking wait helpers. Returns True only on a confirmed success; False
+    on a terminal failure (retries exhausted) or timeout."""
     batch_v1 = client.BatchV1Api(api_client)
-    deadline = time.monotonic() + _JOB_TIMEOUT_SECONDS
+    timeout = timeout_seconds or _JOB_TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout
 
     while time.monotonic() < deadline:
         try:
             job = batch_v1.read_namespaced_job_status(job_name, namespace)
         except ApiException as e:
-            logger.warning("[meta-builder] job=%s status check failed (will retry): %s", job_name, e)
+            logger.warning("[%s] job=%s status check failed (will retry): %s", label, job_name, e)
             time.sleep(_JOB_POLL_INTERVAL_SECONDS)
             continue
 
-        status = job.status
-        if status.succeeded:
-            logger.info("[meta-builder] job=%s completed successfully", job_name)
+        outcome = _job_outcome(job)
+        if outcome == "succeeded":
+            logger.info("[%s] job=%s completed successfully", label, job_name)
             return True
-        if status.failed:
+        if outcome == "failed":
             logger.error(
-                "[meta-builder] job=%s failed -- tenant's DB credentials in Vault do NOT match a "
-                "working login; check the Job's own pod logs (kubectl logs -n %s job/%s)",
-                job_name, namespace, job_name,
+                "[%s] job=%s failed (retries exhausted) -- check the Job's own pod logs "
+                "(kubectl logs -n %s job/%s)",
+                label, job_name, namespace, job_name,
             )
             return False
         time.sleep(_JOB_POLL_INTERVAL_SECONDS)
 
-    logger.error("[meta-builder] job=%s did not complete within %ds", job_name, _JOB_TIMEOUT_SECONDS)
+    logger.error("[%s] job=%s did not complete within %ds", label, job_name, timeout)
     return False
-
-
-def _watch_job(api_client: client.ApiClient, job_name: str, namespace: str) -> None:
-    """Polls the Job to completion (or timeout/failure). Runs on a
-    background thread -- must never raise past trigger_meta_builder_job()'s
-    fire-and-forget call site; logs the outcome instead."""
-    _poll_job_to_completion(api_client, job_name, namespace)
 
 
 def wait_for_job(job_name: str, namespace: str | None = None) -> bool:
@@ -249,8 +271,6 @@ def trigger_meta_builder_job(tenant: Tenant, admin_password: str) -> str | None:
         batch_v1.create_namespaced_job(namespace, job)
     except ApiException as e:
         logger.error("[meta-builder] tenant=%s failed to submit seeding Job: %s", tenant.tenant_name, e)
-        return None
-
-    threading.Thread(target=_watch_job, args=(api_client, job_name, namespace), daemon=True).start()
+        raise SeedJobError(f"could not submit database seeding Job: {e.reason or e}") from e
 
     return job_name

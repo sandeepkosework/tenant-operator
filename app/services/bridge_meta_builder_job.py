@@ -26,7 +26,6 @@ everything it needs from the same Vault reads meta_builder_job.py already
 does, and hands it over as plain env vars.
 """
 import logging
-import threading
 import time
 from urllib.parse import urlparse
 
@@ -35,7 +34,7 @@ from kubernetes.client import ApiException
 
 from app.config import get_settings
 from app.models.tenant import Tenant
-from app.services import vault_service
+from app.services import meta_builder_job, vault_service
 
 logger = logging.getLogger("tenant-operator.bridge_meta_builder_job")
 settings = get_settings()
@@ -204,35 +203,18 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
     }
 
 
-def _watch_job(api_client: client.ApiClient, job_name: str, namespace: str) -> None:
-    """Same polling pattern as meta_builder_job.py's identical helper --
-    runs on a background thread, must never raise past
-    trigger_bridge_meta_builder_job()'s fire-and-forget call site."""
-    batch_v1 = client.BatchV1Api(api_client)
-    deadline = time.monotonic() + _JOB_TIMEOUT_SECONDS
-
-    while time.monotonic() < deadline:
-        try:
-            job = batch_v1.read_namespaced_job_status(job_name, namespace)
-        except ApiException as e:
-            logger.warning("[bridge-meta] job=%s status check failed (will retry): %s", job_name, e)
-            time.sleep(_JOB_POLL_INTERVAL_SECONDS)
-            continue
-
-        status = job.status
-        if status.succeeded:
-            logger.info("[bridge-meta] job=%s completed successfully", job_name)
-            return
-        if status.failed:
-            logger.error(
-                "[bridge-meta] job=%s failed -- check the Job's own pod logs "
-                "(kubectl logs -n %s job/%s)",
-                job_name, namespace, job_name,
-            )
-            return
-        time.sleep(_JOB_POLL_INTERVAL_SECONDS)
-
-    logger.error("[bridge-meta] job=%s did not complete within %ds", job_name, _JOB_TIMEOUT_SECONDS)
+def wait_for_job(job_name: str, namespace: str | None = None) -> bool:
+    """Blocks until the schema+inserts+Mongo-seed Job succeeds (True) or
+    fails/times out (False). provisioner.py uses this so a failed seed marks
+    the tenant FAILED instead of leaving it RUNNING with an empty database."""
+    api_client = _get_hub_api_client()
+    return meta_builder_job._poll_job_to_completion(
+        api_client,
+        job_name,
+        namespace or settings.bridge_meta_builder_job_namespace,
+        label="bridge-meta",
+        timeout_seconds=_JOB_TIMEOUT_SECONDS,
+    )
 
 
 def trigger_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> str | None:
@@ -262,8 +244,6 @@ def trigger_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> str 
         batch_v1.create_namespaced_job(namespace, job)
     except ApiException as e:
         logger.error("[bridge-meta] tenant=%s failed to submit Job: %s", tenant.tenant_name, e)
-        return None
-
-    threading.Thread(target=_watch_job, args=(api_client, job_name, namespace), daemon=True).start()
+        raise meta_builder_job.SeedJobError(f"could not submit bridge meta-builder Job: {e.reason or e}") from e
 
     return job_name
