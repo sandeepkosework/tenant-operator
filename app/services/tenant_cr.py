@@ -34,9 +34,8 @@ def build_tenant_cr(tenant: Tenant, cluster: ClusterInfo) -> dict:
             "namespace": settings.hub_namespace,
         },
         "spec": {
-            # The real operator-allocated sequential id, not a duplicate of
-            # the tenant name -- tenant_seq can be None only for rows
-            # created before this column existed.
+            # Legacy sequential id: set only for tenants created before the
+            # sequence suffix was dropped, null (None) for every newer tenant.
             "tenantId": tenant.tenant_seq,
             "tenantName": tenant.tenant_name,
             "domain": tenant.domain,

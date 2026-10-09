@@ -190,14 +190,16 @@ Key fields:
 - `tenant_name` — the caller-supplied `tenantId`, human-chosen, **not**
   DB-unique (a `DELETED` tenant's name is reusable — soft delete via
   `deleted_at`, not a hard delete).
-- `tenant_seq` — an operator-allocated sequential integer (`SELECT MAX()+1`
-  at creation), combined with `tenant_name` to form `slug` (the
-  `@property`, e.g. `acme-corp-42`) — the **one** identifier used for the
-  Kubernetes namespace (`tenant-<slug>`), the Vault path prefix, the git
-  filename, the Argo CD Application/Helm release name, the Tenant CR name,
-  and the meta-builder Job name. `slug` is deliberately never used for
-  anything customer-facing (the tenant's own domain, its seeded database's
-  display name) — a customer never sees an internal sequence number.
+- `tenant_seq` — **legacy**: a sequential integer that older tenants were
+  given, now `NULL` for every new tenant. `slug` (the `@property`) is the
+  **one** identifier used for the Kubernetes namespace (`tenant-<slug>`), the
+  Vault path prefix, the git filename, the Argo CD Application/Helm release
+  name, the Tenant CR name, and the meta-builder Job name. For a new tenant it
+  is just the bare `tenant_name` (`acme-corp`); an older tenant keeps its
+  suffixed slug (`acme-corp-42`) so its existing namespace, secrets and git
+  file stay valid. Creating a tenant whose name equals an existing tenant's
+  slug (e.g. a new `acme-2` while `acme` with sequence 2 exists) is rejected
+  with a 400. `slug` is never used for anything customer-facing.
 - `app_type` — always `"qraie-bridge"` now (`server_default="qraie-bridge"`);
   kept as a real column only for API/DB back-compat, not settable per
   request any more. See "The retired `workplace` chart".

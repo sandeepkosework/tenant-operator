@@ -128,24 +128,22 @@ class Tenant(Base):
         """The one identifier used everywhere this tenant needs naming
         outside its own database row: Kubernetes namespace, Vault secret
         path, git filename / Argo CD Application name, Tenant CR name,
-        meta-builder Job name. Suffixes the human-chosen tenant_name with
-        the operator-allocated sequential number so it stays unique even
-        though tenant_name has no DB constraint -- "acme-corp-42" keeps the
-        name fully readable up front, with the number only there to break
-        a collision.
+        meta-builder Job name.
+
+        New tenants have no sequence number (tenant_seq is NULL), so the slug
+        is simply the bare tenant_name, e.g. "acme-corp". Tenants created
+        before that change keep their number and so their existing names
+        ("acme-corp-42") -- changing it would orphan their namespace, Vault
+        secrets and git file. validate_create_request rejects a new name that
+        would equal an older tenant's slug.
+
+        When a number IS present it is appended, with tenant_name truncated so
+        "tenant-" + name + "-<seq>" still fits Kubernetes' 63-char namespace
+        limit.
 
         Deliberately NOT used for anything customer-facing (tenant.domain,
         the rendered chart's public URL, the seeded database's display
-        name) -- those stay on bare tenant_name so a customer never sees
-        an internal sequence number in their own URL.
-
-        Truncates tenant_name to fit Kubernetes' 63-char namespace limit
-        once the "tenant-" prefix (see provisioner.py) and this sequence
-        suffix are both accounted for, rather than risk generating a
-        namespace name Kubernetes silently rejects.
-
-        Falls back to bare tenant_name if tenant_seq was never allocated
-        (pre-migration rows) so nothing crashes on old data.
+        name) -- those stay on bare tenant_name.
         """
         if self.tenant_seq is None:
             return self.tenant_name
