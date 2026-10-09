@@ -87,6 +87,7 @@ def _set_status(db: Session, tenant: Tenant, status: TenantStatus, error: str | 
     logger.info("tenant=%s status=%s", tenant.tenant_name, status)
     tenant_cr.echo_cr_phase(tenant, status.value)
     status_bus.publish(tenant)
+    mongo_service.upsert_registry_record(tenant)  # shared registry; best-effort, never raises
 
 
 def _wait_for_argocd_and_k8s(db: Session, tenant: Tenant, cluster_context: str) -> None:

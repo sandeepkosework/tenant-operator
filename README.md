@@ -623,6 +623,40 @@ wrote (passed straight through, never re-derived or re-classified) into:
   upsert=True)` so a later tenant update replaces rather than duplicates
   that service's document.
 
+**Optional: one shared database instead of one per tenant.** Set
+`MONGO_ENV_CONFIG_SHARED_DB` (e.g. `tenant-env-config`) and every tenant's
+documents go into a single collection, `tenant_env_config`, of that one
+database -- `_id` is `<slug>/<service>`, with `tenant`, `service` and `group`
+fields (indexed on `tenant`) -- instead of a database per tenant named after
+its slug. Unset (the default) keeps today's layout. Only the *mirror* is
+affected: each tenant's application data stays in its own `<tenant>-bridge`
+database (the seed assumes one database per tenant: global `UR`/`E`/`PC`
+counters, fixed actor/device IDs, paycodes with no tenant field). Switching an
+existing deployment doesn't move old per-tenant mirror databases.
+
+## Shared tenant registry (database `qraieai`)
+
+Like infra-runner, which wrote one record per tenant into a shared `qraieai`
+database, the operator can keep one small record per tenant in a database
+shared by **all** tenants. Off by default (`QRAIEAI_REGISTRY_ENABLED=false`);
+uses the same server and credentials as the mirror (`MONGO_ENV_CONFIG_URI`).
+
+- **Where:** database `QRAIEAI_DB_NAME` (default `qraieai`), collection
+  `QRAIEAI_REGISTRY_COLLECTION` (default `bridge_tenants`), one document per
+  tenant with `_id` = the tenant slug.
+- **Not** infra-runner's `bridge_port_allocations`: that collection holds VM
+  port ranges (`startPort`/`endPort`) a legacy allocator may read, and
+  Kubernetes tenants have no ports. Writing into it would risk corrupting that
+  allocation, so tenant-operator uses its own collection.
+- **Fields:** `tenantId`, `tenantName`, `slug`, `displayName`, `domain`,
+  `environment`, `cluster`, `namespace`, `status`, `errorMessage`, `deletedAt`,
+  `source` (`tenant-operator`), `createdAt`, `updatedAt`.
+- **Kept current:** written from `provisioner._set_status`, so the record
+  follows the tenant (`PENDING` ... `RUNNING`/`FAILED` ... `DELETED`) and is
+  *marked* `DELETED` with `deletedAt` on delete, never removed.
+- **Best-effort:** a Mongo failure is logged as a warning and never fails or
+  delays the tenant (after one failed attempt it skips further tries for 60s).
+
 ## Bridge meta-builder Job (`app/services/bridge_meta_builder_job.py`)
 
 Separate from `meta_builder_job.py` above, which only creates the empty
@@ -800,6 +834,9 @@ Selected settings worth knowing about explicitly:
 | `VAULT_ENABLED` | `false` | Gates every real Vault write in `vault_service.py`; `false` means log/echo only. |
 | `MONGO_ENV_CONFIG_ENABLED` | `false` | Gates the read-only MongoDB mirror in `mongo_service.py`. |
 | `MONGO_ENV_CONFIG_URI` | unset | Full Mongo connection string, also the base for each tenant's derived `MONGODB_URI` (see above). |
+| `MONGO_ENV_CONFIG_SHARED_DB` | unset | Collapse the mirror into one shared database (collection `tenant_env_config`) instead of one database per tenant. |
+| `QRAIEAI_REGISTRY_ENABLED` | `false` | Keep one record per tenant in the shared registry database — see "Shared tenant registry". |
+| `QRAIEAI_DB_NAME` / `QRAIEAI_REGISTRY_COLLECTION` | `qraieai` / `bridge_tenants` | Where the registry records go. |
 | `GIT_REPO_URL` / `GIT_BRANCH` / `GIT_TENANTS_DIR` | — | The GitOps repo and directory tenant manifests are committed into. |
 | `GIT_BRIDGE_TENANTS_DIR` | `bridge-tenants` | **Currently unused by any live code path** — `_tenants_dir_for()` in `provisioner.py` always returns `GIT_TENANTS_DIR` now that there's only one chart/one tenant flow. Kept because `git_service.py`'s functions already accept a `tenants_dir` override and nothing currently calls them with it; harmless to leave set. |
 | `MSSQL_ADMIN_HOST` / `..._PORT` / `..._USER` / `..._PASSWORD` | unset | Admin login the meta-builder Job uses to create each tenant's real MSSQL database + login. Both host and password must be set for the Job to actually run — otherwise it's skipped (logged, not failed). |
