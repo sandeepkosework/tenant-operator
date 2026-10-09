@@ -466,6 +466,42 @@ def read_tenant_common_value(key: str) -> str:
     return value
 
 
+def prune_empty_tenant_secrets(tenant_slug: str, apply: bool = False) -> dict:
+    """Removes keys whose value is an empty string from every one of a tenant's
+    Vault paths (secret/<prefix>/<slug>/<service>), so values set once in
+    secret/k8s/tenant-common or service-common are no longer overridden by an
+    empty key in a service's own secret (older tenants were created with those
+    -- see write_initial_qraie_bridge_tenant_secrets). Dry run unless apply=True.
+
+    A path whose every key is empty is left alone (it must keep a key or the
+    pod's ExternalSecret can't sync). Writing a path replaces it with a new KV v2
+    version holding only the non-empty keys."""
+    if not settings.vault_enabled:
+        raise VaultServiceError("VAULT_ENABLED=false -- there is nothing in Vault to prune")
+    base = f"{settings.vault_tenant_secret_prefix}/{tenant_slug}"
+    services: dict[str, dict] = {}
+    total = 0
+    for service in QRAIE_BRIDGE_SERVICE_KEYS:
+        path = f"{base}/{service}"
+        data = _read(path)
+        if data is None:
+            services[service] = {"status": "missing", "removed": []}
+            continue
+        kept = {k: v for k, v in data.items() if v not in ("", None)}
+        removed = sorted(set(data) - set(kept))
+        if not removed:
+            services[service] = {"status": "ok", "removed": []}
+        elif not kept:
+            services[service] = {"status": "skipped", "removed": [], "note": "every key is empty; the path must keep at least one key"}
+        else:
+            if apply:
+                _write(path, kept)
+            services[service] = {"status": "pruned" if apply else "would_prune", "removed": removed}
+            total += len(removed)
+    logger.info("[vault] tenant=%s prune-empty %s: %d key(s)", tenant_slug, "APPLIED" if apply else "dry run", total)
+    return {"tenant": tenant_slug, "applied": apply, "totalKeysRemoved" if apply else "totalKeysToRemove": total, "services": services}
+
+
 def read_tenant_secrets(tenant_id: str) -> dict:
     """GET /api/v1/tenant/{id}/vault. Reads back what's currently stored for
     this tenant -- every qraie-bridge service path -- or a note explaining

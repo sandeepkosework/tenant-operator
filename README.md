@@ -560,10 +560,20 @@ service (empty where no platform default was configured), so an empty
 set once in `tenant-common`. It now writes only keys that have a value, so a
 shared value in `tenant-common` (or `service-common`) reaches the pods. A key with
 no value anywhere is simply absent from the pod's environment instead of empty.
-Tenants created before this change keep their empty keys until removed:
-`scripts/prune-empty-vault-keys.sh <tenant-slug>` shows what it would remove from
-that tenant's Vault paths (dry run) and `... --apply` rewrites them (needs the
-`vault` CLI and `jq`). Secrets are read at pod start and refreshed from Vault
+Tenants created before this change keep their empty keys until removed. Either
+use the API (no Vault CLI needed; the operator's own Vault token does the work):
+
+```bash
+curl -s -X POST -H "X-API-Key: $API_KEY" "$OP/api/v1/tenant/$ID/vault/prune-empty" | jq            # dry run
+curl -s -X POST -H "X-API-Key: $API_KEY" "$OP/api/v1/tenant/$ID/vault/prune-empty?apply=true" | jq # rewrite
+```
+
+(`POST /api/v1/tenant/{id}/vault/prune-empty`: per service path it reports `ok`,
+`would_prune`/`pruned` with the removed keys, `skipped` when every key is empty, or
+`missing`; it needs the operator's Vault policy to allow writing the tenant's
+paths, which it already does at tenant creation) or the script
+`scripts/prune-empty-vault-keys.sh <tenant-slug> [--apply]` (needs the `vault`
+CLI and `jq`). Secrets are read at pod start and refreshed from Vault
 hourly: after changing Vault, restart the pods.
 
 **`TENANT_ID` is the bare tenant name, not the slug.** Every service's Vault
