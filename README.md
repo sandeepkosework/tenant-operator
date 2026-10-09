@@ -551,6 +551,43 @@ against the original docker-compose stack this chart was converted from.
 service** — it's too large and too likely to drift to usefully duplicate
 here; below is the mechanism, not the full schema.
 
+**Empty keys are not written to Vault.** A pod's environment is built from three
+secrets -- `secret/k8s/tenant-common`, then `<tenant>/service-common`, then the
+service's own `<tenant>/<service>` -- and a later one wins on a key it defines,
+*even with an empty string*. The operator used to write every key of every
+service (empty where no platform default was configured), so an empty
+`GLOBALAPIBASEURL` in the service's own secret silently overrode the real value
+set once in `tenant-common`. It now writes only keys that have a value, so a
+shared value in `tenant-common` (or `service-common`) reaches the pods. A key with
+no value anywhere is simply absent from the pod's environment instead of empty.
+Tenants created before this change keep their empty keys until removed. Either
+use the API (no Vault CLI needed; the operator's own Vault token does the work):
+
+```bash
+curl -s -X POST -H "X-API-Key: $API_KEY" "$OP/api/v1/tenant/$ID/vault/prune-empty" | jq            # dry run
+curl -s -X POST -H "X-API-Key: $API_KEY" "$OP/api/v1/tenant/$ID/vault/prune-empty?apply=true" | jq # rewrite
+```
+
+(`POST /api/v1/tenant/{id}/vault/prune-empty`: per service path it reports `ok`,
+`would_prune`/`pruned` with the removed keys, `skipped` when every key is empty, or
+`missing`; it needs the operator's Vault policy to allow writing the tenant's
+paths, which it already does at tenant creation) or the script
+`scripts/prune-empty-vault-keys.sh <tenant-slug> [--apply]` (needs the `vault`
+CLI and `jq`). Secrets are read at pod start and refreshed from Vault
+hourly: after changing Vault, restart the pods.
+
+**`FABREQ_COMMAND_ENDPOINT_MAP` is derived per tenant and lives in `service-common`.**
+It is the address the `wfm-api-gateway` uses to reach `wfm-microservice`: the chart's
+per-tenant Kubernetes Service, `http://<tenant>-wfm-microservice:9001` (a tenant id
+starting with a digit gets the chart's `t-` prefix, e.g.
+`http://t-00042-acme-wfm-microservice:9001`). The old compose value
+`http://wfm-microservice:9001` was a Docker container name and doesn't resolve on
+Kubernetes. The operator writes it into `secret/k8s/<tenant>/service-common` -- the
+layer every service of the tenant shares -- and no longer into the gateway's own
+secret, where an empty copy would override it. A platform default for this key is
+ignored. The port is `WFM_MICROSERVICE_PORT` in `vault_service.py`; keep it in step
+with the chart's `wfm-microservice` containerPort.
+
 **`TENANT_ID` is the bare tenant name, not the slug.** Every service's Vault
 secret gets `TENANT_ID=<tenant_name>` (e.g. `hbss-010`), matching what the seed
 Job uses for the Mongo database (`<tenant_name>-bridge`) and `tenantObj.tenantId`,

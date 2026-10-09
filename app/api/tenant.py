@@ -134,6 +134,30 @@ def get_tenant_progress(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
     return progress.build_progress(db, tenant)
 
 
+@router.post(
+    "/{tenant_id}/vault/prune-empty",
+    summary="Remove empty keys from a tenant's Vault secrets",
+    description=(
+        "Removes keys whose value is an empty string from each of the tenant's Vault paths, so a value set once in "
+        "`tenant-common` or `service-common` is no longer overridden by an empty key in a service's own secret. "
+        "**Dry run by default** -- it only reports what it would remove; pass `apply=true` to rewrite the secrets "
+        "(each affected path gets a new KV version with only its non-empty keys). A path where every key is empty "
+        "is left alone. Afterwards the chart re-syncs within the hour (or force it) and the tenant's pods must be "
+        "restarted to pick the change up."
+    ),
+    responses={404: {"description": "Tenant not found"}, 503: {"description": "Vault disabled or unreachable"},
+               401: {"description": "Missing/invalid token or API key"}},
+)
+def prune_empty_vault_keys(tenant_id: uuid.UUID, apply: bool = False, db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    try:
+        return vault_service.prune_empty_tenant_secrets(tenant.slug, apply=apply)
+    except vault_service.VaultServiceError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @router.get(
     "/{tenant_id}/vault",
     summary="Get a tenant's Vault secrets",
