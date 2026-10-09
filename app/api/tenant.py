@@ -13,7 +13,7 @@ from app.models.schemas import (
     TenantResponse,
     TenantUpdateRequest,
 )
-from app.services import helm_values, preflight, provisioner, vault_service
+from app.services import helm_values, preflight, progress, provisioner, vault_service
 from app.services.validation import ValidationError, validate_create_request
 
 logger = logging.getLogger("tenant-operator.api.tenant")
@@ -113,6 +113,25 @@ def get_tenant(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
     if tenant is None:
         raise HTTPException(status_code=404, detail="tenant not found")
     return tenant
+
+
+@router.get(
+    "/{tenant_id}/progress",
+    summary="Step-by-step creation progress",
+    description=(
+        "The tenant's creation broken into ordered steps (validate, select cluster, check for existing "
+        "resources, register, secrets, manifest, databases, deploy, eRep, ready), each with a state "
+        "(`pending`, `running`, `done`, `warn`, `skipped`, `failed`), timings and the latest message, plus an "
+        "overall `percent` and the raw `events` log. `hasDetail` is false for tenants created before step "
+        "tracking existed -- use `GET /tenant/{id}` for those."
+    ),
+    responses={404: {"description": "Tenant not found"}, 401: {"description": "Missing/invalid token or API key"}},
+)
+def get_tenant_progress(tenant_id: uuid.UUID, db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    return progress.build_progress(db, tenant)
 
 
 @router.get(

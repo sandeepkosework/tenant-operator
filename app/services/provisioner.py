@@ -30,6 +30,7 @@ from app.services import (
     mongo_service,
     notifications,
     preflight,
+    progress,
     spoke_cr,
     spoke_scaler,
     status_bus,
@@ -104,6 +105,8 @@ def _wait_for_argocd_and_k8s(db: Session, tenant: Tenant, cluster_context: str) 
     """
     deadline = time.monotonic() + settings.provisioning_timeout_seconds
     _set_status(db, tenant, TenantStatus.SYNCING)
+    progress.record(tenant.id, "deploy", "start", "Waiting for Argo CD to sync the manifest and the pods to become ready")
+    last_note = None
 
     poll = 0
     consecutive_unreachable = 0
@@ -121,6 +124,11 @@ def _wait_for_argocd_and_k8s(db: Session, tenant: Tenant, cluster_context: str) 
                 classification,
             )
 
+            note = f"Argo CD: health={argo_status.get('health') or 'unknown'}, sync={argo_status.get('sync') or 'unknown'}"
+            if note != last_note:        # only when something changed, not on every poll
+                progress.record(tenant.id, "deploy", "info", note)
+                last_note = note
+
             if classification == "failed":
                 reason = argo_status.get("message") or (
                     f"health={argo_status.get('health')} operationPhase={argo_status.get('operationPhase')}"
@@ -132,7 +140,12 @@ def _wait_for_argocd_and_k8s(db: Session, tenant: Tenant, cluster_context: str) 
                 k8s_ok = kubernetes_service.is_fully_ready(cluster_context, tenant.namespace, tenant.slug)
                 if k8s_ok:
                     _set_status(db, tenant, TenantStatus.RUNNING)
+                    progress.record(tenant.id, "deploy", "done", "All services are healthy: pods ready, volumes bound, ingress ready")
                     return
+                waiting = "Argo CD reports healthy; waiting for pods, volumes and the ingress to be ready"
+                if waiting != last_note:
+                    progress.record(tenant.id, "deploy", "info", waiting)
+                    last_note = waiting
                 # Argo says Healthy/Synced but our own k8s check disagrees
                 # (e.g. ingress LB not provisioned yet) -- keep polling,
                 # this alone isn't a definitive Argo-reported failure.
@@ -180,44 +193,61 @@ def _seed_tenant_databases(tenant: Tenant, admin_password: str) -> None:
     schema/data Job isn't something the pods' health depends on). A deliberate
     skip (no SQL/Mongo config, no controlops-server secret) is not a failure."""
     logger.info("[step] tenant=%s triggering DB seeding job", tenant.tenant_name)
+    progress.record(tenant.id, "database", "start", "Creating the SQL database and login")
     db_job_name = meta_builder_job.trigger_meta_builder_job(tenant, admin_password)
     if not db_job_name:
+        progress.record(tenant.id, "database", "skip",
+                        "Skipped: SQL admin connection not configured, or no controlops-server secret for this tenant")
         return
 
     # Blocking, not fire-and-forget: bridge_meta_builder_job's Job connects
     # to the tenant's database AS the tenant's own login -- the one
     # db_job_name above is what actually creates -- so it can't run until
     # that Job has genuinely finished, not just been submitted.
+    progress.record(tenant.id, "database", "info", f"Waiting for the database job '{db_job_name}'")
     if not meta_builder_job.wait_for_job(db_job_name):
         raise meta_builder_job.SeedJobError(
             f"database creation Job '{db_job_name}' failed -- "
             f"see its pod logs (kubectl logs -n {settings.meta_builder_job_namespace} job/{db_job_name})"
         )
+    progress.record(tenant.id, "database", "info", "SQL database and login created; seeding schema and data")
 
     # Real schema + SQL default-data inserts + full Mongo seed
     # (bridgeMetaInfo, admin user/auth, WFM lookups, ControlOps actors,
     # IoT lookups/devices).
     logger.info("[step] tenant=%s triggering bridge meta-builder job", tenant.tenant_name)
     bridge_job_name = bridge_meta_builder_job.trigger_bridge_meta_builder_job(tenant, admin_password)
-    if bridge_job_name and not bridge_meta_builder_job.wait_for_job(bridge_job_name):
+    if not bridge_job_name:
+        progress.record(tenant.id, "database", "warn",
+                        "SQL database created; schema and data seeding skipped (MongoDB not configured)")
+        return
+    progress.record(tenant.id, "database", "info", f"Waiting for the seeding job '{bridge_job_name}' (schema, default data, MongoDB)")
+    if not bridge_meta_builder_job.wait_for_job(bridge_job_name):
         raise meta_builder_job.SeedJobError(
             f"schema/data seeding Job '{bridge_job_name}' failed -- "
             f"see its pod logs (kubectl logs -n {settings.bridge_meta_builder_job_namespace} job/{bridge_job_name})"
         )
+    progress.record(tenant.id, "database", "done", "SQL schema, default data and MongoDB seeded")
 
 
 def _setup_default_erep(db: Session, tenant: Tenant) -> None:
     """Step 07 of the old infra-runner flow: create the default eRep through the
     tenant's erep-server API. A failure only fails the tenant when
     erep_setup_required is set; otherwise it is logged and the tenant stays RUNNING."""
+    if not settings.erep_setup_enabled:
+        progress.record(tenant.id, "erep", "skip", "Disabled (EREP_SETUP_ENABLED=false)")
+        return
+    progress.record(tenant.id, "erep", "start", "Creating the default eRep through the erep-server API")
     try:
         erep_setup.setup_default_erep(tenant)
+        progress.record(tenant.id, "erep", "done", "Default eRep created")
     except erep_setup.ErepSetupError as e:
         if settings.erep_setup_required:
             logger.error("tenant=%s default eRep setup failed: %s", tenant.tenant_name, e)
             _set_status(db, tenant, TenantStatus.FAILED, error=f"default eRep setup failed: {e}")
         else:
             logger.warning("tenant=%s default eRep setup failed (tenant stays RUNNING): %s", tenant.tenant_name, e)
+            progress.record(tenant.id, "erep", "warn", f"Not created (tenant stays running): {e}")
 
 
 def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
@@ -236,7 +266,9 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
         try:
             logger.info("[step] tenant=%s provisioning started", tenant.tenant_name)
             _set_status(db, tenant, TenantStatus.VALIDATING)
+            progress.record(tenant.id, "validate", "done", f"Request accepted for '{tenant.tenant_name}' ({tenant.domain})")
 
+            progress.record(tenant.id, "placement", "start", "Choosing a cluster with free capacity")
             cluster, projected_count = cluster_selector.select_cluster(tenant.environment, db)
             tenant.cluster = cluster.name
             # tenant.slug already carries the sequential id (see
@@ -253,11 +285,18 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
                 settings.spoke_capacity(tenant.environment),
             )
 
+            progress.record(
+                tenant.id, "placement", "done",
+                f"Placed on cluster '{cluster.name}' ({projected_count}/{settings.spoke_capacity(tenant.environment)} tenants); "
+                f"namespace {tenant.namespace}",
+            )
+
             # Refuse early, with a precise reason, if this tenant's SQL
             # database/login, MongoDB database, or namespace/PVC/PV already
             # exist (see services/preflight.py) -- nothing has been created
             # for the tenant yet at this point (no Tenant CR, Vault secrets
             # or GitOps manifest), so there is nothing to clean up.
+            progress.record(tenant.id, "preflight", "start", "Checking SQL Server, MongoDB, Argo CD and the cluster for this name")
             problems = preflight.check_tenant_resources(tenant, cluster.context)
             if problems:
                 _set_status(
@@ -265,6 +304,9 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
                     error="preflight failed, nothing was created: " + "; ".join(problems),
                 )
                 return
+
+            progress.record(tenant.id, "preflight", "done", "Nothing with this name exists yet")
+            progress.record(tenant.id, "register", "start", "Registering the tenant on the hub")
 
             # Capacity check for the spoke we just placed this tenant on. Fires a
             # parallel/non-blocking new-spoke provisioning job in prod, or a
@@ -285,6 +327,7 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             db.commit()
             db.refresh(tenant)
             logger.info("[step] tenant=%s Tenant CR created (uid=%s)", tenant.tenant_name, cr_uid)
+            progress.record(tenant.id, "register", "done", f"Tenant CR '{cr_name}' created on the hub")
 
             # Write Vault secrets BEFORE the GitOps handoff, not after RUNNING:
             # the tenant workload's own Vault Agent/VSO sidecar blocks its
@@ -294,12 +337,15 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             # meta-builder Job trigger still waits for RUNNING further down;
             # it just reads the same secrets written here.
             logger.info("[step] tenant=%s writing initial secrets to Vault", tenant.tenant_name)
+            progress.record(tenant.id, "secrets", "start", "Generating credentials and writing them to Vault")
             service_data = vault_service.write_initial_qraie_bridge_tenant_secrets(
                 tenant.slug, tenant.tenant_name, tenant.domain
             )
             mongo_service.write_tenant_env_config(tenant.slug, service_data)
+            progress.record(tenant.id, "secrets", "done", f"Secrets written for {len(service_data)} services")
 
             logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
+            progress.record(tenant.id, "manifest", "start", "Rendering the Helm values for this tenant")
             values_yaml = _render_values_yaml(tenant, cluster)
 
             logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)
@@ -320,6 +366,7 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             _commit_tenant_info(
                 tenant, cluster, message=f"tenant-operator: create {tenant.tenant_name} ({tenant.environment})",
             )
+            progress.record(tenant.id, "manifest", "done", f"Committed {(commit_sha or '')[:8]} to the GitOps repo; Argo CD will pick it up")
 
             # Seed the databases BEFORE waiting for the pods, not after RUNNING.
             # Both Jobs need only the Vault secrets written above plus the SQL
@@ -340,6 +387,8 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             )
             if tenant.status == TenantStatus.RUNNING:
                 _setup_default_erep(db, tenant)
+            if tenant.status == TenantStatus.RUNNING:
+                progress.record(tenant.id, "ready", "done", "The tenant is running")
             logger.info("[step] tenant=%s provisioning finished: %s", tenant.tenant_name, tenant.status.value)
         except cluster_selector.NoAvailableClusterError as e:
             _set_status(db, tenant, TenantStatus.FAILED, error=str(e))
