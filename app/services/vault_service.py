@@ -153,7 +153,7 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     # in-cluster addresses of wfm-microservice and mcp-server) and live HERE, in the layer every service of the tenant
     # shares, not in wfm-api-gateway's own secret -- an own-secret key would sit
     # above this layer and, if empty, override it. See write_initial_*.
-    "service-common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT", "FABREQ_COMMAND_ENDPOINT_MAP", "MCP_SERVER_URL"],
+    "service-common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT", "FABREQ_COMMAND_ENDPOINT_MAP", "MCP_SERVER_URL", "NEXT_PUBLIC_SOCKET_URL"],
     # These two have no custom `env:` block in the chart (raw redis/
     # redisgears images) -- but every enabled service still gets an
     # ExternalSecret (templates/externalsecret.yaml loops over ALL of
@@ -163,8 +163,10 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     "qraie-redis": ["TENANT_ID"],
     "bridge-cp-conductor-redis": ["TENANT_ID"],
     "acl-server": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
-    # +NEXT_PUBLIC_SOCKET_URL -- present in docker-compose.yml, missing here.
-    "admin-panel": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "NEXT_PUBLIC_VERSION", "NEXT_PUBLIC_SOCKET_URL", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
+    # NEXT_PUBLIC_SOCKET_URL (same /workplace/api value as qraie-ui) lives in
+    # service-common now, derived from the tenant's domain -- not listed here, or
+    # this service's own copy would override it.
+    "admin-panel": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "NEXT_PUBLIC_VERSION", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "bridge": ["TENANT_ID", "ACTIVE_COLOR", "GEMINI_MODEL", "GLOBALAPIBASEURL", "NODE_ENV", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "bridge-cp-conductor": ["TENANT_ID", "API_PORT", "GEMINI_MODEL", "NOTIF_ENG_BASE_URL", "REDIS_CONTAINER", "REDIS_DISPATCHER_PATH", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SR_BASE_PATH", "SR_NAME", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "WORKPLACE_DM_CLIENT_ID", "WORKPLACE_DM_PASSWORD", "WORKPLACE_DM_SOCKET_URL"],
     # REDIS_PASSWORD/ACTIVE_COLOR/START_PORT were missing here despite being
@@ -197,9 +199,9 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     # + the tenant-config reference doc.
     "qraie-api-gateway": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "apiProtocol", "serverIPA", "RESPONSE_TIMEOUT", "PerplexityURL", "PerplexityToken", "G_JWT_SECRETKEY", "G_RT_SECRETKEY", "G_JWT_EXPIRESIN", "DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_SCHEMA", "DB_PORT", "NODE_ENV", "MICROSERVICE_URL"],
     "qraie-redis-shared": ["TENANT_ID", "REDIS_PASSWORD"],
-    # +NODE_ENV/NEXT_PUBLIC_SOCKET_URL/NEXT_PUBLIC_VERSION -- present on the
-    # qraie_ui_green variant in docker-compose.yml, missing here.
-    "qraie-ui": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "NODE_ENV", "NEXT_PUBLIC_SOCKET_URL", "NEXT_PUBLIC_VERSION"],
+    # +NODE_ENV/NEXT_PUBLIC_VERSION -- present on the qraie_ui_green variant in
+    # docker-compose.yml, missing here. NEXT_PUBLIC_SOCKET_URL is in service-common.
+    "qraie-ui": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT", "NODE_ENV", "NEXT_PUBLIC_VERSION"],
     "radicale": ["TENANT_ID", "RADICALE_CONFIG", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PORT"],
     "scheduler-agent": ["TENANT_ID", "ACTIVE_COLOR", "CONDUCTOR_API_KEY", "CONDUCTOR_BASE_URL", "CORS_ORIGINS", "GLOBALAPIBASEURL", "MEETING_API_KEY", "MEETING_API_URL", "MEETING_JOIN_BASE_URL", "PORT", "PRISM_BASE_URL", "PRISM_BRIDGE_ENABLED", "PRISM_POLL_INTERVAL_MS", "RADICALE_AGENT_PASS", "RADICALE_AGENT_USER", "RADICALE_BASE_URL", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SESSION_TTL_MINUTES", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
     "tranops-backend": ["TENANT_ID", "ACTIVE_COLOR", "AGENTS_API_URL", "API_PORT", "ELEVENLABS_API_KEY", "ELEVENLABS_API_URL", "GLOBALAPIBASEURL", "JWT_EXPIRES_IN", "JWT_SECRET", "MONGODB_URI", "POLLING_INTERVAL_MS", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "SLM_API_URL", "SLM_PASSWORD", "SLM_USERNAME", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
@@ -431,6 +433,11 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 # scheduler-agent -> this tenant's own conductor, via its
                 # Kubernetes Service (compose: http://bridge-cp-conductor:8461).
                 data[k] = f"http://{redis_dns_slug}-bridge-cp-conductor:{BRIDGE_CP_CONDUCTOR_PORT}"
+            elif service == "service-common" and k == "NEXT_PUBLIC_SOCKET_URL":
+                # The workplace UIs' (qraie-ui, admin-panel) socket endpoint on the
+                # tenant's own domain. wfm-ui keeps its own, different path
+                # (/organization/wfm/api/) in its own secret, which overrides this.
+                data[k] = f"https://{tenant_domain}/workplace/api"
             elif k == "WORKPLACE_DM_SOCKET_URL":
                 # The tenant's own public URL (compose: https://<VIRTUAL_HOST>),
                 # so it can't come from the shared defaults/base secret.
@@ -490,6 +497,18 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
         if settings.vault_enabled:
             _write(f"{base}/{service}", payload)
         written[service] = data
+
+    # tenant-common has no schema of its own (it is the org-wide layer in the
+    # chart), so there is nothing to merge: the base secret is copied verbatim to
+    # this tenant's own path. The chart only delivers it to the pods if
+    # tenantcommonSecrets.remotePath points at it (secret/k8s/<tenant_id>/tenant-common).
+    tenant_common = _read_tenant_base_secret(TENANT_COMMON_PATH)
+    if tenant_common:
+        logger.info(
+            "[vault] tenant=%s copying base secret %s/%s verbatim to %s/%s (%d keys)",
+            tenant_slug, settings.vault_tenant_base_prefix, TENANT_COMMON_PATH, base, TENANT_COMMON_PATH, len(tenant_common),
+        )
+        _write(f"{base}/{TENANT_COMMON_PATH}", tenant_common)
 
     logger.info("[vault] tenant=%s qraie-bridge secrets ready (%d services)", tenant_slug, len(QRAIE_BRIDGE_SERVICE_KEYS))
     return written
@@ -634,4 +653,5 @@ def read_tenant_secrets(tenant_id: str) -> dict:
     for suffix in QRAIE_BRIDGE_SERVICE_KEYS.keys():
         data = _read(f"{base}/{suffix}")
         result[suffix] = data  # None if that path doesn't exist yet
+    result[TENANT_COMMON_PATH] = _read(f"{base}/{TENANT_COMMON_PATH}")
     return result
