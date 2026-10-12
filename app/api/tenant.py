@@ -158,6 +158,29 @@ def prune_empty_vault_keys(tenant_id: uuid.UUID, apply: bool = False, db: Sessio
         raise HTTPException(status_code=503, detail=str(e))
 
 
+@router.post(
+    "/{tenant_id}/vault/sync-shared-keys",
+    summary="Move FABREQ_COMMAND_ENDPOINT_MAP and MCP_SERVER_URL into service-common",
+    description=(
+        "For a tenant created before these two keys moved to `service-common`: sets them there to the tenant's "
+        "in-cluster addresses (`http://<tenant>-wfm-microservice:9001`, `http://<tenant>-mcp-server:10011/mcp`) and "
+        "**removes them from every other Vault path of the tenant, whatever their value** -- including any "
+        "service's own value (the report shows what was removed). **Dry run by default**; pass `apply=true` to write. "
+        "Afterwards the chart re-syncs and the tenant's pods must be restarted."
+    ),
+    responses={404: {"description": "Tenant not found"}, 503: {"description": "Vault disabled or unreachable"},
+               401: {"description": "Missing/invalid token or API key"}},
+)
+def sync_shared_vault_keys(tenant_id: uuid.UUID, apply: bool = False, db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    try:
+        return vault_service.sync_service_common_derived_keys(tenant.slug, apply=apply)
+    except vault_service.VaultServiceError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @router.get(
     "/{tenant_id}/vault",
     summary="Get a tenant's Vault secrets",
