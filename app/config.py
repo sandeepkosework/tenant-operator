@@ -132,11 +132,9 @@ class Settings(BaseSettings):
     # otherwise know about); only tenant-derived/generated keys (TENANT_ID,
     # REDIS_*, DB_PASSWORD, VIRTUAL_HOST, MONGODB_URI, ...) still win over it.
     # Only the services listed here are looked up. As an env var, a JSON list.
-    # "service-common" merges into the tenant's service-common like any service;
-    # "tenant-common" has no schema -- it is copied verbatim to
-    # secret/{prefix}/{slug}/tenant-common (see write_initial_qraie_bridge_tenant_secrets).
+    # "service-common" merges into the tenant's service-common like any service.
     vault_tenant_base_prefix: str = "k8s/tenant-base"
-    vault_tenant_base_services: list[str] = ["bridge-cp-conductor", "scheduler-agent", "service-common", "tenant-common"]
+    vault_tenant_base_services: list[str] = ["bridge-cp-conductor", "scheduler-agent", "service-common"]
 
     # --- MongoDB env-config mirror (qraie-bridge only) ---
     # This is mongo_service.py writing every qraie-bridge tenant's actual resolved

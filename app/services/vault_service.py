@@ -498,18 +498,6 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
             _write(f"{base}/{service}", payload)
         written[service] = data
 
-    # tenant-common has no schema of its own (it is the org-wide layer in the
-    # chart), so there is nothing to merge: the base secret is copied verbatim to
-    # this tenant's own path. The chart only delivers it to the pods if
-    # tenantcommonSecrets.remotePath points at it (secret/k8s/<tenant_id>/tenant-common).
-    tenant_common = _read_tenant_base_secret(TENANT_COMMON_PATH)
-    if tenant_common:
-        logger.info(
-            "[vault] tenant=%s copying base secret %s/%s verbatim to %s/%s (%d keys)",
-            tenant_slug, settings.vault_tenant_base_prefix, TENANT_COMMON_PATH, base, TENANT_COMMON_PATH, len(tenant_common),
-        )
-        _write(f"{base}/{TENANT_COMMON_PATH}", tenant_common)
-
     logger.info("[vault] tenant=%s qraie-bridge secrets ready (%d services)", tenant_slug, len(QRAIE_BRIDGE_SERVICE_KEYS))
     return written
 
@@ -653,5 +641,4 @@ def read_tenant_secrets(tenant_id: str) -> dict:
     for suffix in QRAIE_BRIDGE_SERVICE_KEYS.keys():
         data = _read(f"{base}/{suffix}")
         result[suffix] = data  # None if that path doesn't exist yet
-    result[TENANT_COMMON_PATH] = _read(f"{base}/{TENANT_COMMON_PATH}")
     return result
