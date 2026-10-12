@@ -133,7 +133,7 @@ class Settings(BaseSettings):
     # REDIS_*, DB_PASSWORD, VIRTUAL_HOST, MONGODB_URI, ...) still win over it.
     # Only the services listed here are looked up. As an env var, a JSON list.
     vault_tenant_base_prefix: str = "k8s/tenant-base"
-    vault_tenant_base_services: list[str] = ["bridge-cp-conductor"]
+    vault_tenant_base_services: list[str] = ["bridge-cp-conductor", "scheduler-agent"]
 
     # --- MongoDB env-config mirror (qraie-bridge only) ---
     # This is mongo_service.py writing every qraie-bridge tenant's actual resolved
