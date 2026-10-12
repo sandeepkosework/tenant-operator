@@ -259,6 +259,8 @@ QRAIE_BRIDGE_SQL_NAME_KEYS = {"DB_USER", "DB_NAME", "DB_SCHEMA"}
 WFM_MICROSERVICE_PORT = 9001
 # mcp-server's containerPort in the chart (its MCP_SERVER_PORT/PORT env, same Service port).
 MCP_SERVER_PORT = 10011
+# bridge-cp-conductor's containerPort in the chart (the Service port is the same).
+BRIDGE_CP_CONDUCTOR_PORT = 8461
 
 
 def _service_common_derived(tenant_slug: str) -> dict[str, str]:
@@ -425,6 +427,10 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
         for k in keys:
             if k == "VIRTUAL_HOST":
                 data[k] = tenant_domain
+            elif k == "CONDUCTOR_BASE_URL":
+                # scheduler-agent -> this tenant's own conductor, via its
+                # Kubernetes Service (compose: http://bridge-cp-conductor:8461).
+                data[k] = f"http://{redis_dns_slug}-bridge-cp-conductor:{BRIDGE_CP_CONDUCTOR_PORT}"
             elif k == "WORKPLACE_DM_SOCKET_URL":
                 # The tenant's own public URL (compose: https://<VIRTUAL_HOST>),
                 # so it can't come from the shared defaults/base secret.
