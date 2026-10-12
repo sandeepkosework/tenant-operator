@@ -322,17 +322,13 @@ def write_qraie_bridge_platform_defaults(service: str, data: dict) -> None:
 
 def _read_tenant_base_secret(service: str) -> dict:
     """The operator-maintained base secret for `service`
-    (secret/{vault_tenant_base_prefix}/{service}), or {} if none is configured
-    for it or the path doesn't exist."""
-    if not settings.vault_enabled or service not in settings.vault_tenant_base_services:
+    (secret/{vault_tenant_base_prefix}/{service}), or {} if there isn't one --
+    most services won't have one, so a missing path is not worth a warning."""
+    if not settings.vault_enabled:
         return {}
-    path = f"{settings.vault_tenant_base_prefix}/{service}"
-    data = _read(path)
+    data = _read(f"{settings.vault_tenant_base_prefix}/{service}")
     if not data:
-        logger.warning(
-            "[vault] no base secret at %s/%s -- nothing to copy for service=%s",
-            settings.vault_kv_mount, path, service,
-        )
+        logger.debug("[vault] no base secret at %s/%s/%s", settings.vault_kv_mount, settings.vault_tenant_base_prefix, service)
     return data or {}
 
 
