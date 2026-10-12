@@ -316,6 +316,22 @@ def write_qraie_bridge_platform_defaults(service: str, data: dict) -> None:
         _write(f"{QRAIE_BRIDGE_PLATFORM_DEFAULTS_PATH}/{service}", data)
 
 
+def _read_tenant_base_secret(service: str) -> dict:
+    """The operator-maintained base secret for `service`
+    (secret/{vault_tenant_base_prefix}/{service}), or {} if none is configured
+    for it or the path doesn't exist."""
+    if not settings.vault_enabled or service not in settings.vault_tenant_base_services:
+        return {}
+    path = f"{settings.vault_tenant_base_prefix}/{service}"
+    data = _read(path)
+    if not data:
+        logger.warning(
+            "[vault] no base secret at %s/%s -- nothing to copy for service=%s",
+            settings.vault_kv_mount, path, service,
+        )
+    return data or {}
+
+
 def _tenant_mongodb_uri(tenant_name: str) -> str:
     """This tenant's own MongoDB connection string -- one database per
     tenant, shared by every service in that tenant, not one database per
@@ -404,10 +420,15 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
 
     for service, keys in QRAIE_BRIDGE_SERVICE_KEYS.items():
         platform = platform_defaults.get(service, {})
+        base_secret = _read_tenant_base_secret(service)
         data = {}
         for k in keys:
             if k == "VIRTUAL_HOST":
                 data[k] = tenant_domain
+            elif k == "WORKPLACE_DM_SOCKET_URL":
+                # The tenant's own public URL (compose: https://<VIRTUAL_HOST>),
+                # so it can't come from the shared defaults/base secret.
+                data[k] = f"https://{tenant_domain}"
             elif k == "MONGODB_URI":
                 data[k] = mongodb_uri
             elif k in service_common_derived:
@@ -433,7 +454,18 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
             elif k in QRAIE_BRIDGE_GENERATED_KEYS:
                 data[k] = _generate_secret()
             else:
-                data[k] = platform.get(k, "")
+                data[k] = base_secret[k] if k in base_secret else platform.get(k, "")
+        if base_secret:
+            # Keys the base secret has that this service's schema doesn't list
+            # are copied as-is; keys the tenant-derived branches above already
+            # decided (TENANT_ID, REDIS_*, DB_PASSWORD, ...) keep their value.
+            data.update({k: v for k, v in base_secret.items() if k not in data})
+            kept = sorted(k for k in base_secret if data.get(k) != base_secret[k])
+            logger.info(
+                "[vault] tenant=%s copied base secret %s/%s (%d keys)%s",
+                tenant_slug, settings.vault_tenant_base_prefix, service, len(base_secret),
+                f"; tenant-specific value kept for: {', '.join(kept)}" if kept else "",
+            )
         # Don't write keys that have no value. The pod's env is built from three
         # secrets (tenant-common < service-common < this service's own) and a later
         # one wins on a key it defines -- even with an empty string -- so an empty

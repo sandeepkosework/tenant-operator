@@ -126,6 +126,14 @@ class Settings(BaseSettings):
     # secrets read secret/k8s/<tenant.id>/..., so this must be "k8s" for the
     # chart and operator to agree (it was "tenants" for the older chart).
     vault_tenant_secret_prefix: str = "k8s"
+    # Per-service "base" secrets copied into each new tenant's own Vault path:
+    # secret/{vault_tenant_base_prefix}/<service> -> secret/{prefix}/{slug}/<service>.
+    # Every key found there is copied (including keys the operator doesn't
+    # otherwise know about); only tenant-derived/generated keys (TENANT_ID,
+    # REDIS_*, DB_PASSWORD, VIRTUAL_HOST, MONGODB_URI, ...) still win over it.
+    # Only the services listed here are looked up. As an env var, a JSON list.
+    vault_tenant_base_prefix: str = "k8s/tenant-base"
+    vault_tenant_base_services: list[str] = ["bridge-cp-conductor"]
 
     # --- MongoDB env-config mirror (qraie-bridge only) ---
     # This is mongo_service.py writing every qraie-bridge tenant's actual resolved
