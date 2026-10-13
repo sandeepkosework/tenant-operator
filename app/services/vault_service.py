@@ -434,6 +434,12 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 # tenant's own domain. wfm-ui keeps its own, different path
                 # (/organization/wfm/api/) in its own secret, which overrides this.
                 data[k] = f"https://{tenant_domain}/workplace/api"
+            elif service == "tranops-ui" and k == "VITE_API_URL":
+                # tranops-ui's own browser-side API/socket endpoints on the
+                # tenant's domain (compose: https://<host>/tranops/api and https://<host>).
+                data[k] = f"https://{tenant_domain}/tranops/api"
+            elif service == "tranops-ui" and k == "VITE_WS_URL":
+                data[k] = f"https://{tenant_domain}"
             elif k == "WORKPLACE_DM_SOCKET_URL":
                 # The tenant's own public URL (compose: https://<VIRTUAL_HOST>),
                 # so it can't come from the shared defaults/base secret.
