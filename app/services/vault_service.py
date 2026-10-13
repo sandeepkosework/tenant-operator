@@ -322,17 +322,13 @@ def write_qraie_bridge_platform_defaults(service: str, data: dict) -> None:
 
 def _read_tenant_base_secret(service: str) -> dict:
     """The operator-maintained base secret for `service`
-    (secret/{vault_tenant_base_prefix}/{service}), or {} if none is configured
-    for it or the path doesn't exist."""
-    if not settings.vault_enabled or service not in settings.vault_tenant_base_services:
+    (secret/{vault_tenant_base_prefix}/{service}), or {} if there isn't one --
+    most services won't have one, so a missing path is not worth a warning."""
+    if not settings.vault_enabled:
         return {}
-    path = f"{settings.vault_tenant_base_prefix}/{service}"
-    data = _read(path)
+    data = _read(f"{settings.vault_tenant_base_prefix}/{service}")
     if not data:
-        logger.warning(
-            "[vault] no base secret at %s/%s -- nothing to copy for service=%s",
-            settings.vault_kv_mount, path, service,
-        )
+        logger.debug("[vault] no base secret at %s/%s/%s", settings.vault_kv_mount, settings.vault_tenant_base_prefix, service)
     return data or {}
 
 
@@ -438,6 +434,12 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 # tenant's own domain. wfm-ui keeps its own, different path
                 # (/organization/wfm/api/) in its own secret, which overrides this.
                 data[k] = f"https://{tenant_domain}/workplace/api"
+            elif service == "tranops-ui" and k == "VITE_API_URL":
+                # tranops-ui's own browser-side API/socket endpoints on the
+                # tenant's domain (compose: https://<host>/tranops/api and https://<host>).
+                data[k] = f"https://{tenant_domain}/tranops/api"
+            elif service == "tranops-ui" and k == "VITE_WS_URL":
+                data[k] = f"https://{tenant_domain}"
             elif k == "WORKPLACE_DM_SOCKET_URL":
                 # The tenant's own public URL (compose: https://<VIRTUAL_HOST>),
                 # so it can't come from the shared defaults/base secret.
