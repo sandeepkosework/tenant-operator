@@ -29,6 +29,7 @@ from app.services import (
     meta_builder_job,
     mongo_service,
     notifications,
+    onboarding_service,
     preflight,
     progress,
     spoke_cr,
@@ -344,6 +345,16 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             mongo_service.write_tenant_env_config(tenant.slug, service_data)
             progress.record(tenant.id, "secrets", "done", f"Secrets written for {len(service_data)} services")
 
+            # Register with the onboarding server BEFORE the GitOps handoff:
+            # erep-server, wfm-microservice and mcp-client fetch their Mongo
+            # connection string from it at startup and crash-loop without a
+            # record. No-op until ONBOARDING_SERVER_URL is set.
+            if settings.onboarding_server_url:
+                progress.record(tenant.id, "onboarding", "start", "Registering the tenant with the onboarding server")
+            onboarding_service.register_tenant(tenant)
+            if settings.onboarding_server_url:
+                progress.record(tenant.id, "onboarding", "done", "Tenant registered with the onboarding server")
+
             logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
             progress.record(tenant.id, "manifest", "start", "Rendering the Helm values for this tenant")
             values_yaml = _render_values_yaml(tenant, cluster)
@@ -394,6 +405,9 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             _set_status(db, tenant, TenantStatus.FAILED, error=str(e))
         except git_service.GitServiceError as e:
             _set_status(db, tenant, TenantStatus.FAILED, error=str(e))
+        except onboarding_service.OnboardingRegistrationError as e:
+            logger.error("tenant=%s onboarding server registration failed: %s", tenant.tenant_name, e)
+            _set_status(db, tenant, TenantStatus.FAILED, error=f"onboarding server registration failed: {e}")
         except meta_builder_job.SeedJobError as e:
             logger.error("tenant=%s database seeding failed: %s", tenant.tenant_name, e)
             _set_status(db, tenant, TenantStatus.FAILED, error=f"database seeding failed: {e}")
