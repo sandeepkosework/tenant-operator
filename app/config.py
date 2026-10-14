@@ -185,10 +185,11 @@ class Settings(BaseSettings):
     # nothing (one warning) until mongo_env_config_uri is set. Set false to disable.
     qraieai_registry_enabled: bool = True
     qraieai_db_name: str = "qraieai"
-    # NOT infra-runner's bridge_port_allocations -- that one holds VM port
-    # ranges (startPort/endPort) a legacy allocator may read; Kubernetes
-    # tenants have no ports to allocate, so they get their own collection.
-    qraieai_registry_collection: str = "bridge_tenants"
+    # The shared `tenants` collection of the qraieai database (it was a separate
+    # "bridge_tenants" collection before). NOT infra-runner's
+    # bridge_port_allocations -- that one holds VM port ranges
+    # (startPort/endPort) a legacy allocator may read.
+    qraieai_registry_collection: str = "tenants"
 
     # --- Crossplane (prod-only new-spoke OKE provisioning) ---
     # When a prod spoke crosses its scale-out threshold, the operator applies

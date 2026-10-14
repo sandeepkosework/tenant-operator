@@ -763,7 +763,7 @@ to disable); uses the same server and credentials as the mirror
 is set.
 
 - **Where:** database `QRAIEAI_DB_NAME` (default `qraieai`), collection
-  `QRAIEAI_REGISTRY_COLLECTION` (default `bridge_tenants`), one document per
+  `QRAIEAI_REGISTRY_COLLECTION` (default `tenants`), one document per
   tenant with `_id` = the tenant slug.
 - **Not** infra-runner's `bridge_port_allocations`: that collection holds VM
   port ranges (`startPort`/`endPort`) a legacy allocator may read, and
@@ -959,7 +959,7 @@ Selected settings worth knowing about explicitly:
 | `QRAIEAI_REGISTRY_ENABLED` | `true` | Keep one record per tenant in the shared registry database — see "Shared tenant registry". |
 | `EREP_SETUP_ENABLED` / `_REQUIRED` | `true` / `false` | Create the default eRep after a tenant is RUNNING; `_REQUIRED` fails the tenant if it can't — see "Default eRep setup". |
 | `EREP_SETUP_URL_TEMPLATE` | `https://{domain}/galaxy/erepapi/api/ereps` | Where the eRep is POSTed; also `_VERIFY_TLS`, `_ATTEMPTS`, `_RETRY_DELAY_SECONDS`, `_TIMEOUT_SECONDS`. |
-| `QRAIEAI_DB_NAME` / `QRAIEAI_REGISTRY_COLLECTION` | `qraieai` / `bridge_tenants` | Where the registry records go. |
+| `QRAIEAI_DB_NAME` / `QRAIEAI_REGISTRY_COLLECTION` | `qraieai` / `tenants` | Where the registry records go. |
 | `GIT_REPO_URL` / `GIT_BRANCH` / `GIT_TENANTS_DIR` | — | The GitOps repo and directory tenant manifests are committed into. |
 | `GIT_BRIDGE_TENANTS_DIR` | `bridge-tenants` | **Currently unused by any live code path** — `_tenants_dir_for()` in `provisioner.py` always returns `GIT_TENANTS_DIR` now that there's only one chart/one tenant flow. Kept because `git_service.py`'s functions already accept a `tenants_dir` override and nothing currently calls them with it; harmless to leave set. |
 | `MSSQL_ADMIN_HOST` / `..._PORT` / `..._USER` / `..._PASSWORD` | unset | Admin login the meta-builder Job uses to create each tenant's real MSSQL database + login. Both host and password must be set for the Job to actually run — otherwise it's skipped (logged, not failed). |

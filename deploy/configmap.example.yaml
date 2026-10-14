@@ -100,7 +100,7 @@ data:
   # "Shared tenant registry"):
   # QRAIEAI_REGISTRY_ENABLED: "false"   # set false to disable the registry
   # QRAIEAI_DB_NAME: "qraieai"
-  # QRAIEAI_REGISTRY_COLLECTION: "bridge_tenants"
+  # QRAIEAI_REGISTRY_COLLECTION: "tenants"
   # Collapse the per-tenant env-config mirror into one shared database:
   # MONGO_ENV_CONFIG_SHARED_DB: "tenant-env-config"
 
