@@ -162,6 +162,19 @@ class Settings(BaseSettings):
     # True: it marks the tenant FAILED (infra-runner failed the whole run).
     erep_setup_required: bool = False
 
+    # --- Onboarding server (the "config API" tenant pods read their Mongo connection string from) ---
+    # Base URL, e.g. "http://qraie-onboarding-server:3001". Unset = tenants are
+    # not registered (one warning). Set = each new tenant is POSTed to
+    # <url>/config as {tenantId, connectionString}, and a failure marks it FAILED.
+    # See services/onboarding_service.py.
+    onboarding_server_url: Optional[str] = None
+    # Sent as "Authorization: Bearer <token>" when set. The server has no auth
+    # today; this is for putting one in front of it (ingress/proxy) later.
+    onboarding_server_token: Optional[str] = None
+    onboarding_server_attempts: int = 5
+    onboarding_server_retry_delay_seconds: int = 5
+    onboarding_server_timeout_seconds: int = 15
+
     # --- Shared tenant registry (database `qraieai`) ---
     # One small record per tenant in a database shared by ALL tenants, kept
     # current as the tenant's status changes (and marked DELETED, not removed,

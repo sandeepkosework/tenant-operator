@@ -109,3 +109,13 @@ data:
   # EREP_SETUP_REQUIRED: "false"        # true = a failed call marks the tenant FAILED
   # EREP_SETUP_URL_TEMPLATE: "https://{domain}/galaxy/erepapi/api/ereps"
   # EREP_SETUP_VERIFY_TLS: "true"
+
+  # --- Onboarding server registration (OFF until the URL is set; see README) ---
+  # Each new tenant is POSTed to <url>/config as {tenantId, connectionString} so
+  # erep-server / wfm-microservice / mcp-client can fetch their Mongo connection
+  # string. A failure marks the tenant FAILED. Reachable FROM THE OPERATOR.
+  # ONBOARDING_SERVER_URL: "http://qraie-onboarding-server:3001"
+  # ONBOARDING_SERVER_ATTEMPTS: "5"
+  # ONBOARDING_SERVER_RETRY_DELAY_SECONDS: "5"
+  # ONBOARDING_SERVER_TIMEOUT_SECONDS: "15"
+  # (ONBOARDING_SERVER_TOKEN, if you put auth in front of it, belongs in the Secret)
