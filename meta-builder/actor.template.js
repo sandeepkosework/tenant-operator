@@ -22,7 +22,7 @@ export function getActorsTemplate() {
                 }
             },
             config: {
-                url: "https://{{TENANT_ID}}-bridge{{STG_ENV}}.{{DOMAIN_NAME}}",
+                url: "https://{{BRIDGE_HOST}}",
                 event: "SendDirectMessage",
                 data: {
                     header: { auth_token: "" },
@@ -59,7 +59,7 @@ export function getActorsTemplate() {
             description: "Get authentication token via Socket.io",
             enabled: true,
             config: {
-                url: "https://{{TENANT_ID}}-bridge{{STG_ENV}}.{{DOMAIN_NAME}}",
+                url: "https://{{BRIDGE_HOST}}",
                 event: "AuthToken",
                 data: {
                     clientId: "QraieBot",

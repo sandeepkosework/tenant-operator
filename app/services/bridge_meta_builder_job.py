@@ -176,6 +176,10 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
         {"name": "DLM_SECRET_KEY", "value": settings.bridge_dlm_secret_key or ""},
         {"name": "SLM_KB_AUTH_PASSWORD", "value": settings.bridge_slm_kb_auth_password or ""},
         {"name": "IS_STAGING", "value": "true" if settings.environment == "stage" else "false"},
+        # The tenant's real public host (the one its Ingress serves). The seed
+        # writes it into every URL it seeds (bridgeMetaInfo, controlops_actors)
+        # instead of composing "<tenant>-bridge[stg].<base domain>" itself.
+        {"name": "TENANT_DOMAIN", "value": tenant.domain or ""},
     ]
 
     return {

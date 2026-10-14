@@ -3,7 +3,7 @@
         "tenantId": "{{TENANT_ID_UPPER}}",
         "tenantName": "{{DISPLAY_NAME}}",
         "emailId": "{{TENANT_EMAIL}}",
-        "logo": "https://{{TENANT_ID}}-bridge{{STG_ENV}}.{{DOMAIN_NAME}}/workplace/api/attachment/direct/upload_1763474329245_pj0xd9dnx/logo.png"
+        "logo": "https://{{BRIDGE_HOST}}/workplace/api/attachment/direct/upload_1763474329245_pj0xd9dnx/logo.png"
     },
     "workplace": {
         "joinedOn": "{{TODAY_DATE}}",
@@ -29,7 +29,7 @@
         "MIN_CONNECTIONS": "20",
         "alertMemberId": "M101",
         "VIDEO_BASE_URL": "https://qr-video.{{DOMAIN_NAME}}",
-        "gatewayUrl": "https://{{TENANT_ID}}-bridge{{STG_ENV}}.{{DOMAIN_NAME}}",
+        "gatewayUrl": "https://{{BRIDGE_HOST}}",
         "authTokenPassword":"",
         "authTokenUsername":"QraieBot",
         "MS_PORT": "4000",
@@ -38,11 +38,11 @@
         "PerplexityURL": "https://api.perplexity.ai/chat/completions",
         "NEXT_PUBLIC_VIDEO_API_BASE": "https://qr-avbe.hbssweb.com",
         "apiProtocol": "development",
-        "NEXT_PUBLIC_SOCKET_URL": "https://{{TENANT_ID}}-bridge{{STG_ENV}}.{{DOMAIN_NAME}}/workplace/api",
+        "NEXT_PUBLIC_SOCKET_URL": "https://{{BRIDGE_HOST}}/workplace/api",
         "NEXT_PUBLIC_VERSION": "1.0.1"
     },
     "wfmObj": {
-        "NEXT_PUBLIC_SOCKET_URL": "{{TENANT_ID}}-bridge{{STG_ENV}}.{{DOMAIN_NAME}}/organization/wfm/api",
+        "NEXT_PUBLIC_SOCKET_URL": "{{BRIDGE_HOST}}/organization/wfm/api",
         "FABREQ_COMMAND_ENDPOINT_MAP": "http://wfm-microservice:{{WFM_MICROSERVICE_PORT}}",
         "TNT_DB_CONN": {
             "wfm": {
@@ -70,7 +70,7 @@
             "mcpServerUrl": "http://localhost:10011/mcp",
             "ragEndpoint": "https://slm-kb.qraie.ai/api/get_chunks"
         },
-        "chatUrl": "https://{{TENANT_ID}}-bridge{{STG_ENV}}.{{DOMAIN_NAME}}/galaxy/slmapi/v1",
+        "chatUrl": "https://{{BRIDGE_HOST}}/galaxy/slmapi/v1",
         "secretKey": "{{DLM_SECRET_KEY}}",
         "slmKbApiAuth": {
             "authUser": "bridgeUser",

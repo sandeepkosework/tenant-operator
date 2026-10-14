@@ -97,6 +97,19 @@ function deepReplace(obj, replacements) {
     return obj;
 }
 
+// The tenant's public hostname, as written into the seeded URLs
+// (bridgeMetaInfo, controlops_actors). tenant-operator passes the tenant's real
+// domain -- the same host its Ingress serves and its Vault values use -- as
+// TENANT_DOMAIN. Without it (an older operator), fall back to the legacy
+// "<tenant>-bridge[stg].<base domain>" convention.
+function bridgeHost(tenantId, domain, isStaging) {
+    const fromEnv = (process.env.TENANT_DOMAIN || "")
+        .trim()
+        .replace(/^https?:\/\//i, "")
+        .replace(/\/+$/, "");
+    return fromEnv || `${tenantId}-bridge${isStaging ? "stg" : ""}.${domain}`;
+}
+
 function applyTemplate(obj, variables) {
     if (Array.isArray(obj)) {
         return obj.map(item => applyTemplate(item, variables));
@@ -201,6 +214,7 @@ async function bridgeMetaBuilderService(conn, tenantId, tenantName, domain, emai
             TENANT_EMAIL: email,
             DOMAIN_NAME: domain,
             STG_ENV: isStaging ? "stg" : "",
+            BRIDGE_HOST: bridgeHost(tenantId, domain, isStaging),
             PHONE_SYSTEM_ENV: isStaging ? "STG" : "PROD",
             // Optional third-party API token for the tenant's services. Not
             // committed: supply it as the PERPLEXITY_TOKEN env var on the Job.
@@ -546,6 +560,7 @@ async function insertDefaultActors(conn, tenantId, domain, qraieBotPassword, isS
         "{{TENANT_ID}}": tenantId,
         "{{DOMAIN_NAME}}": domain,
         "{{STG_ENV}}": isStaging ? "stg" : "",
+        "{{BRIDGE_HOST}}": bridgeHost(tenantId, domain, isStaging),
         "{{QRAIBE_BOT_PASSWORD}}": qraieBotPassword
     };
 
