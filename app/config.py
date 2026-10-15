@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     # database + login. Triggered at the same point in provisioner.py.
     bridge_meta_builder_job_namespace: str = "tenant-operator"
     bridge_meta_builder_image_repository: str = "sandeepkosework/bridge-meta-builder"
-    bridge_meta_builder_image_tag: str = "0.1.11"
+    bridge_meta_builder_image_tag: str = "0.1.15"
     # Base public domain every tenant's hostname is built under (the
     # legacy system's own convention: "<tenant_name>-bridge<stg-suffix>.
     # <this>", e.g. "hbss-bridgestg.qraie.ai" -- see bridge_meta_builder_job.py).
@@ -185,10 +185,11 @@ class Settings(BaseSettings):
     # nothing (one warning) until mongo_env_config_uri is set. Set false to disable.
     qraieai_registry_enabled: bool = True
     qraieai_db_name: str = "qraieai"
-    # NOT infra-runner's bridge_port_allocations -- that one holds VM port
-    # ranges (startPort/endPort) a legacy allocator may read; Kubernetes
-    # tenants have no ports to allocate, so they get their own collection.
-    qraieai_registry_collection: str = "bridge_tenants"
+    # The shared `tenants` collection of the qraieai database (it was a separate
+    # "bridge_tenants" collection before). NOT infra-runner's
+    # bridge_port_allocations -- that one holds VM port ranges
+    # (startPort/endPort) a legacy allocator may read.
+    qraieai_registry_collection: str = "tenants"
 
     # --- Crossplane (prod-only new-spoke OKE provisioning) ---
     # When a prod spoke crosses its scale-out threshold, the operator applies
