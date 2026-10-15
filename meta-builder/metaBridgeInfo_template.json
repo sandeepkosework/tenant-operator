@@ -23,7 +23,7 @@
         "DB_SCHEMA": "{{DB_NAME}}",
         "DB_PORT": "{{DB_PORT}}",
         "NODE_ENV": "production",
-        "MICROSERVICE_URL": "http://microservice-qraie:{{MICROSERVICE_PORT}}",
+        "MICROSERVICE_URL": "http://{{SERVICE_PREFIX}}microservice-qraie:{{MICROSERVICE_PORT}}",
         "syncInterval": "600000",
         "MAX_CONNECTIONS": "100",
         "MIN_CONNECTIONS": "20",
@@ -43,7 +43,7 @@
     },
     "wfmObj": {
         "NEXT_PUBLIC_SOCKET_URL": "{{BRIDGE_HOST}}/organization/wfm/api",
-        "FABREQ_COMMAND_ENDPOINT_MAP": "http://wfm-microservice:{{WFM_MICROSERVICE_PORT}}",
+        "FABREQ_COMMAND_ENDPOINT_MAP": "http://{{SERVICE_PREFIX}}wfm-microservice:{{WFM_MICROSERVICE_PORT}}",
         "TNT_DB_CONN": {
             "wfm": {
                 "type": "mongoose",
@@ -67,7 +67,7 @@
         "hrDlm": {
             "llmBaseUrl": "https://mcp-llm-client.qryde.net/v1",
             "modelName": "Qwen/Qwen3-4B-Instruct-2507",
-            "mcpServerUrl": "http://localhost:10011/mcp",
+            "mcpServerUrl": "http://{{SERVICE_PREFIX}}mcp-server:{{MCP_SERVER_PORT}}/mcp",
             "ragEndpoint": "https://slm-kb.qraie.ai/api/get_chunks"
         },
         "chatUrl": "https://{{BRIDGE_HOST}}/galaxy/slmapi/v1",

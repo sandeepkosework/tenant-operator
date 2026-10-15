@@ -110,6 +110,16 @@ function bridgeHost(tenantId, domain, isStaging) {
     return fromEnv || `${tenantId}-bridge${isStaging ? "stg" : ""}.${domain}`;
 }
 
+// In-cluster Service names are "<prefix>-<service>" (the chart names every
+// Service that way, e.g. hbss-031-wfm-microservice), so the compose-style short
+// names (http://wfm-microservice:9001) do not resolve. tenant-operator passes the
+// prefix as K8S_SERVICE_PREFIX; without it (an older operator) the short names
+// are kept.
+function servicePrefix() {
+    const p = (process.env.K8S_SERVICE_PREFIX || "").trim();
+    return p ? `${p}-` : "";
+}
+
 function applyTemplate(obj, variables) {
     if (Array.isArray(obj)) {
         return obj.map(item => applyTemplate(item, variables));
@@ -155,6 +165,7 @@ const BRIDGE_PORT = 16004;              // service "bridge" (image acetaxi-bridg
 const QRAIE_API_GATEWAY_PORT = 16010;   // service "qraie-api-gateway"
 const MICROSERVICE_QRAIE_PORT = 80;     // service "microservice-qraie"
 const WFM_MICROSERVICE_PORT = 9001;     // service "wfm-microservice"
+const MCP_SERVER_PORT = 10011;          // service "mcp-server"
 const QRAIE_REDIS_SHARED_PORT = 6379;   // service "qraie-redis-shared"
 
 async function bridgeMetaBuilderService(conn, tenantId, tenantName, domain, email, isStaging) {
@@ -225,6 +236,8 @@ async function bridgeMetaBuilderService(conn, tenantId, tenantName, domain, emai
             QRAIE_API_GATEWAY_PORT: QRAIE_API_GATEWAY_PORT,
             MICROSERVICE_PORT: MICROSERVICE_QRAIE_PORT,
             WFM_MICROSERVICE_PORT: WFM_MICROSERVICE_PORT,
+            MCP_SERVER_PORT: MCP_SERVER_PORT,
+            SERVICE_PREFIX: servicePrefix(),
 
             REDIS_IP: redishost,
             REDIS_PORT: QRAIE_REDIS_SHARED_PORT,
