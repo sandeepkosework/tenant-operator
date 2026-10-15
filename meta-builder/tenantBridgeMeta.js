@@ -120,6 +120,33 @@ function servicePrefix() {
     return p ? `${p}-` : "";
 }
 
+// bridgeMetaInfo is looked up by tenantObj.tenantId, which this seed stores in
+// upper case (the legacy convention, e.g. "HBSS-031"), while some services send
+// the tenant id in lower case (their TENANT_ID is the bare lower-case name).
+// Mongo compares strings case-sensitively by default, so those services found
+// no document. Creating the collection with a case-insensitive default
+// collation (strength 2) makes every equality query on it match in either case,
+// with no change to the services. A collection's default collation can only be
+// set when it is created, hence the explicit create before the first write; a
+// collection that already exists is left alone.
+async function ensureBridgeMetaInfoCollection(conn) {
+    const existing = await conn.db.listCollections({ name: "bridgeMetaInfo" }).toArray();
+    if (existing.length > 0) {
+        const collation = existing[0].options && existing[0].options.collation;
+        console.log(
+            collation
+                ? "ℹ️  bridgeMetaInfo already exists with a collation"
+                : "⚠️  bridgeMetaInfo already exists WITHOUT a case-insensitive collation -- " +
+                  "lookups by tenant id stay case-sensitive for this tenant"
+        );
+        return;
+    }
+    await conn.db.createCollection("bridgeMetaInfo", {
+        collation: { locale: "en", strength: 2 }
+    });
+    console.log("✅ bridgeMetaInfo created with a case-insensitive collation");
+}
+
 function applyTemplate(obj, variables) {
     if (Array.isArray(obj)) {
         return obj.map(item => applyTemplate(item, variables));
@@ -268,6 +295,9 @@ async function bridgeMetaBuilderService(conn, tenantId, tenantName, domain, emai
         const finalJson = applyTemplate(template, data);
 
         /* ------------------ Mongo upsert ------------------ */
+        // Must run before the model below is compiled: the upsert would
+        // otherwise auto-create the collection without the collation.
+        await ensureBridgeMetaInfoCollection(conn);
         const BridgeMetaInfo = conn.model("bridgeMetaInfo", BridgeSchema);
 
         await BridgeMetaInfo.updateOne(
