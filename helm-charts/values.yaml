@@ -6,7 +6,7 @@ replicaCount: 1
 
 image:
   repository: sandeepkosework/tenant-operator
-  tag: "0.1.35"
+  tag: "0.1.36"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
