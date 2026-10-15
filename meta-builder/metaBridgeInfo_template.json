@@ -7,7 +7,7 @@
     },
     "workplace": {
         "joinedOn": "{{TODAY_DATE}}",
-        "PORT": "{{NEXT_PORT}}",
+        "PORT": "{{QRAIE_API_GATEWAY_PORT}}",
         "redisPort": "{{REDIS_PORT}}",
         "redisIp": "{{REDIS_IP}}",
         "redisPassword": "{{REDIS_PASSWORD}}",

@@ -151,7 +151,8 @@ const requireEnv = (name) => {
 // ports, so unlike the old docker-compose setup (one shared host, dynamic
 // per-tenant ports tracked in ports.json) there's nothing per-tenant to
 // look up here at all.
-const BRIDGE_PORT = 30170;              // service "bridge" (image acetaxi-bridge)
+const BRIDGE_PORT = 16004;              // service "bridge" (image acetaxi-bridge)
+const QRAIE_API_GATEWAY_PORT = 16010;   // service "qraie-api-gateway"
 const MICROSERVICE_QRAIE_PORT = 80;     // service "microservice-qraie"
 const WFM_MICROSERVICE_PORT = 9001;     // service "wfm-microservice"
 const QRAIE_REDIS_SHARED_PORT = 6379;   // service "qraie-redis-shared"
@@ -221,6 +222,7 @@ async function bridgeMetaBuilderService(conn, tenantId, tenantName, domain, emai
             PERPLEXITY_TOKEN: process.env.PERPLEXITY_TOKEN || "",
 
             NEXT_PORT: BRIDGE_PORT,
+            QRAIE_API_GATEWAY_PORT: QRAIE_API_GATEWAY_PORT,
             MICROSERVICE_PORT: MICROSERVICE_QRAIE_PORT,
             WFM_MICROSERVICE_PORT: WFM_MICROSERVICE_PORT,
 
