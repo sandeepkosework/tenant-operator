@@ -190,7 +190,7 @@ const requireEnv = (name) => {
 // look up here at all.
 const BRIDGE_PORT = 16004;              // service "bridge" (image acetaxi-bridge)
 const QRAIE_API_GATEWAY_PORT = 16010;   // service "qraie-api-gateway"
-const MICROSERVICE_QRAIE_PORT = 80;     // service "microservice-qraie"
+const MICROSERVICE_QRAIE_PORT = 4000;   // service "microservice-qraie"
 const WFM_MICROSERVICE_PORT = 9001;     // service "wfm-microservice"
 const MCP_SERVER_PORT = 10011;          // service "mcp-server"
 const QRAIE_REDIS_SHARED_PORT = 6379;   // service "qraie-redis-shared"

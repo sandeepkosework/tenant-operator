@@ -44,7 +44,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: tenant-operator
-          image: sandeepkosework/tenant-operator:0.2.35
+          image: sandeepkosework/tenant-operator:0.2.36
           ports:
             - containerPort: 8000
           envFrom:
