@@ -180,6 +180,9 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
         # writes it into every URL it seeds (bridgeMetaInfo, controlops_actors)
         # instead of composing "<tenant>-bridge[stg].<base domain>" itself.
         {"name": "TENANT_DOMAIN", "value": tenant.domain or ""},
+        # Prefix of this tenant's in-cluster Service names ("<prefix>-wfm-microservice"),
+        # the same one the Vault-derived URLs use. The seed writes service URLs with it.
+        {"name": "K8S_SERVICE_PREFIX", "value": vault_service._k8s_service_slug(tenant.slug)},
     ]
 
     return {
