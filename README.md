@@ -110,7 +110,7 @@ tenant-operator/
 │   ├── bridge-schema-definition.js     Mongoose schemas for the Mongo-side seed (bridgeMetaInfo, sequence, etc.)
 │   ├── actor.template.js               ControlOps default-actor template the Mongo seed inserts
 │   ├── metaBridgeInfo_template.json    the tenant's bridgeMetaInfo doc template -- {{...}} placeholders, no real secrets
-│   ├── QRaie-Table-Script-11Sep25.sql  the real CREATE TABLE schema, applied verbatim (bracket-substituted) per tenant
+│   ├── QRaie-Table-Script-16April26.sql  the real CREATE TABLE schema, applied verbatim (bracket-substituted) per tenant
 │   ├── QRaie-Database-Default-Inserts.sql  default SQL rows (admin MEMBER, TENANT, permissions, etc.) per tenant
 │   ├── package.json / Dockerfile       node:20-slim image, deps baked in at build time -- see below
 │   └── 02_sql_mongo.sh                 the ORIGINAL legacy bash script this was ported from, kept for reference only
@@ -782,7 +782,7 @@ is set.
 
 Separate from `meta_builder_job.py` above, which only creates the empty
 database + login. This Job does everything after that: applies the real SQL
-schema (`QRaie-Table-Script-11Sep25.sql`), runs the SQL default-data inserts
+schema (`QRaie-Table-Script-16April26.sql`), runs the SQL default-data inserts
 (`QRaie-Database-Default-Inserts.sql`), and fully seeds this tenant's own
 MongoDB (a `bridgeMetaInfo` aggregate document, an admin user + auth/RBAC
 record, default WFM lookup data, default ControlOps actors, default IoT

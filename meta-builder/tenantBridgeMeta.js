@@ -1881,7 +1881,9 @@ function applySchemaTemplate(template, tenantId) {
     // creates it first, and provisioner.py blocks on that Job actually
     // finishing before this one is even triggered -- see
     // bridge_meta_builder_job.py).
-    sqlText = sqlText.replace(/IF NOT EXISTS[\s\S]*?\r?\nGO\r?\n/g, "");
+    // Only the sys.databases check: the script has other IF NOT EXISTS ... GO blocks
+    // (e.g. the MemberSequence) that must be kept.
+    sqlText = sqlText.replace(/IF NOT EXISTS \(SELECT \* FROM sys\.databases[\s\S]*?\r?\nGO\r?\n/, "");
 
     sqlText = sqlText
         .replace(new RegExp(`use '${tenantId}'`, "gi"), `use [${tenantId}]`)
@@ -1900,7 +1902,7 @@ function prepareTenantSchemaSql(tenantId) {
         throw new Error("Invalid tenantId");
     }
 
-    const schemaPath = path.resolve(__dirname, "QRaie-Table-Script-11Sep25.sql");
+    const schemaPath = path.resolve(__dirname, "QRaie-Table-Script-16April26.sql");
     if (!fs.existsSync(schemaPath)) {
         throw new Error(`Schema SQL file not found at ${schemaPath}`);
     }
