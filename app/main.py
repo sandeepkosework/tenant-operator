@@ -4,6 +4,7 @@ import socketio
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from sqlalchemy import inspect, text
 
 from app.api import auth, cluster, health, tenant, ui, vault
 from app.auth import require_admin
@@ -94,4 +95,18 @@ def on_startup():
     # For a real deployment, replace this with Alembic migrations
     # (see scripts/ and README) -- create_all is fine for first bring-up.
     Base.metadata.create_all(bind=engine)
+    _ensure_tenant_columns()
     logger.info("tenant-operator started; tables ensured")
+
+
+def _ensure_tenant_columns() -> None:
+    """Adds tenants.seq_number to a database created before that column existed.
+
+    create_all only creates missing tables, it never alters an existing one, so
+    without this an upgraded operator would fail on its first tenants query. Does
+    nothing when the column is already there (a fresh database, or a restart)."""
+    if "seq_number" in {c["name"] for c in inspect(engine).get_columns("tenants")}:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE tenants ADD COLUMN seq_number INTEGER"))
+    logger.info("added column tenants.seq_number")

@@ -200,6 +200,16 @@ Key fields:
   file stay valid. Creating a tenant whose name equals an existing tenant's
   slug (e.g. a new `acme-2` while `acme` with sequence 2 exists) is rejected
   with a 400. `slug` is never used for anything customer-facing.
+- `seq_number` — **record only**: which tenant, by creation order, this is
+  (the Nth one this operator created). Allocated at create time as the highest
+  number already used (this column or the legacy `tenant_seq`) plus one. It is
+  written to the tenant's `tenant-info/<slug>.yaml` as `tenantSeq` and returned
+  by the API as `tenantSeq`, and nothing else reads it — unlike `tenant_seq`
+  it is never part of `slug`, so it changes no namespace, Vault path, git file
+  or Application name. Tenants created before the column existed have no
+  `seq_number` and show their legacy `tenant_seq` instead (or nothing).
+  Added to an existing database at operator startup (`main.py`), since
+  `create_all` doesn't alter existing tables.
 - `app_type` — always `"qraie-bridge"` now (`server_default="qraie-bridge"`);
   kept as a real column only for API/DB back-compat, not settable per
   request any more. See "The retired `workplace` chart".

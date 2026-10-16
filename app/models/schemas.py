@@ -122,7 +122,9 @@ class TenantUpdateRequest(BaseModel):
 class TenantResponse(BaseModel):
     id: uuid.UUID
     tenantName: str = Field(validation_alias="tenant_name")
-    tenantSeq: Optional[int] = Field(default=None, validation_alias="tenant_seq")
+    # Creation-order number, for records only (Tenant.record_seq: the newer
+    # seq_number, else the legacy tenant_seq). Not part of the tenant's slug.
+    tenantSeq: Optional[int] = Field(default=None, validation_alias="record_seq")
     # Read via getattr(orm_obj, "slug") -- Tenant.slug is a plain @property,
     # not a column, but from_attributes=True below still picks it up.
     slug: str

@@ -31,7 +31,9 @@ def _iso(dt) -> str | None:
 def render_tenant_info_yaml(tenant: Tenant, cluster: ClusterInfo) -> str:
     data = {
         "tenantId": tenant.slug,
-        "tenantSeq": tenant.tenant_seq,
+        # Record only: which tenant, by creation order, this is. Not part of the
+        # tenant's id/slug above -- see Tenant.seq_number / Tenant.record_seq.
+        "tenantSeq": tenant.record_seq,
         "tenantName": tenant.tenant_name,
         "displayName": tenant.display_name,
         "email": tenant.email,

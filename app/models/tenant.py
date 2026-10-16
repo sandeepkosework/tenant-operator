@@ -68,6 +68,18 @@ class Tenant(Base):
     # codebase. Nullable so old rows created before this column existed
     # don't break; every tenant created going forward always gets one.
     tenant_seq = Column(Integer, nullable=True, index=True)
+    # RECORD ONLY: "this was the Nth tenant this operator created". Allocated
+    # at create time (api/tenant.py), continuing from the highest number used
+    # so far -- seq_number of newer tenants and the legacy tenant_seq above, so
+    # the numbering stays one sequence across both. It is written to the
+    # tenant's tenant-info YAML and returned by the API as `tenantSeq`, and
+    # nothing else reads it: unlike tenant_seq it is NEVER part of `slug`, so it
+    # doesn't affect the namespace, Vault path, git filename, Argo CD
+    # Application name or any other identifier. NULL for tenants created before
+    # this column existed and not backfilled -- those fall back to their legacy
+    # tenant_seq (if any) via `record_seq`. Added to existing databases by
+    # main.py's startup step, since create_all never alters an existing table.
+    seq_number = Column(Integer, nullable=True)
     display_name = Column(String(255), nullable=True)
     email = Column(String(255), nullable=True)
     domain = Column(String(255), nullable=True)
@@ -151,6 +163,16 @@ class Tenant(Base):
         max_name_len = 63 - len("tenant-") - len(suffix)
         name = self.tenant_name[:max_name_len].rstrip("-")
         return f"{name}{suffix}"
+
+    @property
+    def record_seq(self) -> int | None:
+        """The tenant's creation-order number, for display and records only.
+
+        seq_number for tenants created since that column was added, otherwise the
+        legacy tenant_seq (the number already inside an older tenant's slug), or
+        None if the tenant has neither. Never use this for naming -- that is
+        what `slug` and tenant_seq are for."""
+        return self.seq_number if self.seq_number is not None else self.tenant_seq
 
     def __repr__(self) -> str:
         return f"<Tenant {self.tenant_name} status={self.status}>"

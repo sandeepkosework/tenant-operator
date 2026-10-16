@@ -2,6 +2,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -19,6 +20,16 @@ from app.services.validation import ValidationError, validate_create_request
 logger = logging.getLogger("tenant-operator.api.tenant")
 router = APIRouter(prefix="/tenant", tags=["tenant"])
 settings = get_settings()
+
+
+def _next_record_seq(db: Session) -> int:
+    """Next value of the record-only creation-order number (Tenant.seq_number).
+
+    One sequence across both columns: the highest number any tenant already has,
+    whether a legacy tenant_seq or a newer seq_number, plus one. Soft-deleted
+    tenants keep their rows, so their numbers are never handed out again."""
+    highest = db.query(func.max(func.coalesce(Tenant.seq_number, Tenant.tenant_seq))).scalar()
+    return (highest or 0) + 1
 
 
 @router.post(
@@ -63,14 +74,18 @@ def create_tenant(
                    + "; ".join(unverified),
         )
 
-    # No sequence number is allocated any more: tenant_seq stays NULL, so the
-    # tenant's slug (namespace, Vault path, git file, ...) is just its bare name.
-    # Name collisions with older, sequence-suffixed tenants are rejected in
-    # validate_create_request. See Tenant.slug.
-
+    # tenant_seq stays NULL, so the tenant's slug (namespace, Vault path, git
+    # file, ...) is just its bare name. Name collisions with older,
+    # sequence-suffixed tenants are rejected in validate_create_request. See
+    # Tenant.slug.
+    #
+    # seq_number is a separate, record-only "Nth tenant created" number: it is
+    # shown in the tenant-info YAML and the API but never used for naming. Same
+    # single-replica assumption as the rest of this operator for the MAX()+1.
     tenant = Tenant(
         tenant_name=req.tenantId,
         tenant_seq=None,
+        seq_number=_next_record_seq(db),
         display_name=req.displayName,
         email=req.email,
         domain=req.domain,
