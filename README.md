@@ -898,7 +898,7 @@ manual re-runs don't collide:
   SQL always agree once an attempt succeeds.
 
 **Rebuild the image after changing anything in `meta-builder/`**
-(`bridge_meta_builder_image_tag`, currently `0.1.16`): the Job runs the code
+(`bridge_meta_builder_image_tag`, currently `0.1.17`): the Job runs the code
 baked into that image, not this directory.
 
 **Verification status**: the schema/inserts/Mongo-seed logic above was
@@ -980,7 +980,7 @@ Selected settings worth knowing about explicitly:
 | `GIT_BRIDGE_TENANTS_DIR` | `bridge-tenants` | **Currently unused by any live code path** — `_tenants_dir_for()` in `provisioner.py` always returns `GIT_TENANTS_DIR` now that there's only one chart/one tenant flow. Kept because `git_service.py`'s functions already accept a `tenants_dir` override and nothing currently calls them with it; harmless to leave set. |
 | `MSSQL_ADMIN_HOST` / `..._PORT` / `..._USER` / `..._PASSWORD` | unset | Admin login the meta-builder Job uses to create each tenant's real MSSQL database + login. Both host and password must be set for the Job to actually run — otherwise it's skipped (logged, not failed). |
 | `BRIDGE_META_BUILDER_JOB_NAMESPACE` | `tenant-operator` | Namespace the bridge-meta-builder Job is submitted into — same namespace as the meta-builder Job, no cross-namespace RBAC needed. |
-| `BRIDGE_META_BUILDER_IMAGE_REPOSITORY` / `..._TAG` | `sandeepkosework/bridge-meta-builder` / `0.1.16` | The Node.js Job image built from `meta-builder/` (see "Bridge meta-builder Job"). Bump the tag here whenever that image is rebuilt/repushed. |
+| `BRIDGE_META_BUILDER_IMAGE_REPOSITORY` / `..._TAG` | `sandeepkosework/bridge-meta-builder` / `0.1.17` | The Node.js Job image built from `meta-builder/` (see "Bridge meta-builder Job"). Bump the tag here whenever that image is rebuilt/repushed. |
 | `BRIDGE_BASE_DOMAIN` | `qraie.ai` | The public domain every tenant's hostname is built under, matching the legacy convention (`<tenant_name>-bridge<stg-suffix>.<this>`). |
 | `BRIDGE_DLM_SECRET_KEY` / `BRIDGE_SLM_KB_AUTH_PASSWORD` | unset | Shared (not per-tenant) secrets for the Mongo seed's `dlmObj` block — **functionally required, not optional**: the Job's `requireEnv()` throws if either is empty, failing the Job for every tenant, not skipping it. Set both before relying on this Job in any real deployment. |
 | `ARGOCD_UNREACHABLE_FAIL_AFTER` | `5` | Consecutive unreachable polls before a rollout fails fast — see "Argo CD failure monitoring". |
