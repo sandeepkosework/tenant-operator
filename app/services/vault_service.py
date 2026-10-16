@@ -15,6 +15,7 @@ module only controls what lands in Vault, not what accounts actually exist
 in Postgres/Mongo.
 """
 import logging
+import re
 import secrets as pysecrets
 import string
 
@@ -115,6 +116,54 @@ def _read(path: str) -> dict | None:
             return None
         raise VaultServiceError(f"failed to read Vault path {settings.vault_kv_mount}/{path}: {e}") from e
     return resp["data"]["data"]
+
+
+def _list_children(path: str) -> list[str]:
+    """Keys directly under `path` ("name" for a secret, "name/" for a folder),
+    or [] if the path does not exist."""
+    client = _get_client()
+    try:
+        resp = client.secrets.kv.v2.list_secrets(mount_point=settings.vault_kv_mount, path=path)
+    except Exception as e:  # noqa: BLE001 -- see _read(): hvac's InvalidPath is not worth importing
+        if "InvalidPath" in type(e).__name__:
+            return []
+        raise VaultServiceError(f"failed to list Vault path {settings.vault_kv_mount}/{path}: {e}") from e
+    return list(resp["data"]["keys"])
+
+
+_TENANT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def delete_tenant_secrets(tenant_slug: str, dry_run: bool = False) -> list[str]:
+    """Removes every secret (all versions and metadata) under
+    secret/<vault_tenant_secret_prefix>/<tenant_slug>/ -- the per-service paths
+    write_initial_qraie_bridge_tenant_secrets() created. Returns the paths found
+    (deleted, or just listed when dry_run). Never touches anything outside that
+    one tenant's folder: the slug is validated and the prefix must be set."""
+    if not _TENANT_SLUG_RE.fullmatch(tenant_slug or ""):
+        raise VaultServiceError(f"refusing to purge Vault secrets for invalid tenant slug '{tenant_slug}'")
+    prefix = (settings.vault_tenant_secret_prefix or "").strip("/")
+    if not prefix:
+        raise VaultServiceError("vault_tenant_secret_prefix is not set; refusing to purge Vault secrets")
+
+    base = f"{prefix}/{tenant_slug}"
+    client = _get_client()
+    found: list[str] = []
+    pending = [base]
+    while pending:
+        folder = pending.pop()
+        for key in _list_children(folder):
+            child = f"{folder}/{key.rstrip('/')}"
+            if key.endswith("/"):
+                pending.append(child)
+                continue
+            found.append(child)
+            if not dry_run:
+                client.secrets.kv.v2.delete_metadata_and_all_versions(
+                    mount_point=settings.vault_kv_mount, path=child,
+                )
+                logger.info("[vault] deleted %s/%s", settings.vault_kv_mount, child)
+    return sorted(found)
 
 
 def _redact(data: dict) -> dict:

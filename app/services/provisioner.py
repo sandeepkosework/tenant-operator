@@ -32,6 +32,7 @@ from app.services import (
     onboarding_service,
     preflight,
     progress,
+    purge_service,
     spoke_cr,
     spoke_scaler,
     status_bus,
@@ -481,8 +482,55 @@ def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int 
         db.close()
 
 
-def delete_tenant(tenant_id: uuid.UUID) -> None:
-    """Entry point for DELETE /tenants/{id}."""
+def _run_purge(db: Session, tenant: Tenant) -> list[dict]:
+    """Removes the deleted tenant's data stores (see services/purge_service.py) and
+    records each step for the progress display. Never raises and never changes the
+    tenant's status: a step that fails is reported, and the purge can be repeated."""
+    if not purge_service.begin(tenant.id):
+        progress.record(tenant.id, "purge", "warn", "A purge is already running for this tenant")
+        return []
+    try:
+        progress.record(tenant.id, "purge", "start", "Removing the tenant's data (SQL, Mongo, Vault, onboarding record)")
+        purge_service.check_purgeable(db, tenant)
+        results = purge_service.purge_tenant_data(tenant)
+        for r in results:
+            state = {"done": "info", "absent": "info", "skipped": "info", "failed": "warn"}.get(r["status"], "info")
+            progress.record(tenant.id, "purge", state, f"{r['step']}: {r['status']} -- {r['detail']}")
+        failed = [r["step"] for r in results if r["status"] == "failed"]
+        if failed:
+            progress.record(tenant.id, "purge", "warn", f"Purge finished with failures: {', '.join(failed)}. It is safe to run again.")
+        else:
+            progress.record(tenant.id, "purge", "done", "The tenant's data was removed")
+        return results
+    except purge_service.PurgeNotAllowed as e:
+        logger.warning("tenant=%s purge refused: %s", tenant.tenant_name, e.message)
+        progress.record(tenant.id, "purge", "warn", f"Purge refused: {e.message}")
+        return []
+    except Exception as e:  # noqa: BLE001 -- a purge problem must never look like a failed delete
+        logger.exception("tenant=%s unexpected purge failure", tenant.tenant_name)
+        progress.record(tenant.id, "purge", "warn", f"Purge stopped unexpectedly: {e}")
+        return []
+    finally:
+        purge_service.end(tenant.id)
+
+
+def purge_tenant(tenant_id: uuid.UUID) -> None:
+    """Entry point for POST /tenant/{id}/purge: purges a tenant that is already DELETED."""
+    db = SessionLocal()
+    try:
+        tenant = db.get(Tenant, tenant_id)
+        if tenant is None:
+            logger.error("tenant_id=%s not found -- cannot purge", tenant_id)
+            return
+        _run_purge(db, tenant)
+    finally:
+        db.close()
+
+
+def delete_tenant(tenant_id: uuid.UUID, purge: bool = False) -> None:
+    """Entry point for DELETE /tenants/{id}. With purge=True the tenant's data stores
+    are also removed once it is DELETED (the API has already checked the request is
+    allowed); without it they are left in place, as before."""
     db = SessionLocal()
     try:
         tenant = db.get(Tenant, tenant_id)
@@ -529,6 +577,8 @@ def delete_tenant(tenant_id: uuid.UUID) -> None:
                         tenant, cluster, message=f"tenant-operator: delete {tenant.tenant_name}",
                     )
                     logger.info("[step] tenant=%s deletion complete", tenant.tenant_name)
+                    if purge:
+                        _run_purge(db, tenant)
                     return
                 time.sleep(settings.provisioning_poll_interval_seconds)
 
