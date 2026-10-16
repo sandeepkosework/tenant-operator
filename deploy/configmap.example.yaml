@@ -119,3 +119,9 @@ data:
   # ONBOARDING_SERVER_RETRY_DELAY_SECONDS: "5"
   # ONBOARDING_SERVER_TIMEOUT_SECONDS: "15"
   # (ONBOARDING_SERVER_TOKEN, if you put auth in front of it, belongs in the Secret)
+
+  # --- QraieBot credential for bridge-cp-conductor (see README) ---
+  # WORKPLACE_DM_PASSWORD is QraieBot's real credential, generated once per tenant and
+  # shared with the seed. "hash" (default) gives the conductor the bcrypt hash, as the old
+  # compose files did; "plain" gives it the plain password.
+  # WORKPLACE_DM_PASSWORD_AS: "hash"

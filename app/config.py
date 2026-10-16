@@ -6,7 +6,7 @@ promoted across environments without rebuilding. See `.env.example` for
 the full list of knobs.
 """
 from functools import lru_cache
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     # database + login. Triggered at the same point in provisioner.py.
     bridge_meta_builder_job_namespace: str = "tenant-operator"
     bridge_meta_builder_image_repository: str = "sandeepkosework/bridge-meta-builder"
-    bridge_meta_builder_image_tag: str = "0.1.16"
+    bridge_meta_builder_image_tag: str = "0.1.17"
     # Base public domain every tenant's hostname is built under (the
     # legacy system's own convention: "<tenant_name>-bridge<stg-suffix>.
     # <this>", e.g. "hbss-bridgestg.qraie.ai" -- see bridge_meta_builder_job.py).
@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     # Vault write. Set via env var/Vault like every other secret Setting
     # in this file -- never hardcoded here.
     bridge_dlm_secret_key: Optional[str] = None
+    # Which form of the QraieBot password bridge-cp-conductor gets as
+    # WORKPLACE_DM_PASSWORD: the bcrypt hash of it (what the old compose files
+    # carried), or the plain password. The tenant's seed stores the same
+    # credential, so Vault and the databases agree either way. See
+    # vault_service.generate_qraie_bot_credential().
+    workplace_dm_password_as: Literal["hash", "plain"] = "hash"
     bridge_slm_kb_auth_password: Optional[str] = None
 
     # --- Vault ---

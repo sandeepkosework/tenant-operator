@@ -1720,6 +1720,34 @@ const DEFAULT_TZ = "UTC";
    HELPERS
 =========================== */
 
+// QraieBot's password and its bcrypt hash. tenant-operator generates them once, stores
+// them in Vault (bridge-cp-conductor logs in with WORKPLACE_DM_PASSWORD) and passes the
+// same pair here as QRAIE_BOT_PASSWORD / QRAIE_BOT_PASSWORD_HASH, so Vault and the
+// databases hold one credential. Without them (an older operator) a fresh pair is made,
+// as before. A pair that is incomplete, not a bcrypt hash, or inconsistent is refused:
+// seeding a credential that does not match what Vault holds would be worse than failing.
+async function resolveQraieBotCredential() {
+    const password = (process.env.QRAIE_BOT_PASSWORD || "").trim();
+    const hash = (process.env.QRAIE_BOT_PASSWORD_HASH || "").trim();
+
+    if (!password && !hash) {
+        const generated = generateRandomPassword();
+        console.log("🔑 QraieBot credential: generated here (none passed by tenant-operator)");
+        return { password: generated, hash: await bcrypt.hash(generated, SALT_ROUNDS), source: "generated" };
+    }
+    if (!password || !hash) {
+        throw new Error("QRAIE_BOT_PASSWORD and QRAIE_BOT_PASSWORD_HASH must be set together");
+    }
+    if (!/^\$2[aby]\$\d{2}\$.{53}$/.test(hash)) {
+        throw new Error("QRAIE_BOT_PASSWORD_HASH is not a bcrypt hash");
+    }
+    if (!(await bcrypt.compare(password, hash))) {
+        throw new Error("QRAIE_BOT_PASSWORD_HASH does not match QRAIE_BOT_PASSWORD");
+    }
+    console.log("🔑 QraieBot credential: taken from tenant-operator (same as Vault)");
+    return { password, hash, source: "operator" };
+}
+
 function generateRandomPassword(length = 16) {
     const chars =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#$%";
@@ -1927,10 +1955,13 @@ async function prepareDefaultInserts({
     }
 
     /* 🔐 Generate secrets */
-    const qraieBotPwd = generateRandomPassword();
+    // QraieBot's credential comes from tenant-operator (the same one it put in Vault
+    // for bridge-cp-conductor) when it passes one; otherwise it is generated here.
+    const qraieBot = await resolveQraieBotCredential();
+    const qraieBotPwd = qraieBot.password;
     const qraieWebPwd = generateRandomPassword();
 
-    const qraieBotPwdHash = await bcrypt.hash(qraieBotPwd, SALT_ROUNDS);
+    const qraieBotPwdHash = qraieBot.hash;
     const qraieWebPwdHash = await bcrypt.hash(qraieWebPwd, SALT_ROUNDS);
     const adminPasswordHash = await bcrypt.hash(adminPassword, SALT_ROUNDS);
 

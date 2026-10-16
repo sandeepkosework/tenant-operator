@@ -637,7 +637,7 @@ secrets are written (`write_initial_qraie_bridge_tenant_secrets`):
    every tenant's seeding Job operates on the *same* database/login,
    silently colliding.
 2. **`QRAIE_BRIDGE_GENERATED_KEYS`** (`REDIS_PASSWORD`, `DB_PASSWORD`,
-   `WORKPLACE_DM_PASSWORD`, `RADICALE_AGENT_PASS`, `JWT_SECRET`,
+   `RADICALE_AGENT_PASS`, `JWT_SECRET`,
    `G_JWT_SECRETKEY`, `G_RT_SECRETKEY`) — a fresh, random,
    complexity-guaranteed value generated per tenant
    (`_generate_secret()` guarantees at least one upper/lower/digit/symbol
@@ -647,6 +647,21 @@ secrets are written (`write_initial_qraie_bridge_tenant_secrets`):
    integration naming — it has nothing to do with the retired
    `appType="workplace"` tenant chart discussed below; it just happens to
    share the word.*
+
+   **`WORKPLACE_DM_PASSWORD` is not in that list on purpose.** It is the password
+   `bridge-cp-conductor` uses to log in as the built-in `QraieBot` user when it sends
+   a direct message, so it must be QraieBot's real credential, which the seed
+   creates. The operator therefore generates that credential once
+   (`vault_service.generate_qraie_bot_credential()`: a password and its bcrypt hash),
+   writes it to `secret/k8s/<slug>/qraie-bot`, puts the **hash** in
+   `WORKPLACE_DM_PASSWORD` (what the old compose files carried), and passes the same
+   pair to the seed Job as `QRAIE_BOT_PASSWORD` / `QRAIE_BOT_PASSWORD_HASH`. The seed
+   stores that pair (SQL `system_api_accesstokens`, Mongo `workplace.authTokenPassword`,
+   the actor templates) instead of inventing its own, so Vault and the databases hold one
+   credential. `WORKPLACE_DM_PASSWORD_AS=plain` puts the plain password in Vault instead,
+   if a server version needs that form. A tenant created before this keeps its old
+   values until its Vault value is set to its `workplace.authTokenPassword` and the
+   conductor is restarted.
 3. **Two keys with their own dedicated derivation, not a platform default**:
    - `VIRTUAL_HOST` → the tenant's own `domain` from the request, verbatim.
      Safe to derive automatically (unlike every other self-referencing URL
@@ -883,7 +898,7 @@ manual re-runs don't collide:
   SQL always agree once an attempt succeeds.
 
 **Rebuild the image after changing anything in `meta-builder/`**
-(`bridge_meta_builder_image_tag`, currently `0.1.16`): the Job runs the code
+(`bridge_meta_builder_image_tag`, currently `0.1.17`): the Job runs the code
 baked into that image, not this directory.
 
 **Verification status**: the schema/inserts/Mongo-seed logic above was
@@ -950,6 +965,7 @@ Selected settings worth knowing about explicitly:
 | Setting | Default | Notes |
 |---|---|---|
 | `ADMIN_PASSWORD` / `API_KEY` | unset | Auth — see "Authentication". At least one must be set or every API route returns 503. |
+| `WORKPLACE_DM_PASSWORD_AS` | `hash` | Form of the QraieBot password given to `bridge-cp-conductor` as `WORKPLACE_DM_PASSWORD`: `hash` (bcrypt, as in the old compose files) or `plain`. The seed stores the same credential either way. |
 | `ENVIRONMENT` | `stage` | Which environment *this* deployment serves — drives spoke capacity thresholds. One deployment = one environment. |
 | `DATABASE_URL` | `postgresql+psycopg2://...` | Points at the Helm chart's own lightweight in-chart Postgres by default (auto-assembled, see `helm-charts/README.md`'s "Persistence" section); set it yourself to use a real external Postgres instead. SQLite is no longer supported in the chart. |
 | `VAULT_ENABLED` | `false` | Gates every real Vault write in `vault_service.py`; `false` means log/echo only. |
@@ -964,7 +980,7 @@ Selected settings worth knowing about explicitly:
 | `GIT_BRIDGE_TENANTS_DIR` | `bridge-tenants` | **Currently unused by any live code path** — `_tenants_dir_for()` in `provisioner.py` always returns `GIT_TENANTS_DIR` now that there's only one chart/one tenant flow. Kept because `git_service.py`'s functions already accept a `tenants_dir` override and nothing currently calls them with it; harmless to leave set. |
 | `MSSQL_ADMIN_HOST` / `..._PORT` / `..._USER` / `..._PASSWORD` | unset | Admin login the meta-builder Job uses to create each tenant's real MSSQL database + login. Both host and password must be set for the Job to actually run — otherwise it's skipped (logged, not failed). |
 | `BRIDGE_META_BUILDER_JOB_NAMESPACE` | `tenant-operator` | Namespace the bridge-meta-builder Job is submitted into — same namespace as the meta-builder Job, no cross-namespace RBAC needed. |
-| `BRIDGE_META_BUILDER_IMAGE_REPOSITORY` / `..._TAG` | `sandeepkosework/bridge-meta-builder` / `0.1.16` | The Node.js Job image built from `meta-builder/` (see "Bridge meta-builder Job"). Bump the tag here whenever that image is rebuilt/repushed. |
+| `BRIDGE_META_BUILDER_IMAGE_REPOSITORY` / `..._TAG` | `sandeepkosework/bridge-meta-builder` / `0.1.17` | The Node.js Job image built from `meta-builder/` (see "Bridge meta-builder Job"). Bump the tag here whenever that image is rebuilt/repushed. |
 | `BRIDGE_BASE_DOMAIN` | `qraie.ai` | The public domain every tenant's hostname is built under, matching the legacy convention (`<tenant_name>-bridge<stg-suffix>.<this>`). |
 | `BRIDGE_DLM_SECRET_KEY` / `BRIDGE_SLM_KB_AUTH_PASSWORD` | unset | Shared (not per-tenant) secrets for the Mongo seed's `dlmObj` block — **functionally required, not optional**: the Job's `requireEnv()` throws if either is empty, failing the Job for every tenant, not skipping it. Set both before relying on this Job in any real deployment. |
 | `ARGOCD_UNREACHABLE_FAIL_AFTER` | `5` | Consecutive unreachable polls before a rollout fails fast — see "Argo CD failure monitoring". |
