@@ -16,7 +16,8 @@ raises OnboardingRegistrationError and provision_tenant marks the tenant FAILED
 Idempotent: the server has no update route and rejects a duplicate tenantId, so
 an existing record is treated as already registered (with a warning if it holds
 a different connection string, which only a manual fix on the server can change).
-There is no delete route either, so the record is not removed on tenant delete.
+Removing the record is part of an explicit data purge only, not of a plain tenant
+delete: delete_tenant_record() sends DELETE <url>/config/<tenant name>.
 """
 import logging
 import time
@@ -101,3 +102,29 @@ def register_tenant(tenant: Tenant) -> None:
     raise OnboardingRegistrationError(
         f"could not register with the onboarding server after {attempts} attempts ({_base_url()}): {last}"
     )
+
+
+def delete_tenant_record(tenant: Tenant, dry_run: bool = False) -> str:
+    """Removes the tenant's record from the onboarding server (DELETE /config/<tenant name>),
+    used by the data purge. Returns "deleted", "absent" (no such record) or "would_delete"
+    (dry run, record exists); "skipped" if ONBOARDING_SERVER_URL is unset. Raises
+    OnboardingRegistrationError if the server cannot be reached or refuses."""
+    if not settings.onboarding_server_url:
+        return "skipped"
+    tenant_id = tenant.tenant_name
+    try:
+        if dry_run:
+            return "would_delete" if _existing_connection_string(tenant_id) is not None else "absent"
+        resp = httpx.delete(
+            f"{_base_url()}/config/{tenant_id}",
+            timeout=settings.onboarding_server_timeout_seconds,
+            headers=_headers(),
+        )
+    except httpx.HTTPError as e:
+        raise OnboardingRegistrationError(f"onboarding server unreachable: {type(e).__name__}: {e}") from e
+    if resp.status_code == 404:
+        return "absent"
+    if resp.status_code in (200, 204):
+        logger.info("[onboarding] tenant=%s record removed", tenant.tenant_name)
+        return "deleted"
+    raise OnboardingRegistrationError(f"onboarding server answered HTTP {resp.status_code}: {resp.text[:200]}")

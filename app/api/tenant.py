@@ -1,7 +1,8 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -13,7 +14,7 @@ from app.models.schemas import (
     TenantResponse,
     TenantUpdateRequest,
 )
-from app.services import helm_values, preflight, progress, provisioner, vault_service
+from app.services import helm_values, preflight, progress, provisioner, purge_service, vault_service
 from app.services.validation import ValidationError, validate_create_request
 
 logger = logging.getLogger("tenant-operator.api.tenant")
@@ -254,19 +255,102 @@ def update_tenant(
     return tenant
 
 
+_PURGE_STATUS = {"disabled": 403, "environment": 403, "confirm": 400, "state": 409, "name": 400, "namesake": 409}
+
+
+def _purge_http_error(e: purge_service.PurgeNotAllowed) -> HTTPException:
+    return HTTPException(status_code=_PURGE_STATUS.get(e.code, 400), detail=e.message)
+
+
 @router.delete(
     "/{tenant_id}",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Delete a tenant",
-    description="Starts teardown in the background: removes the tenant's manifest from git, lets Argo CD prune it and deletes the namespace. Status goes to `DELETING`, then `DELETED` (the row is soft-deleted). **Destructive.**",
-    responses={404: {"description": "Tenant not found"}, 409: {"description": "Deletion already in progress"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
+    description=(
+        "Starts teardown in the background: removes the tenant's manifest from git, lets Argo CD prune it and deletes the namespace. "
+        "Status goes to `DELETING`, then `DELETED` (the row is soft-deleted). **Destructive.**\n\n"
+        "By default the tenant's data is kept: the SQL database and login, the Mongo databases, the Vault secrets and the onboarding-server record "
+        "stay in place, and creating a tenant with the same name is refused until they are removed.\n\n"
+        "`purge=true` removes that data too, once the tenant is `DELETED`. It is off unless the operator has `PURGE_ENABLED=true`, only works "
+        "for the environments in `PURGE_ALLOWED_ENVIRONMENTS`, and needs `confirm` set to the tenant name. **Irreversible.** "
+        "See `POST /tenant/{id}/purge` to preview it with `dry_run=true`, or to purge a tenant that is already deleted."
+    ),
+    responses={
+        400: {"description": "`confirm` does not match the tenant name"},
+        403: {"description": "`purge=true` but purging is disabled, or not allowed for this tenant's environment"},
+        404: {"description": "Tenant not found"},
+        409: {"description": "Deletion already in progress"},
+        **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}},
+    },
 )
-def delete_tenant(tenant_id: uuid.UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def delete_tenant(
+    tenant_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    purge: bool = Query(False, description="Also remove the tenant's SQL database/login, Mongo databases, Vault secrets and onboarding record"),
+    confirm: str | None = Query(None, description="Required with purge=true: must equal the tenant name"),
+    db: Session = Depends(get_db),
+):
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="tenant not found")
     if tenant.status == TenantStatus.DELETING:
         raise HTTPException(status_code=409, detail="deletion already in progress")
+    if purge:
+        # Refuse before anything is deleted, so a rejected purge leaves the tenant untouched.
+        try:
+            purge_service.check_purge_allowed(tenant, confirm)
+        except purge_service.PurgeNotAllowed as e:
+            raise _purge_http_error(e) from e
 
-    background_tasks.add_task(provisioner.delete_tenant, tenant.id)
-    return {"tenantId": tenant.id, "status": "DELETING"}
+    background_tasks.add_task(provisioner.delete_tenant, tenant.id, purge)
+    return {"tenantId": tenant.id, "status": "DELETING", "purge": purge}
+
+
+@router.post(
+    "/{tenant_id}/purge",
+    summary="Purge a deleted tenant's data (or preview it)",
+    description=(
+        "Removes the data a plain delete leaves behind, for a tenant that is already `DELETED`: the onboarding-server record, "
+        "the Mongo databases, the SQL database and login, and the Vault secrets. The Postgres row, the registry record and the "
+        "tenant-info file in git are kept as the audit trail.\n\n"
+        "`dry_run=true` only reports what exists and what would be removed, and answers with the steps. Without it, the purge runs in the "
+        "background (202) and each step is recorded in the tenant's progress events; it needs `PURGE_ENABLED=true`, an allowed environment, "
+        "and `confirm` equal to the tenant name. Safe to repeat. Refused while another tenant with the same name exists. **Irreversible.**"
+    ),
+    responses={
+        400: {"description": "`confirm` does not match the tenant name, or the name is not purgeable"},
+        403: {"description": "Purging is disabled, or not allowed for this tenant's environment"},
+        404: {"description": "Tenant not found"},
+        409: {"description": "The tenant is not DELETED, a live tenant has the same name, or a purge is already running"},
+        **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}},
+    },
+)
+def purge_tenant(
+    tenant_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    dry_run: bool = Query(False, description="Only report what would be removed"),
+    confirm: str | None = Query(None, description="Required unless dry_run=true: must equal the tenant name"),
+    db: Session = Depends(get_db),
+):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    try:
+        if not dry_run:
+            purge_service.check_purge_allowed(tenant, confirm)
+        purge_service.check_purgeable(db, tenant)
+    except purge_service.PurgeNotAllowed as e:
+        raise _purge_http_error(e) from e
+
+    if dry_run:
+        # Read-only, so it answers directly (the SQL check can take a little while).
+        steps = purge_service.purge_tenant_data(tenant, dry_run=True)
+        return {"tenantId": tenant.id, "tenantName": tenant.tenant_name, "dryRun": True, "steps": steps}
+
+    if purge_service.is_running(tenant.id):
+        raise HTTPException(status_code=409, detail="a purge is already running for this tenant")
+    background_tasks.add_task(provisioner.purge_tenant, tenant.id)
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={"tenantId": str(tenant.id), "tenantName": tenant.tenant_name, "dryRun": False, "status": "PURGING"},
+    )
