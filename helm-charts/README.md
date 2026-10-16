@@ -44,19 +44,19 @@ deploys the tenant-operator control-plane service itself.
 
 ## Image
 
-Published to Docker Hub as **[`sandeepkosework/tenant-operator`](https://hub.docker.com/r/sandeepkosework/tenant-operator)**
-— public, no registry auth needed to pull. Built from the repo-root
+Published to the cluster's Gitea container registry as **`gitea.gitops.svc.cluster.local:3000/gitadmin/tenant-operator`**
+(the `gitadmin` Packages tab) — anonymous pulls are allowed from inside the cluster. Built from the repo-root
 `Dockerfile` (`python:3.12-slim`, non-root `tenantop` user, uid 1000).
 
 The chart's own `values.yaml` defaults (`image.repository:
-sandeepkosework/tenant-operator`, `image.tag: "0.1.3"`) and `Chart.yaml`
+gitea.gitops.svc.cluster.local:3000/gitadmin/tenant-operator`, `image.tag: "0.2.36"`) and `Chart.yaml`
 (`appVersion: "0.1.8"`) are **stale relative to what's actually pushed and
 deployed** — treat them as placeholders, not as the real current version.
-Check Docker Hub directly for the true latest tag:
+Check Gitea directly for the true latest tag:
 
 ```bash
-curl -s "https://hub.docker.com/v2/repositories/sandeepkosework/tenant-operator/tags?page_size=5" \
-  | python -c "import json,sys; [print(t['name'], t['tag_last_pushed']) for t in json.load(sys.stdin)['results']]"
+curl -s -u "$GITEA_USER:$GITEA_PASS" "http://gitea.gitops.svc.cluster.local:3000/api/v1/packages/gitadmin?type=container&q=tenant-operator" \
+  | jq -r '.[] | "\(.version)  \(.created_at)"'
 ```
 
 As of this writing, the latest published tag is **`0.2.6`**, and that is
@@ -146,7 +146,7 @@ kubectl patch application tenant-operator -n argocd --type json \
 ```
 
 Argo CD's automated sync then reconciles the running `Deployment` to that
-tag. Bump `X.Y.Z` to whatever tag was just pushed to Docker Hub (check with
+tag. Bump `X.Y.Z` to whatever tag was just pushed to Gitea (check with
 the `curl` command above — don't assume `0.2.6` stays current).
 
 ## Live gotcha: `existingSecretName` makes Secret patches silently no-op
@@ -215,7 +215,7 @@ chart's only job is deciding whether a given key ends up in the ConfigMap
 |---|---|
 | `image.repository` / `image.tag` | See "Versioning" — defaults are stale; the live deployment overrides both via the Argo CD `Application`'s `valuesObject`, not this file. |
 | `environment` | `stage` or `prod`. One release == one environment == one `ENVIRONMENT` ConfigMap value. |
-| `config` | Any non-secret `Settings` field, `UPPER_SNAKE` key → ConfigMap → `envFrom`. Real live example values observed on the hub: `VAULT_ENABLED=true`, `GIT_REPO_URL=https://github.com/sandeepkosework/k8s-infra-setup-testing.git`, `GIT_BRIDGE_TENANTS_DIR=bridge-tenants` (set, but currently unused by any live code path — see root README), `KUBECONFIG_PATH=/secrets/kube/config`, `MSSQL_ADMIN_HOST=192.168.85.203`, `MSSQL_ADMIN_PORT=30143`. `DATABASE_URL` is no longer one of these — see `postgresql.*` below. These are illustrative of what this specific deployment runs, not universal defaults — every deployment's real values depend on its own infra. |
+| `config` | Any non-secret `Settings` field, `UPPER_SNAKE` key → ConfigMap → `envFrom`. Real live example values observed on the hub: `VAULT_ENABLED=true`, `GIT_REPO_URL=http://gitea.gitops.svc.cluster.local:3000/gitadmin/k8s-infra-setup.git`, `GIT_BRIDGE_TENANTS_DIR=bridge-tenants` (set, but currently unused by any live code path — see root README), `KUBECONFIG_PATH=/secrets/kube/config`, `MSSQL_ADMIN_HOST=192.168.85.203`, `MSSQL_ADMIN_PORT=30143`. `DATABASE_URL` is no longer one of these — see `postgresql.*` below. These are illustrative of what this specific deployment runs, not universal defaults — every deployment's real values depend on its own infra. |
 | `postgresql.*` | The in-chart Postgres this operator's own bookkeeping DB runs on (see "Persistence") — `postgresql.enabled: true` (default) renders a single-replica Postgres Deployment + Service + PVC, and `DATABASE_URL` is assembled automatically from `postgresql.auth.*` and injected into this release's own Secret. Set `postgresql.enabled: false` and `DATABASE_URL` under `secret` yourself to point at a real external Postgres instead. **Only takes effect when this chart renders its own Secret** — see the `existingSecretName` row right below. |
 | `secret` / `existingSecretName` | Secret-shaped config (Git/Vault/Argo CD tokens, MSSQL admin password, and — when `postgresql.enabled` — the assembled `DATABASE_URL`). **The live deployment uses `existingSecretName: tenant-operator-secrets`** — see the gotcha above; in that mode `secret.yaml`'s template (including its `DATABASE_URL` auto-assembly) doesn't run at all, so switching the live deployment onto the in-chart Postgres means either dropping `existingSecretName` (let this chart manage the Secret) or adding `DATABASE_URL` to that existing Secret by hand, pointed at `<release>-tenant-operator-postgres:5432`. |
 | `vault.enabled` / `vault.role` | Vault Agent Injector sidecar for the operator's **own** config bootstrap (`secret/tenant-operator/config`, read by `app/vault_bootstrap.py` before `Settings` is even constructed). Entirely separate from the application's runtime Vault writes for tenant secrets (`vault_service.py`), which always go through `VAULT_ADDR`/`VAULT_TOKEN`/`VAULT_TOKEN_FILE` in `config`/`secret` regardless of this setting. |
@@ -353,7 +353,7 @@ the chart create one.
 
 ```bash
 # 1. Confirm the real current image tag (don't trust values.yaml's default)
-curl -s "https://hub.docker.com/v2/repositories/sandeepkosework/tenant-operator/tags?page_size=5"
+curl -s -u "$GITEA_USER:$GITEA_PASS" "http://gitea.gitops.svc.cluster.local:3000/api/v1/packages/gitadmin?type=container&q=tenant-operator"
 
 # 2a. Fresh install with plain Helm (manual/non-Argo-CD path)
 cat > my-values.yaml <<'EOF'
@@ -361,7 +361,7 @@ image:
   tag: "0.2.6"           # use whatever the curl above actually returned
 environment: stage
 config:
-  GIT_REPO_URL: "https://github.com/your-org/tenant-config.git"
+  GIT_REPO_URL: "http://gitea.gitops.svc.cluster.local:3000/gitadmin/k8s-infra-setup.git"
   ARGOCD_SERVER: "https://argocd.hub.internal"
   KUBECONFIG_PATH: "/secrets/kube/config"
   VAULT_ENABLED: "true"

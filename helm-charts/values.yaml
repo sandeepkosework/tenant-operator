@@ -5,8 +5,8 @@
 replicaCount: 1
 
 image:
-  repository: sandeepkosework/tenant-operator
-  tag: "0.1.36"
+  repository: gitea.gitops.svc.cluster.local:3000/gitadmin/tenant-operator
+  tag: "0.2.36"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -19,9 +19,12 @@ environment: stage
 # Any Settings field, UPPER_SNAKE -> ConfigMap -> envFrom. Non-secret
 # config only (git repo URL, Argo CD server address, Vault address, DB
 # URL, cluster registry path, etc).
-config: {}
+config:
+  # Image of the Job that seeds each new tenant's databases (see README, "Bridge meta-builder Job").
+  BRIDGE_META_BUILDER_IMAGE_REPOSITORY: "gitea.gitops.svc.cluster.local:3000/gitadmin/bridge-meta-builder"
+  BRIDGE_META_BUILDER_IMAGE_TAG: "0.1.16"
 
-# Secret-shaped config (git/GHCR/Vault/Argo CD tokens) -> Secret -> envFrom.
+# Secret-shaped config (git/registry/Vault/Argo CD tokens) -> Secret -> envFrom.
 # Prefer existingSecretName for anything real -- inline values here end up
 # in this release's Helm history in plaintext.
 secret: {}

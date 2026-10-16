@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     # from meta_builder_job.py above, which only creates the empty
     # database + login. Triggered at the same point in provisioner.py.
     bridge_meta_builder_job_namespace: str = "tenant-operator"
-    bridge_meta_builder_image_repository: str = "sandeepkosework/bridge-meta-builder"
+    bridge_meta_builder_image_repository: str = "gitea.gitops.svc.cluster.local:3000/gitadmin/bridge-meta-builder"
     bridge_meta_builder_image_tag: str = "0.1.16"
     # Base public domain every tenant's hostname is built under (the
     # legacy system's own convention: "<tenant_name>-bridge<stg-suffix>.
@@ -221,7 +221,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg2://tenant_operator:tenant_operator@localhost:5432/tenant_operator"
 
     # --- Git (source of truth for GitOps) ---
-    git_repo_url: str = "git@github.com:your-org/tenant-config.git"
+    git_repo_url: str = "http://gitea.gitops.svc.cluster.local:3000/gitadmin/k8s-infra-setup.git"
     git_branch: str = "main"
     git_local_path: str = "/data/tenant-config"  # persistent volume in prod
     git_author_name: str = "tenant-operator"
@@ -229,7 +229,7 @@ class Settings(BaseSettings):
 
     # Auth: choose ONE of the two mechanisms below
     git_ssh_key_path: Optional[str] = None          # e.g. /secrets/git/id_ed25519
-    git_https_token: Optional[str] = None           # e.g. GitHub/GitLab PAT
+    git_https_token: Optional[str] = None           # e.g. a Gitea access token
     git_https_username: Optional[str] = "git"
 
     # Paths inside the git repo (matches the structure in your doc).

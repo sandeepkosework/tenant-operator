@@ -39,12 +39,12 @@ spec:
       # Without fsGroup, mounted Secret volumes (git-ssh-key, kubeconfig) are
       # owned by root with no group access, so the container can't read its
       # own SSH key ("Permission denied" from ssh, before it even reaches
-      # GitHub) -- fsGroup makes kubelet chown mounted volumes to this group.
+      # the git server) -- fsGroup makes kubelet chown mounted volumes to this group.
       securityContext:
         fsGroup: 1000
       containers:
         - name: tenant-operator
-          image: sandeepkosework/tenant-operator:0.2.36
+          image: gitea.gitops.svc.cluster.local:3000/gitadmin/tenant-operator:0.2.36
           ports:
             - containerPort: 8000
           envFrom:
