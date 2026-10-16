@@ -217,7 +217,7 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
 # credential-shaped fields a real per-tenant secret should be (passwords/
 # tokens), never a host/URL/flag/business-config value.
 QRAIE_BRIDGE_GENERATED_KEYS = {
-    "REDIS_PASSWORD", "DB_PASSWORD", "WORKPLACE_DM_PASSWORD", "RADICALE_AGENT_PASS", "JWT_SECRET",
+    "REDIS_PASSWORD", "DB_PASSWORD", "RADICALE_AGENT_PASS", "JWT_SECRET",
     # qraie-api-gateway's own JWT signing keys -- confirmed tenant-specific
     # (differ between real tenants, not shared platform config) by the
     # tenant-config reference doc. NOTE: real production currently reuses
@@ -358,6 +358,35 @@ def _tenant_mongodb_uri(tenant_name: str) -> str:
     return f"{uri}{sep}{query}" if sep else uri
 
 
+QRAIE_BOT_SECRET_PATH = "qraie-bot"
+
+
+def generate_qraie_bot_credential() -> dict[str, str]:
+    """The tenant's QraieBot credential, made once: a plain password and its bcrypt
+    hash. The seed stores the hash (SQL system_api_accesstokens, Mongo
+    workplace.authTokenPassword) and uses the plain password in the actor
+    templates; bridge-cp-conductor logs in with WORKPLACE_DM_PASSWORD. They used to
+    be generated independently (a random Vault value and a separate random seed
+    value), so the conductor's login could never match. Letters, digits and "_"
+    only, so the value survives every place it is spliced into."""
+    import bcrypt
+
+    password = _generate_db_password()
+    return {
+        "password": password,
+        "password_hash": bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=10)).decode(),
+    }
+
+
+def read_qraie_bot_credential(tenant_slug: str) -> dict | None:
+    """The credential write_initial_qraie_bridge_tenant_secrets() stored, for the
+    seed Job's env. None if Vault is disabled, or the tenant predates this."""
+    data = read_qraie_bridge_tenant_secret(tenant_slug, QRAIE_BOT_SECRET_PATH)
+    if data and data.get("password") and data.get("password_hash"):
+        return {"password": data["password"], "password_hash": data["password_hash"]}
+    return None
+
+
 def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str, tenant_domain: str) -> dict[str, dict]:
     """Call once, right before the GitOps handoff -- same timing/reasoning
     as write_initial_tenant_secrets() above (the tenant's Vault Agent/VSO
@@ -417,6 +446,10 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
     # One SQL login per tenant (created by the seeding Job from this value), so every
     # service that connects to SQL Server must get the SAME password, not its own.
     tenant_db_password = _generate_db_password()
+    # One QraieBot credential per tenant, shared by Vault (WORKPLACE_DM_PASSWORD, below)
+    # and the seed Job (read back from <base>/qraie-bot).
+    qraie_bot = generate_qraie_bot_credential()
+    dm_password = qraie_bot["password_hash"] if settings.workplace_dm_password_as == "hash" else qraie_bot["password"]
 
     for service, keys in QRAIE_BRIDGE_SERVICE_KEYS.items():
         platform = platform_defaults.get(service, {})
@@ -456,6 +489,8 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 data[k] = tenant_redis_password
             elif k == "DB_PASSWORD":
                 data[k] = tenant_db_password
+            elif k == "WORKPLACE_DM_PASSWORD":
+                data[k] = dm_password
             elif k == "DB_HOST" and settings.mssql_admin_host:
                 data[k] = settings.mssql_admin_host
             elif k == "DB_PORT" and settings.mssql_admin_host:
@@ -500,7 +535,12 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
             _write(f"{base}/{service}", payload)
         written[service] = data
 
-    logger.info("[vault] tenant=%s qraie-bridge secrets ready (%d services)", tenant_slug, len(QRAIE_BRIDGE_SERVICE_KEYS))
+    # The plain password and its hash, for the seed Job (never part of `written`, which
+    # is mirrored elsewhere). Under the tenant's own folder, so a data purge removes it.
+    if settings.vault_enabled:
+        _write(f"{base}/{QRAIE_BOT_SECRET_PATH}", qraie_bot)
+    logger.info("[vault] tenant=%s qraie-bridge secrets ready (%d services; QraieBot credential written as %s)",
+                tenant_slug, len(QRAIE_BRIDGE_SERVICE_KEYS), settings.workplace_dm_password_as)
     return written
 
 

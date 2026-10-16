@@ -637,7 +637,7 @@ secrets are written (`write_initial_qraie_bridge_tenant_secrets`):
    every tenant's seeding Job operates on the *same* database/login,
    silently colliding.
 2. **`QRAIE_BRIDGE_GENERATED_KEYS`** (`REDIS_PASSWORD`, `DB_PASSWORD`,
-   `WORKPLACE_DM_PASSWORD`, `RADICALE_AGENT_PASS`, `JWT_SECRET`,
+   `RADICALE_AGENT_PASS`, `JWT_SECRET`,
    `G_JWT_SECRETKEY`, `G_RT_SECRETKEY`) — a fresh, random,
    complexity-guaranteed value generated per tenant
    (`_generate_secret()` guarantees at least one upper/lower/digit/symbol
@@ -647,6 +647,21 @@ secrets are written (`write_initial_qraie_bridge_tenant_secrets`):
    integration naming — it has nothing to do with the retired
    `appType="workplace"` tenant chart discussed below; it just happens to
    share the word.*
+
+   **`WORKPLACE_DM_PASSWORD` is not in that list on purpose.** It is the password
+   `bridge-cp-conductor` uses to log in as the built-in `QraieBot` user when it sends
+   a direct message, so it must be QraieBot's real credential, which the seed
+   creates. The operator therefore generates that credential once
+   (`vault_service.generate_qraie_bot_credential()`: a password and its bcrypt hash),
+   writes it to `secret/k8s/<slug>/qraie-bot`, puts the **hash** in
+   `WORKPLACE_DM_PASSWORD` (what the old compose files carried), and passes the same
+   pair to the seed Job as `QRAIE_BOT_PASSWORD` / `QRAIE_BOT_PASSWORD_HASH`. The seed
+   stores that pair (SQL `system_api_accesstokens`, Mongo `workplace.authTokenPassword`,
+   the actor templates) instead of inventing its own, so Vault and the databases hold one
+   credential. `WORKPLACE_DM_PASSWORD_AS=plain` puts the plain password in Vault instead,
+   if a server version needs that form. A tenant created before this keeps its old
+   values until its Vault value is set to its `workplace.authTokenPassword` and the
+   conductor is restarted.
 3. **Two keys with their own dedicated derivation, not a platform default**:
    - `VIRTUAL_HOST` → the tenant's own `domain` from the request, verbatim.
      Safe to derive automatically (unlike every other self-referencing URL
@@ -950,6 +965,7 @@ Selected settings worth knowing about explicitly:
 | Setting | Default | Notes |
 |---|---|---|
 | `ADMIN_PASSWORD` / `API_KEY` | unset | Auth — see "Authentication". At least one must be set or every API route returns 503. |
+| `WORKPLACE_DM_PASSWORD_AS` | `hash` | Form of the QraieBot password given to `bridge-cp-conductor` as `WORKPLACE_DM_PASSWORD`: `hash` (bcrypt, as in the old compose files) or `plain`. The seed stores the same credential either way. |
 | `ENVIRONMENT` | `stage` | Which environment *this* deployment serves — drives spoke capacity thresholds. One deployment = one environment. |
 | `DATABASE_URL` | `postgresql+psycopg2://...` | Points at the Helm chart's own lightweight in-chart Postgres by default (auto-assembled, see `helm-charts/README.md`'s "Persistence" section); set it yourself to use a real external Postgres instead. SQLite is no longer supported in the chart. |
 | `VAULT_ENABLED` | `false` | Gates every real Vault write in `vault_service.py`; `false` means log/echo only. |

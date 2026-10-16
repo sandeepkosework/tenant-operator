@@ -15,3 +15,4 @@ python-multipart==0.0.9
 hvac==2.3.0
 python-socketio==5.11.4
 pymongo==4.9.1
+bcrypt==4.2.1
