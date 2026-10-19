@@ -1930,7 +1930,7 @@ function prepareTenantSchemaSql(tenantId) {
         throw new Error("Invalid tenantId");
     }
 
-    const schemaPath = path.resolve(__dirname, "QRaie-Table-Script-16April26.sql");
+    const schemaPath = path.resolve(__dirname, "QRaie_Table_Script_16Oct26.sql");
     if (!fs.existsSync(schemaPath)) {
         throw new Error(`Schema SQL file not found at ${schemaPath}`);
     }

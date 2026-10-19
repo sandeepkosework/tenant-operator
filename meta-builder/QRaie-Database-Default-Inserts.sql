@@ -34,8 +34,9 @@ INSERT INTO {...tenantid...}.dbo.[MEMBER] (member_id, username, email, first_nam
 VALUES(N'M101', N'asqSam', N'asqSam@noemail.com', N'Asq', N'Sam', N'$2b$10$GNa1p5orzCnLeoknZKyO4ePivuEx5CwtvlIUifh7O.HmW9MALPkTu', N'UTC', 1, N'erep', NULL, N'system', getdate(), N'', NULL, NULL, NULL, 0, NULL, N'', N'{...tenantid_upper...}', NULL, 0, N'approved', NULL);
 
 
-INSERT INTO {...tenantid...}.dbo.TENANT (tenant_id, tenant_name, description, status, created_by, created_at, modified_by, modified_at, owner)
-VALUES(N'{...tenantid_upper...}', N'{...tenant_name...}', N'{...tenant_name...} Workplace', N'ACTIVE', N'M100', getdate(), NULL, NULL, 1);
+-- tenant_type must be set with owner: the column defaults to 'NON_OWNER'.
+INSERT INTO {...tenantid...}.dbo.TENANT (tenant_id, tenant_name, description, status, created_by, created_at, modified_by, modified_at, owner, tenant_type)
+VALUES(N'{...tenantid_upper...}', N'{...tenant_name...}', N'{...tenant_name...} Workplace', N'ACTIVE', N'M100', getdate(), NULL, NULL, 1, N'OWNER');
 
 -- Setup API user_password, uuid_key for QraieBot
 INSERT INTO {...tenantid...}.dbo.system_api_accesstokens (module_id, user_id, user_password, uuid_key, grant_type, access_token, token_validity, token_scope, created_on, status) VALUES(N'Qraie', N'QraieBot', N'{...workplace_QraieBot_api_user_password...}', N'{...workplace_QraieBot_api_uuid_key...}', N'client_credentials', N'', 86400, N'read_write', getdate(), N'A');
