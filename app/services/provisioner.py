@@ -78,6 +78,9 @@ def _render_values_yaml(tenant: Tenant, cluster) -> str:
         disabled_services=tenant.disabled_services,
         vault_server=cluster.vault_server,
         ingress_class_name=cluster.ingress_class_name,
+        # The tenant's OWN pinned chart version, never the current default: re-rendering
+        # (every update) must not move a tenant onto a newer chart by accident.
+        chart_version=tenant.helm_chart_version,
     )
 
 
@@ -419,13 +422,23 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
 
 
 def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int | None,
-                   new_db_size: str | None, new_disabled_services: list[str] | None = None) -> None:
-    """Entry point for PUT /tenants/{id}. Re-renders values.yaml and re-commits."""
+                   new_db_size: str | None, new_disabled_services: list[str] | None = None,
+                   new_chart_version: str | None = None) -> None:
+    """Entry point for PUT /tenants/{id}. Re-renders values.yaml and re-commits.
+
+    new_chart_version is the only way a tenant's pinned chart release changes: None keeps
+    the version the tenant already has (which is what gets re-rendered into its file)."""
     db = SessionLocal()
     try:
         tenant = db.get(Tenant, tenant_id)
         if tenant is None:
             logger.error("tenant_id=%s not found -- cannot update", tenant_id)
+            return
+        if tenant.helm_chart_version is None and new_chart_version is None:
+            # PUT /tenant/{id} already refuses this; kept here so no other caller can re-render
+            # an unpinned tenant's file and silently move it to a different chart.
+            logger.error("tenant=%s has no pinned chart version and none was given -- refusing to update",
+                         tenant.tenant_name)
             return
 
         try:
@@ -441,6 +454,10 @@ def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int 
                 tenant.database_size = new_db_size
             if new_disabled_services is not None:
                 tenant.disabled_services = new_disabled_services
+            if new_chart_version:
+                logger.info("[step] tenant=%s chart version %s -> %s",
+                            tenant.tenant_name, tenant.helm_chart_version, new_chart_version)
+                tenant.helm_chart_version = new_chart_version
             db.add(tenant)
             db.commit()
             db.refresh(tenant)
@@ -454,7 +471,7 @@ def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int 
             commit_sha = git_service.commit_tenant_manifest(
                 tenant.slug,
                 values_yaml,
-                message=f"tenant-operator: update {tenant.tenant_name} -> version={tenant.version}",
+                message=f"tenant-operator: update {tenant.tenant_name} -> version={tenant.version} chart={tenant.helm_chart_version}",
                 tenants_dir=_tenants_dir_for(tenant),
             )
             tenant.git_commit = commit_sha

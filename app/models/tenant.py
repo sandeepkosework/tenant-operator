@@ -116,6 +116,14 @@ class Tenant(Base):
     error_message = Column(Text, nullable=True)
 
     git_commit = Column(String(64), nullable=True)
+    # The released chart version (a git tag of the chart repository, "vMAJOR.MINOR.PATCH")
+    # this tenant is PINNED to. Set from settings.helm_chart_version when the tenant is
+    # created, written into its values file as `chartVersion` (the ApplicationSet uses it
+    # as the chart's targetRevision), and changed only by an update that passes a new
+    # chartVersion -- never by a change to the default. NULL means the tenant predates
+    # pinning and has not been pinned yet: updates are refused until it is (api/tenant.py),
+    # because re-rendering its file with no version would move it onto whatever chart the
+    # ApplicationSet falls back to.
     helm_chart_version = Column(String(32), nullable=True)
 
     created_by = Column(String(128), nullable=True)

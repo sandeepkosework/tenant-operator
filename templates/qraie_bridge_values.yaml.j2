@@ -7,6 +7,15 @@
 # Argo CD where to deploy this tenant. Harmless if the chart doesn't
 # reference it (it doesn't).
 argocdClusterServer: {{ argocd_cluster_server }}
+{% if chart_version %}
+
+# The released chart version (a git tag of the chart repository) this tenant is
+# pinned to. The ApplicationSet uses it as the chart's targetRevision, so this
+# tenant keeps running exactly that chart until it is updated with a new
+# chartVersion. Like argocdClusterServer above it is metadata for Argo CD, not a
+# chart value: the chart ignores keys it does not use.
+chartVersion: {{ chart_version }}
+{% endif %}
 
 # tenant.id/namespace are also read directly by the ApplicationSet's git
 # generator templating ({{ '{{' }}tenant.id{{ '}}' }} / {{ '{{' }}tenant.namespace{{ '}}' }}) to name the

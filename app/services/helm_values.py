@@ -59,6 +59,7 @@ def render_qraie_bridge_values_yaml(
     disabled_services: list[str] | None = None,
     vault_server: str | None = None,
     ingress_class_name: str | None = None,
+    chart_version: str | None = None,
 ) -> str:
     """Renders a tenant's values.yaml for the qraie-bridge chart -- the only
     chart tenants are provisioned onto (see app/models/tenant.py's
@@ -89,4 +90,5 @@ def render_qraie_bridge_values_yaml(
         disabled_services=disabled_services or [],
         vault_server=vault_server,
         ingress_class_name=ingress_class_name,
+        chart_version=chart_version,
     )

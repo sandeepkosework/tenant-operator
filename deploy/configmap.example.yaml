@@ -19,6 +19,8 @@ data:
   # --- Git (GitOps source of truth) ---
   GIT_REPO_URL: "git@github.com:your-org/tenant-config.git"
   GIT_BRANCH: "main"
+  # Released chart version (a tag) NEW tenants are created on; existing tenants keep theirs.
+  HELM_CHART_VERSION: "v0.1.0"
   GIT_LOCAL_PATH: "/data/tenant-config"
   GIT_AUTHOR_NAME: "tenant-operator"
   GIT_AUTHOR_EMAIL: "tenant-operator@your-org.com"
