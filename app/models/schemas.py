@@ -4,6 +4,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
+from app.config import validate_chart_version
 from app.models.tenant import STATUS_PROGRESS, TenantStatus
 from app.services.helm_values import QRAIE_BRIDGE_SERVICE_NAMES
 
@@ -97,6 +98,16 @@ class TenantUpdateRequest(BaseModel):
     version: Optional[str] = None
     users: Optional[int] = Field(default=None, ge=0)
     database: Optional[DatabaseSpec] = None
+    # The released chart version (a git tag, vMAJOR.MINOR.PATCH) to move this tenant onto.
+    # None = leave the tenant on the release it is pinned to. This is the only way a
+    # tenant's chart release changes. For a tenant that was never pinned, it is how you pin it:
+    # send the release it is running now.
+    chartVersion: Optional[str] = None
+
+    @field_validator("chartVersion")
+    @classmethod
+    def _check_chart_version(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else validate_chart_version(value)
     # None = leave this tenant's service selection untouched; {} = clear
     # back to every service enabled; see TenantCreateRequest.services --
     # same semantics (including onlyListedServices below), just optional
@@ -131,6 +142,9 @@ class TenantResponse(BaseModel):
     tier: Optional[str] = None
     environment: str
     appType: str = Field(validation_alias="app_type")
+    # The released chart version this tenant is pinned to (a git tag like "v0.1.0"); None for a
+    # tenant that predates pinning and has not been pinned yet. See Tenant.helm_chart_version.
+    helmChartVersion: Optional[str] = Field(default=None, validation_alias="helm_chart_version")
     disabledServices: list[str] = Field(default_factory=list, validation_alias="disabled_services")
 
     @field_validator("disabledServices", mode="before")

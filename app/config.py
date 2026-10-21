@@ -5,12 +5,28 @@ Everything is driven by environment variables so the same image can be
 promoted across environments without rebuilding. See `.env.example` for
 the full list of knobs.
 """
+import re
 from functools import lru_cache
 from typing import Literal, Optional
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.vault_bootstrap import load_env_from_vault
+
+# A released chart version is a git tag, vMAJOR.MINOR.PATCH. Strict on purpose: the value
+# is written into a tenant's values file and read by Argo CD as a git revision, so a
+# branch name ("main"), a SHA or anything with odd characters must never get through.
+CHART_VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+
+
+def validate_chart_version(value: str) -> str:
+    """Returns `value` if it is a release tag like "v0.1.0", otherwise raises ValueError."""
+    if not isinstance(value, str) or not CHART_VERSION_RE.fullmatch(value) or len(value) > 32:
+        raise ValueError(
+            f"chart version must be a release tag like 'v0.1.0' (vMAJOR.MINOR.PATCH), got {value!r}"
+        )
+    return value
 
 # Must run before Settings() is ever constructed -- fills any config key not
 # already set via a real env var/.env from Vault. No-ops entirely if
@@ -69,6 +85,20 @@ class Settings(BaseSettings):
     default_application: str = "qraie-bridge"
     default_version: str = "1.0.0"
     default_tier: str = "standard"
+
+    # The released chart version -- a git tag of the chart repository, "vMAJOR.MINOR.PATCH"
+    # -- that a NEW tenant is created on. It is stored on the tenant
+    # (Tenant.helm_chart_version) and written into its values file as `chartVersion`, which
+    # the ApplicationSet uses as that tenant's chart targetRevision, so the tenant keeps
+    # running exactly that chart. Changing this setting only affects tenants created
+    # afterwards; an existing tenant stays on the version it was created (or pinned) with
+    # until it is updated with a new chartVersion (PUT /tenant/{id}).
+    helm_chart_version: str = "v0.1.0"
+
+    @field_validator("helm_chart_version")
+    @classmethod
+    def _check_helm_chart_version(cls, value: str) -> str:
+        return validate_chart_version(value)
 
     # --- Meta-builder Job (DB seeding, triggered post-provisioning) ---
     # Runs in tenant-operator's own namespace on the hub -- same cluster

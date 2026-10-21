@@ -200,6 +200,16 @@ Key fields:
   file stay valid. Creating a tenant whose name equals an existing tenant's
   slug (e.g. a new `acme-2` while `acme` with sequence 2 exists) is rejected
   with a 400. `slug` is never used for anything customer-facing.
+- `helm_chart_version` — the **released chart version** this tenant is pinned to: a tag like
+  `v0.1.0` of the chart repository. It is set from `HELM_CHART_VERSION` when the tenant is
+  created, written into the tenant's values file as `chartVersion`, and read by the
+  ApplicationSet as the chart's `targetRevision`, so the tenant keeps running exactly that
+  chart. Merging to the chart's `main` changes nothing for it. It changes only when an update
+  passes a new `chartVersion` (`PUT /tenant/{id}`), and then only for that tenant. Changing
+  `HELM_CHART_VERSION` affects only tenants created afterwards. `NULL` means the tenant predates
+  pinning: updates are refused (409) until it is pinned by sending `chartVersion` (the release it
+  is running now), because re-rendering its file with no version would move it to a different
+  chart. See the chart repository's `RELEASING.md` for how a release is cut.
 - `app_type` — always `"qraie-bridge"` now (`server_default="qraie-bridge"`);
   kept as a real column only for API/DB back-compat, not settable per
   request any more. See "The retired `workplace` chart".
@@ -981,6 +991,7 @@ Selected settings worth knowing about explicitly:
 | `MSSQL_ADMIN_HOST` / `..._PORT` / `..._USER` / `..._PASSWORD` | unset | Admin login the meta-builder Job uses to create each tenant's real MSSQL database + login. Both host and password must be set for the Job to actually run — otherwise it's skipped (logged, not failed). |
 | `BRIDGE_META_BUILDER_JOB_NAMESPACE` | `tenant-operator` | Namespace the bridge-meta-builder Job is submitted into — same namespace as the meta-builder Job, no cross-namespace RBAC needed. |
 | `BRIDGE_META_BUILDER_IMAGE_REPOSITORY` / `..._TAG` | `sandeepkosework/bridge-meta-builder` / `0.1.17` | The Node.js Job image built from `meta-builder/` (see "Bridge meta-builder Job"). Bump the tag here whenever that image is rebuilt/repushed. |
+| `HELM_CHART_VERSION` | `v0.1.0` | The released chart version (a tag, `vMAJOR.MINOR.PATCH`) **new** tenants are created on. Existing tenants keep the version they are pinned to; see `helm_chart_version` above. An invalid value stops the operator from starting. |
 | `BRIDGE_BASE_DOMAIN` | `qraie.ai` | The public domain every tenant's hostname is built under, matching the legacy convention (`<tenant_name>-bridge<stg-suffix>.<this>`). |
 | `BRIDGE_DLM_SECRET_KEY` / `BRIDGE_SLM_KB_AUTH_PASSWORD` | unset | Shared (not per-tenant) secrets for the Mongo seed's `dlmObj` block — **functionally required, not optional**: the Job's `requireEnv()` throws if either is empty, failing the Job for every tenant, not skipping it. Set both before relying on this Job in any real deployment. |
 | `ARGOCD_UNREACHABLE_FAIL_AFTER` | `5` | Consecutive unreachable polls before a rollout fails fast — see "Argo CD failure monitoring". |

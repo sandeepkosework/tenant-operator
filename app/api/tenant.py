@@ -80,6 +80,9 @@ def create_tenant(
         disabled_services=helm_values.compute_disabled_services(req.services, req.onlyListedServices),
         application=settings.default_application,
         version=settings.default_version,
+        # Pinned for the tenant's whole life: this is the chart release it is created on, and
+        # it only changes through an update that passes a new chartVersion.
+        helm_chart_version=settings.helm_chart_version,
         users=req.users,
         database_size=req.database.size,
         status=TenantStatus.PENDING,
@@ -222,7 +225,7 @@ def list_tenants(
     "/{tenant_id}",
     response_model=TenantResponse,
     summary="Update a tenant",
-    description="Change version, user count, database size or the enabled-service selection. Only allowed while the tenant is `RUNNING` or `FAILED`. Returns the current record immediately; the change is applied in the background (status goes to `UPDATING`).",
+    description="Change version, user count, database size, the enabled-service selection or the chart release (`chartVersion`, a tag like `v0.1.1`). Only allowed while the tenant is `RUNNING` or `FAILED`. A tenant keeps the chart release it was created on until an update passes a new `chartVersion`. Returns the current record immediately; the change is applied in the background (status goes to `UPDATING`).",
     responses={404: {"description": "Tenant not found"}, 409: {"description": "Tenant is not RUNNING/FAILED"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
 )
 def update_tenant(
@@ -239,6 +242,15 @@ def update_tenant(
             status_code=409,
             detail=f"tenant is currently {tenant.status}; updates are only allowed once RUNNING or FAILED",
         )
+    if tenant.helm_chart_version is None and req.chartVersion is None:
+        # An update re-renders the tenant's values file from our record. With no pinned chart
+        # version the file would carry none, and the tenant would move onto whatever chart the
+        # ApplicationSet falls back to. Make the caller choose the version explicitly.
+        raise HTTPException(
+            status_code=409,
+            detail="this tenant has no pinned chart version, so an update could move it onto a different "
+                   "chart. Pin it first by sending chartVersion (the release it is running now) in this request.",
+        )
     new_disabled_services = None
     if req.services is not None:
         new_disabled_services = helm_values.compute_disabled_services(req.services, req.onlyListedServices)
@@ -250,6 +262,7 @@ def update_tenant(
         req.users,
         req.database.size if req.database else None,
         new_disabled_services,
+        req.chartVersion,
     )
     return tenant
 
