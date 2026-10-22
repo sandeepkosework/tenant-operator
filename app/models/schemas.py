@@ -26,6 +26,15 @@ class TenantCreateRequest(BaseModel):
     # len("-42") <= 50 for any realistic sequence number; see Tenant.slug
     # for where that budget is spent (and truncated further if needed).
     tenantId: str = Field(..., min_length=3, max_length=50)
+    # The chart release (a git tag, vMAJOR.MINOR.PATCH) to create the tenant on. Omit it to get
+    # the newest release; name an older one to stay behind. The tag must exist in the chart repo.
+    chartVersion: Optional[str] = None
+
+    @field_validator("chartVersion")
+    @classmethod
+    def _check_chart_version(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else validate_chart_version(value)
+
     displayName: str = Field(..., min_length=1, max_length=255)
     email: str
     password: str = Field(..., min_length=8)

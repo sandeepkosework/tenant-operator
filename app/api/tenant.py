@@ -13,7 +13,7 @@ from app.models.schemas import (
     TenantResponse,
     TenantUpdateRequest,
 )
-from app.services import helm_values, preflight, progress, provisioner, vault_service
+from app.services import chart_versions, helm_values, preflight, progress, provisioner, vault_service
 from app.services.validation import ValidationError, validate_create_request
 
 logger = logging.getLogger("tenant-operator.api.tenant")
@@ -32,9 +32,10 @@ settings = get_settings()
         "write Vault secrets, commit the per-tenant `values.yaml` to the GitOps repo, let Argo CD sync it, "
         "then seed the tenant database.\n\n"
         "Poll `GET /tenant/{id}` (or subscribe on Socket.IO) to follow progress.\n\n"
+        "`chartVersion` is optional: omit it for the newest chart release, or name an older tag (like `v0.1.0`) to stay on it.\n\n"
         "`password` is the tenant admin's initial password; it is used in memory only and never stored."
     ),
-    responses={400: {"description": "Validation failed (bad name, duplicate active tenant, unknown service, ...)"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
+    responses={400: {"description": "Validation failed (bad name, duplicate active tenant, unknown service, unknown chartVersion, ...)"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
 )
 def create_tenant(
     req: TenantCreateRequest,
@@ -63,6 +64,11 @@ def create_tenant(
                    + "; ".join(unverified),
         )
 
+    try:
+        chart_version = chart_versions.resolve_for_create(req.chartVersion)
+    except chart_versions.ChartVersionError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
     # No sequence number is allocated any more: tenant_seq stays NULL, so the
     # tenant's slug (namespace, Vault path, git file, ...) is just its bare name.
     # Name collisions with older, sequence-suffixed tenants are rejected in
@@ -82,7 +88,7 @@ def create_tenant(
         version=settings.default_version,
         # Pinned for the tenant's whole life: this is the chart release it is created on, and
         # it only changes through an update that passes a new chartVersion.
-        helm_chart_version=settings.helm_chart_version,
+        helm_chart_version=chart_version,
         users=req.users,
         database_size=req.database.size,
         status=TenantStatus.PENDING,
@@ -251,6 +257,11 @@ def update_tenant(
             detail="this tenant has no pinned chart version, so an update could move it onto a different "
                    "chart. Pin it first by sending chartVersion (the release it is running now) in this request.",
         )
+    if req.chartVersion:
+        try:
+            chart_versions.check_exists(req.chartVersion)
+        except chart_versions.ChartVersionError as e:
+            raise HTTPException(status_code=e.status_code, detail=str(e))
     new_disabled_services = None
     if req.services is not None:
         new_disabled_services = helm_values.compute_disabled_services(req.services, req.onlyListedServices)

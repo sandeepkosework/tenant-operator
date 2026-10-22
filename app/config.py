@@ -87,13 +87,24 @@ class Settings(BaseSettings):
     default_tier: str = "standard"
 
     # The released chart version -- a git tag of the chart repository, "vMAJOR.MINOR.PATCH"
-    # -- that a NEW tenant is created on. It is stored on the tenant
+    # -- that a NEW tenant is created on when the request names none and the newest release
+    # cannot be looked up (or helm_chart_use_latest is off). It is stored on the tenant
     # (Tenant.helm_chart_version) and written into its values file as `chartVersion`, which
     # the ApplicationSet uses as that tenant's chart targetRevision, so the tenant keeps
     # running exactly that chart. Changing this setting only affects tenants created
     # afterwards; an existing tenant stays on the version it was created (or pinned) with
     # until it is updated with a new chartVersion (PUT /tenant/{id}).
     helm_chart_version: str = "v0.1.0"
+
+    # When true (default) a new tenant that names no chartVersion is created on the HIGHEST
+    # release tag (vN.N.N) found in the chart repository, so a newly cut release is picked up
+    # without touching this operator. Existing tenants never move. Set false to always use
+    # helm_chart_version above.
+    helm_chart_use_latest: bool = True
+
+    # Where the chart's release tags are read from. Unset = the sibling of git_repo_url named
+    # "helm-chart-bridge" (same server, owner and credentials as the tenant-values repo).
+    helm_chart_repo_url: Optional[str] = None
 
     @field_validator("helm_chart_version")
     @classmethod
