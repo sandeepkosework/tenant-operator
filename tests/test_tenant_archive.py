@@ -267,22 +267,39 @@ def test_an_existing_database_gets_the_new_column_at_startup(tmp_path, monkeypat
     assert "archived_at" in cols
 
 
-def test_ereps_are_left_running_and_not_waited_for(monkeypatch):
-    """The check that the services are down asks only for pods that are not ereps."""
+def _deployment(spec_replicas, status_replicas):
+    return types.SimpleNamespace(spec=types.SimpleNamespace(replicas=spec_replicas),
+                                 status=types.SimpleNamespace(replicas=status_replicas))
+
+
+def _scaled_down(monkeypatch, deployments):
+    """all_scaled_down() against a namespace whose chart Deployments are as given."""
     from app.services import kubernetes_service as k8s
     seen = {}
 
-    class Pods:
-        items = []
-
-    class FakeCore:
-        def list_namespaced_pod(self, namespace, label_selector):
+    class FakeApps:
+        def list_namespaced_deployment(self, namespace, label_selector):
             seen["selector"] = label_selector
-            return Pods()
+            return types.SimpleNamespace(items=deployments)
 
     monkeypatch.setattr(k8s, "namespace_exists", lambda *a: True)
     monkeypatch.setattr(k8s, "_get_api_client", lambda ctx: None)
-    monkeypatch.setattr(k8s.client, "CoreV1Api", lambda api: FakeCore())
-    assert k8s.all_scaled_down("ctx", "tenant-x", "x") is True
-    assert "app!=erep" in seen["selector"]
-    assert not hasattr(k8s, "delete_erep_workloads")            # archiving never deletes them
+    monkeypatch.setattr(k8s.client, "AppsV1Api", lambda api: FakeApps())
+    return k8s.all_scaled_down("ctx", "tenant-x", "x"), seen
+
+
+def test_stopped_means_every_chart_deployment_is_at_zero(monkeypatch):
+    ok, seen = _scaled_down(monkeypatch, [_deployment(0, 0), _deployment(0, None)])
+    assert ok is True
+    assert seen["selector"] == "app.kubernetes.io/instance=x"   # only the chart's own Deployments
+
+
+def test_a_deployment_still_scaling_down_is_not_stopped(monkeypatch):
+    assert _scaled_down(monkeypatch, [_deployment(0, 0), _deployment(0, 1)])[0] is False   # a pod is still going
+    assert _scaled_down(monkeypatch, [_deployment(1, 1)])[0] is False                       # not scaled down yet
+
+
+def test_ereps_are_never_looked_at_and_never_deleted(monkeypatch):
+    from app.services import kubernetes_service as k8s
+    assert not hasattr(k8s, "delete_erep_workloads")            # archiving does not delete them
+    assert _scaled_down(monkeypatch, [])[0] is True              # a namespace with only ereps in it is "stopped"

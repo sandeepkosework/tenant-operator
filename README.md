@@ -373,7 +373,7 @@ RUNNING --archive--> ARCHIVING --> ARCHIVED --restore--> RESTORING --> RUNNING
 
 - **Archive** commits `archived: true` in the tenant's values file. The chart (from the release in
   `ARCHIVE_MIN_CHART_VERSION`) then renders every service at zero replicas and drops the ingress and
-  autoscalers, and the operator waits until none of the chart's pods is left. Pods the chart does not own
+  autoscalers, and the operator waits until every Deployment the chart created for the tenant is at zero. Pods the chart does not own
   (the ereps erep-server started, labelled `app=erep`) are **left running** and are not waited for. Kept: the namespace, volumes, SQL and Mongo
   databases and logins, Vault secrets, registry and onboarding entries, git manifest. It still counts
   against its spoke's capacity, so a restore always fits.
