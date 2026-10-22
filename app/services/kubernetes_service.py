@@ -130,6 +130,36 @@ def is_fully_ready(cluster_context: str, namespace: str, instance_label: str) ->
     )
 
 
+def delete_erep_workloads(cluster_context: str, namespace: str) -> int:
+    """Delete the Pods and Services erep-server created for the tenant's ereps (label app=erep). The chart
+    does not own them, so scaling its Deployments to zero would leave them running. Returns how many
+    objects were removed; erep-server starts them again when an erep is next used."""
+    core_v1 = client.CoreV1Api(_get_api_client(cluster_context))
+    removed = 0
+    try:
+        for svc in core_v1.list_namespaced_service(namespace, label_selector="app=erep").items:
+            core_v1.delete_namespaced_service(svc.metadata.name, namespace)
+            removed += 1
+        for pod in core_v1.list_namespaced_pod(namespace, label_selector="app=erep").items:
+            core_v1.delete_namespaced_pod(pod.metadata.name, namespace)
+            removed += 1
+    except ApiException as e:
+        raise KubernetesServiceError(f"could not remove the erep workloads: {e}") from e
+    return removed
+
+
+def all_scaled_down(cluster_context: str, namespace: str, instance_label: str) -> bool:
+    """True when no pod of this tenant's release is left (an archived tenant runs nothing)."""
+    if not namespace_exists(cluster_context, namespace):
+        return False
+    core_v1 = client.CoreV1Api(_get_api_client(cluster_context))
+    try:
+        pods = core_v1.list_namespaced_pod(namespace, label_selector=f"app.kubernetes.io/instance={instance_label}")
+    except ApiException as e:
+        raise KubernetesServiceError(f"pod check failed: {e}") from e
+    return not pods.items
+
+
 def namespace_fully_deleted(cluster_context: str, namespace: str) -> bool:
     return not namespace_exists(cluster_context, namespace)
 

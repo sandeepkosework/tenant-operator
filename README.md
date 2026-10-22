@@ -229,7 +229,12 @@ Key fields:
   any step -> FAILED (error_message set)
   RUNNING -> DELETING -> DELETED
   RUNNING -> UPDATING -> SYNCING -> RUNNING
+  RUNNING -> ARCHIVING -> ARCHIVED -> RESTORING -> SYNCING -> RUNNING
+  ARCHIVED -> DELETING -> DELETED
   ```
+
+  `ARCHIVED` is a stopped tenant that keeps everything (see "Archiving a tenant"); the
+  `archived_at` column records when. A running tenant is archived before it is deleted.
 
   `STATUS_PROGRESS` maps each status to a rough 0–100 heuristic used by both
   the plain `GET` response's `progress` field and every status-push event
@@ -356,6 +361,38 @@ pages themselves are open (schema only, no data); the endpoints they call
 are not. Route `/docs`, `/redoc`, `/openapi.json` and `/doc` through your
 ingress to reach them.
 
+## Archiving a tenant
+
+Archive stops a tenant without deleting anything, and restore brings it back as it was. A permanent
+delete is a separate, later step, so a mistaken click on "Delete" no longer destroys a running tenant.
+
+```
+RUNNING --archive--> ARCHIVING --> ARCHIVED --restore--> RESTORING --> RUNNING
+                                      \--delete--> DELETING --> DELETED
+```
+
+- **Archive** commits `archived: true` in the tenant's values file. The chart (from the release in
+  `ARCHIVE_MIN_CHART_VERSION`) then renders every service at zero replicas and drops the ingress and
+  autoscalers. The operator also removes the ereps' Pods and Services (erep-server created them, the
+  chart does not own them) and waits until no pod is left. Kept: the namespace, volumes, SQL and Mongo
+  databases and logins, Vault secrets, registry and onboarding entries, git manifest. It still counts
+  against its spoke's capacity, so a restore always fits.
+- **Restore** commits the file without `archived` and waits for the pods like a normal rollout. Nothing
+  is re-seeded: the databases were never touched.
+- **Delete** is allowed from `ARCHIVED` or `FAILED`; a `RUNNING` tenant is refused with 409 unless
+  `?force=true`. It removes the manifest and namespace as before (databases and secrets are not dropped).
+- A tenant pinned to a chart release older than `ARCHIVE_MIN_CHART_VERSION` is refused (409): that chart
+  would ignore `archived`, and the operator would report success with the pods still running. Update it
+  to a newer `chartVersion` first.
+- A failed archive leaves the tenant `FAILED` with the flag already committed; an update re-renders its
+  file from the database and so starts it again.
+- The operator needs permission on each spoke to delete pods and services in the tenant namespaces
+  (it already deletes namespaces).
+- On upgrade the operator adds the `archived_at` column and the three new status values to an existing
+  database itself at startup (`database.ensure_schema()`), so no manual migration is needed.
+
+In the web UI a running tenant has **Archive**; an archived one has **Restore** and **Delete permanently**.
+
 ## API
 
 All routes below except `/health` require authentication (see above).
@@ -366,7 +403,9 @@ POST   /api/v1/tenant            -> 202 Accepted, { tenantId, status: PENDING }
 GET    /api/v1/tenant/{id}       -> current tenant record incl. status + progress
 GET    /api/v1/tenant            -> list, filterable by ?environment=&status_filter=
 PUT    /api/v1/tenant/{id}       -> update version/users/db size/services (only when RUNNING/FAILED)
-DELETE /api/v1/tenant/{id}       -> 202 Accepted, tears down via git delete + Argo CD prune + namespace delete
+POST   /api/v1/tenant/{id}/archive -> 202 Accepted, stops the tenant and keeps its data (RUNNING only)
+POST   /api/v1/tenant/{id}/restore -> 202 Accepted, starts an ARCHIVED tenant again
+DELETE /api/v1/tenant/{id}       -> 202 Accepted, tears down via git delete + Argo CD prune + namespace delete (a RUNNING tenant needs ?force=true; archive it first)
 GET    /api/v1/tenant/{id}/vault -> this tenant's current Vault secrets (one path per qraie-bridge service)
 GET    /api/v1/cluster           -> SpokeCluster CR content for every registered spoke
 GET    /api/v1/cluster/{name}    -> SpokeCluster CR content for one spoke
@@ -992,6 +1031,7 @@ Selected settings worth knowing about explicitly:
 | `BRIDGE_META_BUILDER_JOB_NAMESPACE` | `tenant-operator` | Namespace the bridge-meta-builder Job is submitted into — same namespace as the meta-builder Job, no cross-namespace RBAC needed. |
 | `BRIDGE_META_BUILDER_IMAGE_REPOSITORY` / `..._TAG` | `sandeepkosework/bridge-meta-builder` / `0.1.17` | The Node.js Job image built from `meta-builder/` (see "Bridge meta-builder Job"). Bump the tag here whenever that image is rebuilt/repushed. |
 | `HELM_CHART_VERSION` | `v0.1.0` | The released chart version (a tag, `vMAJOR.MINOR.PATCH`) **new** tenants are created on. Existing tenants keep the version they are pinned to; see `helm_chart_version` above. An invalid value stops the operator from starting. |
+| `ARCHIVE_MIN_CHART_VERSION` | `v0.1.3` | The first chart release that understands `archived: true`. A tenant pinned to an older release cannot be archived. An invalid value stops the operator from starting. |
 | `BRIDGE_BASE_DOMAIN` | `qraie.ai` | The public domain every tenant's hostname is built under, matching the legacy convention (`<tenant_name>-bridge<stg-suffix>.<this>`). |
 | `BRIDGE_DLM_SECRET_KEY` / `BRIDGE_SLM_KB_AUTH_PASSWORD` | unset | Shared (not per-tenant) secrets for the Mongo seed's `dlmObj` block — **functionally required, not optional**: the Job's `requireEnv()` throws if either is empty, failing the Job for every tenant, not skipping it. Set both before relying on this Job in any real deployment. |
 | `ARGOCD_UNREACHABLE_FAIL_AFTER` | `5` | Consecutive unreachable polls before a rollout fails fast — see "Argo CD failure monitoring". |
