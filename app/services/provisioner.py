@@ -13,6 +13,8 @@ import logging
 import time
 import uuid
 
+import yaml
+
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -82,6 +84,35 @@ def _render_values_yaml(tenant: Tenant, cluster) -> str:
         # (every update) must not move a tenant onto a newer chart by accident.
         chart_version=tenant.helm_chart_version,
     )
+
+
+def _with_service_config(tenant: Tenant, values_yaml: str, existing: str | None, old_chart_version: str | None) -> str:
+    """Adds this tenant's per-service image/resources (`serviceConfig`) to the rendered file.
+
+    - Chart older than SERVICE_CONFIG_MIN_VERSION: the chart would ignore it, so none is written
+      (the legacy override maps from the earlier release are carried over instead).
+    - Otherwise the section is built from the chart's own values.yaml at the tenant's pinned release,
+      keeping whatever the tenant edited in `existing`. Moving to a new release refreshes the values
+      that were never edited (compared against the release it moved from).
+    - If the chart cannot be read right now, the existing section is kept as it is rather than
+      dropped, and a brand-new tenant simply gets no section (it still runs the chart's values).
+    """
+    version = tenant.helm_chart_version
+    if not helm_values.supports_service_config(version):
+        return helm_values.carry_over_overrides(values_yaml, existing)
+    kept = helm_values.existing_service_config(existing)      # ValueError on an unreadable file
+    try:
+        new_defaults = helm_values.chart_service_defaults(git_service.read_chart_file(version), tenant.disabled_services)
+        old_defaults = None
+        if kept and old_chart_version and old_chart_version != version and helm_values.supports_service_config(old_chart_version):
+            old_defaults = helm_values.chart_service_defaults(
+                git_service.read_chart_file(old_chart_version), tenant.disabled_services)
+        service_config = helm_values.merge_service_config(new_defaults, kept, old_defaults)
+    except (git_service.GitServiceError, ValueError, yaml.YAMLError):
+        logger.warning("tenant=%s could not read the chart values to build serviceConfig; keeping what the file has",
+                       tenant.tenant_name, exc_info=True)
+        service_config = kept
+    return helm_values.append_service_config(values_yaml, service_config)
 
 
 def _set_status(db: Session, tenant: Tenant, status: TenantStatus, error: str | None = None) -> None:
@@ -360,7 +391,7 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
 
             logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
             progress.record(tenant.id, "manifest", "start", "Rendering the Helm values for this tenant")
-            values_yaml = _render_values_yaml(tenant, cluster)
+            values_yaml = _with_service_config(tenant, _render_values_yaml(tenant, cluster), None, None)
 
             logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)
             commit_sha = git_service.commit_tenant_manifest(
@@ -454,6 +485,7 @@ def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int 
                 tenant.database_size = new_db_size
             if new_disabled_services is not None:
                 tenant.disabled_services = new_disabled_services
+            old_chart_version = tenant.helm_chart_version
             if new_chart_version:
                 logger.info("[step] tenant=%s chart version %s -> %s",
                             tenant.tenant_name, tenant.helm_chart_version, new_chart_version)
@@ -465,10 +497,11 @@ def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int 
             cluster = next(c for c in cluster_selector.load_cluster_registry() if c.name == tenant.cluster)
 
             logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
-            values_yaml = _render_values_yaml(tenant, cluster)
-            # Keep any per-tenant overrides (image, tag, replicas, resources) that were added to the file by hand.
-            values_yaml = helm_values.carry_over_overrides(
-                values_yaml, git_service.read_tenant_manifest(tenant.slug, tenants_dir=_tenants_dir_for(tenant)),
+            # Keep the per-tenant image/resources (serviceConfig) that are in the file, edits included.
+            values_yaml = _with_service_config(
+                tenant, _render_values_yaml(tenant, cluster),
+                git_service.read_tenant_manifest(tenant.slug, tenants_dir=_tenants_dir_for(tenant)),
+                old_chart_version,
             )
 
             logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)

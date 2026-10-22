@@ -451,3 +451,170 @@ def test_an_explicit_chart_repo_url_wins_and_gets_the_token(monkeypatch):
     monkeypatch.setattr(s, "git_https_token", "tok")
     monkeypatch.setattr(s, "git_https_username", "bot")
     assert git_service.chart_repo_url() == "https://bot:tok@git.example/o/charts.git"
+
+
+# ---- serviceConfig: each service's image and resources, visible and editable in the file ----
+
+def _chart_values(bridge_tag="v1", ui_tag="7", bridge_mem="1Gi"):
+    return yaml.safe_dump({"services": [
+        {"name": "bridge", "enabled": True, "image": {"repository": "reg/bridge", "tag": bridge_tag, "pullPolicy": "Always"},
+         "resources": {"requests": {"cpu": "100m", "memory": "128Mi"}, "limits": {"cpu": "1", "memory": bridge_mem}}},
+        {"name": "ui", "enabled": True, "image": {"repository": "reg/ui", "tag": ui_tag}, "resources": {}},
+        {"name": "radicale", "enabled": True, "image": {"repository": "reg/radicale", "tag": "3"}},
+        {"name": "off", "enabled": False, "image": {"repository": "reg/off", "tag": "1"}},
+    ]})
+
+
+@pytest.fixture
+def chart(monkeypatch):
+    """The chart's values.yaml per release tag, as read from the (fake) chart repository."""
+    releases = {"v0.1.2": _chart_values(), "v0.1.3": _chart_values(bridge_tag="v2", bridge_mem="2Gi")}
+
+    def read(tag, path="values.yaml", url=None):
+        if tag not in releases:
+            raise provisioner.git_service.GitServiceError(f"could not read {path} of chart {tag}")
+        return releases[tag]
+
+    monkeypatch.setattr(provisioner.git_service, "read_chart_file", read)
+    return releases
+
+
+def _sc(text):
+    return yaml.safe_load(text)["serviceConfig"]
+
+
+def _tenant(version="v0.1.2", disabled=()):
+    return types.SimpleNamespace(tenant_name="t", helm_chart_version=version, disabled_services=list(disabled))
+
+
+def test_a_new_tenant_gets_every_enabled_services_image_and_resources(chart):
+    out = provisioner._with_service_config(_tenant(), "a: 1\n", None, None)
+    cfg = _sc(out)
+    assert set(cfg) == {"bridge", "ui", "radicale"}                           # the chart-disabled "off" is not listed
+    assert cfg["bridge"] == {"image": {"repository": "reg/bridge", "tag": "v1"},
+                             "resources": {"requests": {"cpu": "100m", "memory": "128Mi"}, "limits": {"cpu": "1", "memory": "1Gi"}}}
+    assert cfg["ui"] == {"image": {"repository": "reg/ui", "tag": "7"}}      # no resources in the chart: none written
+    assert "pullPolicy" not in out                                            # only image repository/tag and resources
+    assert yaml.safe_load(out)["a"] == 1
+
+
+def test_a_service_the_tenant_disabled_is_not_listed(chart):
+    assert "ui" not in _sc(provisioner._with_service_config(_tenant(disabled=["ui"]), "a: 1\n", None, None))
+
+
+def test_the_written_section_is_what_the_chart_reads_back(chart):
+    out = provisioner._with_service_config(_tenant(), "a: 1\n", None, None)
+    again = provisioner._with_service_config(_tenant(), "a: 1\n", out, "v0.1.2")
+    assert _sc(again) == _sc(out)                                             # re-rendering an untouched file changes nothing
+
+
+def test_an_edited_value_survives_an_update(chart):
+    edited = provisioner._with_service_config(_tenant(), "a: 1\n", None, None)
+    edited = edited.replace("tag: v1", "tag: v1-hotfix").replace("memory: 1Gi", "memory: 4Gi")
+    cfg = _sc(provisioner._with_service_config(_tenant(), "a: 1\n", edited, "v0.1.2"))
+    assert cfg["bridge"]["image"]["tag"] == "v1-hotfix"
+    assert cfg["bridge"]["resources"]["limits"]["memory"] == "4Gi"
+    assert cfg["bridge"]["resources"]["requests"]["cpu"] == "100m"            # untouched values still there
+
+
+def test_a_value_the_chart_gained_is_added_and_a_removed_one_stays_removed_from_view(chart):
+    existing = "serviceConfig:\n  bridge:\n    image: {repository: reg/bridge, tag: v1}\n"   # no resources yet
+    cfg = _sc(provisioner._with_service_config(_tenant(), "a: 1\n", existing, "v0.1.2"))
+    assert cfg["bridge"]["resources"]["limits"]["memory"] == "1Gi"           # filled in from the chart
+    assert set(cfg) == {"bridge", "ui", "radicale"}                           # every enabled service is listed
+
+
+def test_moving_to_a_new_release_refreshes_only_what_was_never_edited(chart):
+    old = provisioner._with_service_config(_tenant("v0.1.2"), "a: 1\n", None, None)
+    old = old.replace("memory: 1Gi", "memory: 4Gi")                          # the tenant raised the limit; tag untouched
+    cfg = _sc(provisioner._with_service_config(_tenant("v0.1.3"), "a: 1\n", old, "v0.1.2"))
+    assert cfg["bridge"]["image"]["tag"] == "v2"                              # never edited: follows the new release
+    assert cfg["bridge"]["resources"]["limits"]["memory"] == "4Gi"            # edited: kept (the new default is 2Gi)
+
+
+def test_a_tag_written_as_a_number_still_counts_as_unedited(chart):
+    old = provisioner._with_service_config(_tenant("v0.1.2"), "a: 1\n", None, None).replace("tag: '7'", "tag: 7")
+    chart["v0.1.3"] = _chart_values(ui_tag="8")
+    assert _sc(provisioner._with_service_config(_tenant("v0.1.3"), "a: 1\n", old, "v0.1.2"))["ui"]["image"]["tag"] == "8"
+
+
+def test_if_the_chart_cannot_be_read_the_existing_section_is_kept(chart):
+    existing = provisioner._with_service_config(_tenant(), "a: 1\n", None, None).replace("tag: v1", "tag: mine")
+    chart.clear()                                                             # every read now fails
+    cfg = _sc(provisioner._with_service_config(_tenant(), "a: 1\n", existing, "v0.1.2"))
+    assert cfg["bridge"]["image"]["tag"] == "mine"
+
+
+def test_if_the_chart_cannot_be_read_a_new_tenant_just_has_no_section(chart):
+    chart.clear()
+    out = provisioner._with_service_config(_tenant(), "a: 1\n", None, None)
+    assert "serviceConfig" not in out and yaml.safe_load(out) == {"a": 1}
+
+
+def test_a_tenant_on_a_release_without_serviceConfig_gets_none(chart):
+    out = provisioner._with_service_config(_tenant("v0.1.1"), "a: 1\n", None, None)
+    assert "serviceConfig" not in out                                         # the chart would ignore it
+
+
+def test_an_unreadable_file_stops_the_update_instead_of_dropping_edits(chart):
+    with pytest.raises(ValueError):
+        provisioner._with_service_config(_tenant(), "a: 1\n", "serviceConfig: [unclosed\n", "v0.1.2")
+    with pytest.raises(ValueError):
+        provisioner._with_service_config(_tenant(), "a: 1\n", "serviceConfig: 5\n", "v0.1.2")
+
+
+def test_an_update_through_the_provisioner_writes_the_section(env, committed, chart):
+    tid = _make(env, "hbss-080", "v0.1.2")
+    provisioner.update_tenant(tid, None, 3, None, None, None)
+    assert "serviceConfig" in yaml.safe_load(committed[0][1])
+
+
+def test_moving_a_tenant_through_the_provisioner_refreshes_it(env, committed, chart):
+    tid = _make(env, "hbss-081", "v0.1.2")
+    committed.on_disk["hbss-081"] = provisioner._with_service_config(_tenant("v0.1.2"), "a: 1\n", None, None)
+    provisioner.update_tenant(tid, None, None, None, None, "v0.1.3")
+    out = yaml.safe_load(committed[0][1])
+    assert out["chartVersion"] == "v0.1.3"
+    assert out["serviceConfig"]["bridge"]["image"]["tag"] == "v2"
+
+
+@pytest.mark.parametrize("version, expected", [("v0.1.0", False), ("v0.1.1", False), ("v0.1.2", True),
+                                               ("v0.1.10", True), ("v0.2.0", True), ("v1.0.0", True), (None, False)])
+def test_which_releases_get_a_section(version, expected):
+    assert helm_values.supports_service_config(version) is expected
+
+
+# ---- reading the chart at a tag (a real git repository) -------------------------------------
+
+def _chart_repo(tmp_path):
+    import subprocess
+    repo = tmp_path / "chart"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=repo, check=True,
+                                    capture_output=True)
+    run("init", "-q", "-b", "main")
+    (repo / "values.yaml").write_text("services: [{name: bridge, image: {repository: r/b, tag: one}}]\n")
+    run("add", "."); run("commit", "-q", "-m", "one"); run("tag", "v0.1.2")
+    (repo / "values.yaml").write_text("services: [{name: bridge, image: {repository: r/b, tag: two}}]\n")
+    run("commit", "-qam", "two"); run("tag", "v0.1.3")
+    return repo
+
+
+def test_the_chart_is_read_as_of_the_release_tag(tmp_path):
+    from app.services import git_service
+    url = _chart_repo(tmp_path).as_uri()
+    assert "tag: one" in git_service.read_chart_file("v0.1.2", url=url)
+    assert "tag: two" in git_service.read_chart_file("v0.1.3", url=url)
+
+
+def test_a_missing_tag_is_an_error_not_an_empty_file(tmp_path):
+    from app.services import git_service
+    with pytest.raises(git_service.GitServiceError):
+        git_service.read_chart_file("v9.9.9", url=_chart_repo(tmp_path).as_uri())
+
+
+@pytest.mark.parametrize("bad", ["main", "v0.1.2; rm -rf /", "../v0.1.2", "v0.1"])
+def test_only_release_tags_can_be_read(bad):
+    from app.services import git_service
+    with pytest.raises(ValueError):
+        git_service.read_chart_file(bad, url="file:///nowhere")
