@@ -10,13 +10,14 @@ a process-wide lock. In production, back this with an actual lock service
 """
 import os
 import re
+import tempfile
 import threading
 from pathlib import Path
 
 import git
 from git import Repo, GitCommandError
 
-from app.config import CHART_VERSION_RE, get_settings
+from app.config import CHART_VERSION_RE, get_settings, validate_chart_version
 
 settings = get_settings()
 _lock = threading.Lock()
@@ -177,6 +178,22 @@ def list_remote_tags(url: str = None) -> list[str]:
         if CHART_VERSION_RE.fullmatch(name):
             tags.append(name)
     return tags
+
+
+def read_chart_file(tag: str, path: str = "values.yaml", url: str = None) -> str:
+    """Text of `path` in the chart repository as of the release `tag` (a vN.N.N tag; anything else
+    is refused). Fetches just that tag into a throwaway bare repository: no clone to keep, no lock.
+    Raises GitServiceError if it cannot be read; the message never contains credentials."""
+    validate_chart_version(tag)
+    try:
+        url = url or chart_repo_url()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repo.init(tmp, bare=True)
+            with repo.git.custom_environment(**_env_for_auth()):
+                repo.git.fetch("--depth", "1", url, f"refs/tags/{tag}")
+            return repo.git.show(f"FETCH_HEAD:{path}")
+    except GitCommandError as e:
+        raise GitServiceError(f"could not read {path} of chart {tag}: " + re.sub(r"//[^@/\s]*@", "//***@", str(e))) from e
 
 
 def delete_tenant_manifest(tenant_slug: str, message: str, tenants_dir: str = None) -> str:
