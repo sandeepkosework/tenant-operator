@@ -556,7 +556,8 @@ def _rerender_and_commit(db: Session, tenant: Tenant, cluster, archived: bool, m
 def archive_tenant(tenant_id: uuid.UUID) -> None:
     """Entry point for POST /tenant/{id}/archive. Commits `archived: true` for the tenant; the chart then
     runs no pods and no ingress. Nothing is deleted: namespace, volumes, databases, Vault secrets, the
-    registry and onboarding entries all stay, so restore_tenant() brings it back as it was."""
+    registry and onboarding entries all stay, so restore_tenant() brings it back as it was. Pods the
+    chart does not own (the ereps erep-server started) are left running."""
     from datetime import datetime, timezone
 
     db = SessionLocal()
@@ -572,13 +573,6 @@ def archive_tenant(tenant_id: uuid.UUID) -> None:
 
             _rerender_and_commit(db, tenant, cluster, archived=True,
                                  message=f"tenant-operator: archive {tenant.tenant_name}")
-
-            try:
-                removed = kubernetes_service.delete_erep_workloads(cluster.context, tenant.namespace)
-                if removed:
-                    logger.info("[step] tenant=%s removed %d erep pod/service object(s)", tenant.tenant_name, removed)
-            except Exception as e:  # noqa: BLE001 -- the wait below reports anything still running
-                logger.warning("tenant=%s could not remove erep workloads: %s", tenant.tenant_name, e)
 
             deadline = time.monotonic() + settings.provisioning_timeout_seconds
             while time.monotonic() < deadline:

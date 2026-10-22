@@ -182,10 +182,6 @@ def flow(env, monkeypatch):
     monkeypatch.setattr(provisioner.argocd_service, "get_application_status", lambda slug: {"health": "Healthy"})
     monkeypatch.setattr(provisioner.argocd_service, "classify", lambda status: "healthy")
     monkeypatch.setattr(provisioner.kubernetes_service, "all_scaled_down", lambda *a, **k: True)
-    erep_removals = []
-    monkeypatch.setattr(provisioner.kubernetes_service, "delete_erep_workloads",
-                        lambda context, namespace: erep_removals.append(namespace) or 2)
-    env.erep_removals = erep_removals
     monkeypatch.setattr(provisioner.time, "sleep", lambda s: None)
     env.committed = committed
     return env
@@ -206,7 +202,6 @@ def test_archiving_commits_the_flag_and_ends_archived(flow):
     assert row.status == TenantStatus.ARCHIVED and row.archived_at is not None
     message, content = flow.committed[-1]
     assert "archive hbss-050" in message and yaml.safe_load(content)["archived"] is True
-    assert flow.erep_removals == ["tenant-hbss-050"]            # ereps the chart does not own are removed too
 
 
 def test_archiving_waits_until_the_pods_are_gone(flow, monkeypatch):
@@ -270,3 +265,24 @@ def test_an_existing_database_gets_the_new_column_at_startup(tmp_path, monkeypat
     with engine.begin() as conn:
         cols = {row[1] for row in conn.execute(text("PRAGMA table_info(tenants)"))}
     assert "archived_at" in cols
+
+
+def test_ereps_are_left_running_and_not_waited_for(monkeypatch):
+    """The check that the services are down asks only for pods that are not ereps."""
+    from app.services import kubernetes_service as k8s
+    seen = {}
+
+    class Pods:
+        items = []
+
+    class FakeCore:
+        def list_namespaced_pod(self, namespace, label_selector):
+            seen["selector"] = label_selector
+            return Pods()
+
+    monkeypatch.setattr(k8s, "namespace_exists", lambda *a: True)
+    monkeypatch.setattr(k8s, "_get_api_client", lambda ctx: None)
+    monkeypatch.setattr(k8s.client, "CoreV1Api", lambda api: FakeCore())
+    assert k8s.all_scaled_down("ctx", "tenant-x", "x") is True
+    assert "app!=erep" in seen["selector"]
+    assert not hasattr(k8s, "delete_erep_workloads")            # archiving never deletes them

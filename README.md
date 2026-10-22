@@ -373,8 +373,8 @@ RUNNING --archive--> ARCHIVING --> ARCHIVED --restore--> RESTORING --> RUNNING
 
 - **Archive** commits `archived: true` in the tenant's values file. The chart (from the release in
   `ARCHIVE_MIN_CHART_VERSION`) then renders every service at zero replicas and drops the ingress and
-  autoscalers. The operator also removes the ereps' Pods and Services (erep-server created them, the
-  chart does not own them) and waits until no pod is left. Kept: the namespace, volumes, SQL and Mongo
+  autoscalers, and the operator waits until none of the chart's pods is left. Pods the chart does not own
+  (the ereps erep-server started, labelled `app=erep`) are **left running** and are not waited for. Kept: the namespace, volumes, SQL and Mongo
   databases and logins, Vault secrets, registry and onboarding entries, git manifest. It still counts
   against its spoke's capacity, so a restore always fits.
 - **Restore** commits the file without `archived` and waits for the pods like a normal rollout. Nothing
@@ -386,8 +386,6 @@ RUNNING --archive--> ARCHIVING --> ARCHIVED --restore--> RESTORING --> RUNNING
   to a newer `chartVersion` first.
 - A failed archive leaves the tenant `FAILED` with the flag already committed; an update re-renders its
   file from the database and so starts it again.
-- The operator needs permission on each spoke to delete pods and services in the tenant namespaces
-  (it already deletes namespaces).
 - On upgrade the operator adds the `archived_at` column and the three new status values to an existing
   database itself at startup (`database.ensure_schema()`), so no manual migration is needed.
 
