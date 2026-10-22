@@ -9,13 +9,14 @@ a process-wide lock. In production, back this with an actual lock service
 (e.g. Postgres advisory lock) if you run more than one operator replica.
 """
 import os
+import re
 import threading
 from pathlib import Path
 
 import git
 from git import Repo, GitCommandError
 
-from app.config import get_settings
+from app.config import CHART_VERSION_RE, get_settings
 
 settings = get_settings()
 _lock = threading.Lock()
@@ -141,6 +142,41 @@ def read_tenant_manifest(tenant_slug: str, tenants_dir: str = None) -> str | Non
             return file_path.read_text() if file_path.exists() else None
         except GitCommandError as e:
             raise GitServiceError(f"git operation failed: {e}") from e
+
+
+CHART_REPO_NAME = "helm-chart-bridge"
+
+
+def chart_repo_url() -> str:
+    """URL of the chart repository: HELM_CHART_REPO_URL, else the sibling of GIT_REPO_URL named
+    helm-chart-bridge, with the same credentials (embedded in the URL, or the HTTPS token)."""
+    url = settings.helm_chart_repo_url
+    if not url:
+        m = re.match(r"^(.*[/:])[^/:]+?(\.git)?/?$", settings.git_repo_url)
+        if not m:
+            raise GitServiceError("cannot work out the chart repository URL from GIT_REPO_URL")
+        url = f"{m.group(1)}{CHART_REPO_NAME}{m.group(2) or '.git'}"
+    m = re.match(r"^(https?://)([^@/]*@)?(.*)$", url)
+    if m and not m.group(2) and settings.git_https_token:
+        url = f"{m.group(1)}{settings.git_https_username}:{settings.git_https_token}@{m.group(3)}"
+    return url
+
+
+def list_remote_tags(url: str = None) -> list[str]:
+    """Release tags (vN.N.N) present in the chart repository. Read-only: no clone, no lock.
+    Raises GitServiceError if the server cannot be reached; the message never contains credentials."""
+    try:
+        url = url or chart_repo_url()
+        out = git.Git().ls_remote("--tags", "--refs", url, env=_env_for_auth(), kill_after_timeout=20)
+    except GitCommandError as e:
+        raise GitServiceError("could not list the chart repository's tags: " + re.sub(r"//[^@/\s]*@", "//***@", str(e))) from e
+    tags = []
+    for line in out.splitlines():
+        ref = line.split("\t")[-1].strip()
+        name = ref[len("refs/tags/"):] if ref.startswith("refs/tags/") else ""
+        if CHART_VERSION_RE.fullmatch(name):
+            tags.append(name)
+    return tags
 
 
 def delete_tenant_manifest(tenant_slug: str, message: str, tenants_dir: str = None) -> str:
