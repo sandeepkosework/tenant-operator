@@ -61,6 +61,7 @@ def render_qraie_bridge_values_yaml(
     vault_server: str | None = None,
     ingress_class_name: str | None = None,
     chart_version: str | None = None,
+    archived: bool = False,
 ) -> str:
     """Renders a tenant's values.yaml for the qraie-bridge chart -- the only
     chart tenants are provisioned onto (see app/models/tenant.py's
@@ -92,7 +93,14 @@ def render_qraie_bridge_values_yaml(
         vault_server=vault_server,
         ingress_class_name=ingress_class_name,
         chart_version=chart_version,
+        archived=archived,
     )
+
+
+def supports_archive(chart_version: str | None, minimum: str) -> bool:
+    """True when the tenant's pinned chart release honours `archived: true`. An older chart ignores the
+    key, so archiving would report success while every service kept running."""
+    return bool(chart_version) and _version_tuple(chart_version) >= _version_tuple(minimum)
 
 
 # Per-tenant overrides an operator edits by hand in tenants/<slug>.yaml (the chart's

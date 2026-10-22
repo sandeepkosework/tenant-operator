@@ -64,3 +64,9 @@ disabledServices:
   - {{ s }}
 {% endfor %}
 {% endif %}
+{% if archived %}
+
+# The tenant is archived: the chart runs no pods and serves no ingress, but keeps the namespace,
+# volumes and secrets. Set by the operator's archive/restore; restoring removes this line.
+archived: true
+{% endif %}

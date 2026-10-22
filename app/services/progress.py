@@ -114,7 +114,7 @@ def build_progress(db: Session, tenant: Tenant) -> dict:
     total = len(steps)
     finished = sum(1 for s in steps if s["state"] in ("done", "warn", "skipped"))
     running_n = sum(1 for s in steps if s["state"] == "running")
-    if tenant.status == TenantStatus.RUNNING and has_detail:
+    if tenant.status in (TenantStatus.RUNNING, TenantStatus.ARCHIVED) and has_detail:
         percent = 100
     elif has_detail:
         percent = int((finished + 0.5 * running_n) / total * 100)

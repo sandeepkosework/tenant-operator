@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 from app.api import auth, cluster, health, tenant, ui, vault
 from app.auth import require_admin
 from app.config import get_settings
-from app.database import Base, engine
+from app.database import Base, engine, ensure_schema
 from app.socketio_app import sio
 
 settings = get_settings()
@@ -94,4 +94,5 @@ def on_startup():
     # For a real deployment, replace this with Alembic migrations
     # (see scripts/ and README) -- create_all is fine for first bring-up.
     Base.metadata.create_all(bind=engine)
+    ensure_schema()
     logger.info("tenant-operator started; tables ensured")

@@ -30,6 +30,11 @@ ACTIVE_STATUSES = (
     TenantStatus.SYNCING,
     TenantStatus.RUNNING,
     TenantStatus.UPDATING,
+    # An archived tenant runs nothing but keeps its namespace and volumes, and restoring it must
+    # always fit, so it keeps its place on the spoke.
+    TenantStatus.ARCHIVING,
+    TenantStatus.ARCHIVED,
+    TenantStatus.RESTORING,
 )
 
 

@@ -176,6 +176,7 @@ class TenantResponse(BaseModel):
     hubCrUid: Optional[str] = Field(default=None, validation_alias="hub_cr_uid")
     createdAt: datetime = Field(validation_alias="created_at")
     updatedAt: datetime = Field(validation_alias="updated_at")
+    archivedAt: Optional[datetime] = Field(default=None, validation_alias="archived_at")
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 

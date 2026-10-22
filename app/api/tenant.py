@@ -278,19 +278,84 @@ def update_tenant(
     return tenant
 
 
+@router.post(
+    "/{tenant_id}/archive",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Archive a tenant",
+    description=(
+        "Stops the tenant without deleting anything: every service is scaled to zero and the ingress is removed, "
+        "while the namespace, volumes, SQL and Mongo databases, Vault secrets and registry entries are kept. "
+        "Status goes to `ARCHIVING`, then `ARCHIVED`. Undo it with `POST /tenant/{id}/restore`. Only a `RUNNING` "
+        "tenant on a chart release that supports archiving (`ARCHIVE_MIN_CHART_VERSION` or later) can be archived."
+    ),
+    responses={404: {"description": "Tenant not found"}, 409: {"description": "Tenant is not RUNNING, or its chart release is too old"},
+               401: {"description": "Missing/invalid token or API key"}},
+)
+def archive_tenant(tenant_id: uuid.UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    if tenant.status != TenantStatus.RUNNING:
+        raise HTTPException(status_code=409, detail=f"tenant is currently {tenant.status}; only a RUNNING tenant can be archived")
+    if not helm_values.supports_archive(tenant.helm_chart_version, settings.archive_min_chart_version):
+        raise HTTPException(
+            status_code=409,
+            detail=f"this tenant is on chart {tenant.helm_chart_version or '(not pinned)'}, which does not support archiving "
+                   f"(needs {settings.archive_min_chart_version} or later). Update it with PUT /tenant/{{id}} and a newer "
+                   "chartVersion first; archiving it now would report success while its pods kept running.",
+        )
+    background_tasks.add_task(provisioner.archive_tenant, tenant.id)
+    return {"tenantId": tenant.id, "status": "ARCHIVING"}
+
+
+@router.post(
+    "/{tenant_id}/restore",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Restore an archived tenant",
+    description=(
+        "Brings an `ARCHIVED` tenant back: its values file is committed without `archived`, Argo CD starts the "
+        "services again and the status goes to `RESTORING`, then `RUNNING`. Its data was never touched, so nothing "
+        "is re-seeded."
+    ),
+    responses={404: {"description": "Tenant not found"}, 409: {"description": "Tenant is not ARCHIVED"},
+               401: {"description": "Missing/invalid token or API key"}},
+)
+def restore_tenant(tenant_id: uuid.UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    if tenant.status != TenantStatus.ARCHIVED:
+        raise HTTPException(status_code=409, detail=f"tenant is currently {tenant.status}; only an ARCHIVED tenant can be restored")
+    background_tasks.add_task(provisioner.restore_tenant, tenant.id)
+    return {"tenantId": tenant.id, "status": "RESTORING"}
+
+
 @router.delete(
     "/{tenant_id}",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Delete a tenant",
-    description="Starts teardown in the background: removes the tenant's manifest from git, lets Argo CD prune it and deletes the namespace. Status goes to `DELETING`, then `DELETED` (the row is soft-deleted). **Destructive.**",
-    responses={404: {"description": "Tenant not found"}, 409: {"description": "Deletion already in progress"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
+    description=(
+        "Starts teardown in the background: removes the tenant's manifest from git, lets Argo CD prune it and deletes "
+        "the namespace. Status goes to `DELETING`, then `DELETED` (the row is soft-deleted). **Destructive.** "
+        "A `RUNNING` tenant must be archived first (`POST /tenant/{id}/archive`); pass `force=true` to skip that."
+    ),
+    responses={404: {"description": "Tenant not found"}, 409: {"description": "Deletion already in progress, or the tenant is RUNNING and was not archived"},
+               **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
 )
-def delete_tenant(tenant_id: uuid.UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def delete_tenant(tenant_id: uuid.UUID, background_tasks: BackgroundTasks, force: bool = False, db: Session = Depends(get_db)):
     tenant = db.get(Tenant, tenant_id)
     if tenant is None:
         raise HTTPException(status_code=404, detail="tenant not found")
     if tenant.status == TenantStatus.DELETING:
         raise HTTPException(status_code=409, detail="deletion already in progress")
+    if tenant.status in (TenantStatus.ARCHIVING, TenantStatus.RESTORING):
+        raise HTTPException(status_code=409, detail=f"tenant is currently {tenant.status}; wait for it to finish")
+    if tenant.status == TenantStatus.RUNNING and not force:
+        raise HTTPException(
+            status_code=409,
+            detail="this tenant is RUNNING. Archive it first (POST /tenant/{id}/archive), then delete the archived "
+                   "tenant; or pass force=true to delete it directly.",
+        )
 
     background_tasks.add_task(provisioner.delete_tenant, tenant.id)
     return {"tenantId": tenant.id, "status": "DELETING"}

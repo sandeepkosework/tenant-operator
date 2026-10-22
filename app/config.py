@@ -111,6 +111,15 @@ class Settings(BaseSettings):
     def _check_helm_chart_version(cls, value: str) -> str:
         return validate_chart_version(value)
 
+    # The first chart release that understands `archived: true` (scales every service to zero and drops
+    # the ingress). A tenant pinned to an older release cannot be archived until it is updated to one.
+    archive_min_chart_version: str = "v0.1.3"
+
+    @field_validator("archive_min_chart_version")
+    @classmethod
+    def _check_archive_min_chart_version(cls, value: str) -> str:
+        return validate_chart_version(value)
+
     # --- Meta-builder Job (DB seeding, triggered post-provisioning) ---
     # Runs in tenant-operator's own namespace on the hub -- same cluster
     # tenant-operator itself runs on and the MSSQL server it talks to lives
