@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import yaml
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 _TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
@@ -92,3 +93,34 @@ def render_qraie_bridge_values_yaml(
         ingress_class_name=ingress_class_name,
         chart_version=chart_version,
     )
+
+
+# Per-tenant overrides an operator edits by hand in tenants/<slug>.yaml (the chart's
+# imageTags / imageRepositories / replicaOverrides / resourceOverrides, see its README).
+# They are not in the database, so a re-render has to copy them from the file it replaces.
+OVERRIDE_KEYS = ("imageTags", "imageRepositories", "replicaOverrides", "resourceOverrides")
+
+_OVERRIDE_HEADER = (
+    "\n# Per-tenant overrides, edited by hand and kept by the operator when it re-renders this file.\n"
+    "# Each is a map keyed by service name; see the helm-chart-bridge README.\n"
+)
+
+
+def carry_over_overrides(rendered: str, existing: str | None) -> str:
+    """Append the override blocks found in `existing` (the tenant's current file) to `rendered`.
+
+    Raises ValueError when the existing file cannot be read as YAML: failing the update is
+    better than silently dropping someone's overrides. Empty blocks are not copied.
+    """
+    if not existing:
+        return rendered
+    try:
+        data = yaml.safe_load(existing) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"existing tenant file is not valid YAML, refusing to overwrite its overrides: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError("existing tenant file is not a YAML mapping, refusing to overwrite it")
+    kept = {k: data[k] for k in OVERRIDE_KEYS if data.get(k)}
+    if not kept:
+        return rendered
+    return rendered.rstrip("\n") + "\n" + _OVERRIDE_HEADER + yaml.safe_dump(kept, default_flow_style=False, sort_keys=False)
