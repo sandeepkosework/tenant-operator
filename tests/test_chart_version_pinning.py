@@ -201,10 +201,15 @@ def test_the_api_rejects_anything_that_is_not_a_release_tag(env, bad):
 @pytest.fixture
 def committed(env, monkeypatch):
     """Runs provisioner.update_tenant against fakes and returns the values files it committed."""
-    files = []
+    class Files(list):
+        on_disk = None
+    files = Files()
+    files_on_disk = files.on_disk = {}          # slug -> the file's current text, for the read of the existing file
     monkeypatch.setattr(provisioner.cluster_selector, "load_cluster_registry", lambda: [CLUSTER])
     monkeypatch.setattr(provisioner.git_service, "commit_tenant_manifest",
                         lambda slug, content, message, tenants_dir=None: files.append((slug, content, message)) or "sha1")
+    monkeypatch.setattr(provisioner.git_service, "read_tenant_manifest",
+                        lambda slug, tenants_dir=None: files_on_disk.get(slug))
     monkeypatch.setattr(provisioner, "_wait_for_argocd_and_k8s", lambda *a, **k: None)
     monkeypatch.setattr(provisioner, "_commit_tenant_info", lambda *a, **k: None)
     monkeypatch.setattr(provisioner.tenant_cr, "echo_cr_phase", lambda *a, **k: None)
@@ -238,3 +243,54 @@ def test_the_provisioner_also_refuses_an_unpinned_tenant(env, committed):
     assert committed == []                                                    # nothing was written to git
     assert _row(env, tid).helm_chart_version is None
     assert _row(env, tid).status == TenantStatus.RUNNING                      # and it was not left in UPDATING
+
+
+# ---- per-tenant overrides survive a re-render ---------------------------------------------
+
+HAND_EDITED = """argocdClusterServer: https://old
+chartVersion: v0.1.0
+tenant: {id: hbss-050, name: hbss-050, namespace: tenant-hbss-050, domain: hbss-050.qraie.ai}
+imageTags:
+  bridge: 9.9.9
+replicaOverrides:
+  qraie-ui: 0
+resourceOverrides:
+  bridge:
+    limits: {memory: 4Gi}
+"""
+
+
+def test_an_update_keeps_the_overrides_added_by_hand(env, committed):
+    tid = _make(env, "hbss-050", "v0.1.0")
+    committed.on_disk["hbss-050"] = HAND_EDITED
+    provisioner.update_tenant(tid, None, 7, None, None, None)
+    out = yaml.safe_load(committed[0][1])
+    assert out["imageTags"] == {"bridge": "9.9.9"}
+    assert out["replicaOverrides"] == {"qraie-ui": 0}                         # zero survives, it is not "empty"
+    assert out["resourceOverrides"] == {"bridge": {"limits": {"memory": "4Gi"}}}
+    assert out["argocdClusterServer"] == CLUSTER.argocd_cluster_server        # operator-owned keys still re-rendered
+    assert out["tenant"]["domain"] == "hbss-050.qraie.ai"
+
+
+def test_an_update_of_a_tenant_without_overrides_is_unchanged(env, committed):
+    tid = _make(env, "hbss-051", "v0.1.0")
+    committed.on_disk["hbss-051"] = "argocdClusterServer: https://old\nchartVersion: v0.1.0\n"
+    provisioner.update_tenant(tid, None, 7, None, None, None)
+    assert not any(k in yaml.safe_load(committed[0][1]) for k in helm_values.OVERRIDE_KEYS)
+
+
+def test_other_keys_in_the_old_file_are_not_copied():
+    out = helm_values.carry_over_overrides("a: 1\n", "a: 2\nsomethingElse: x\nimageTags: {bridge: '1'}\n")
+    assert yaml.safe_load(out) == {"a": 1, "imageTags": {"bridge": "1"}}
+
+
+def test_a_file_that_cannot_be_read_stops_the_update_instead_of_dropping_overrides(env, committed):
+    tid = _make(env, "hbss-052", "v0.1.0")
+    committed.on_disk["hbss-052"] = "imageTags: [unclosed\n"
+    provisioner.update_tenant(tid, None, 7, None, None, None)
+    assert committed == []                                                    # nothing was overwritten
+    assert _row(env, tid).status == TenantStatus.FAILED
+
+
+def test_a_brand_new_tenant_has_no_overrides_block():
+    assert helm_values.carry_over_overrides("a: 1\n", None) == "a: 1\n"

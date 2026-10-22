@@ -126,6 +126,23 @@ def commit_tenant_manifest(tenant_slug: str, content: str, message: str, tenants
             raise GitServiceError(f"git operation failed: {e}") from e
 
 
+def read_tenant_manifest(tenant_slug: str, tenants_dir: str = None) -> str | None:
+    """Return the current text of {tenants_dir}/{slug}.yaml from origin, or None if it does not exist.
+
+    Used to carry hand-written per-tenant overrides across a re-render (see
+    helm_values.carry_over_overrides). Takes the same lock as the writers, and
+    _get_repo() resets the clone to origin first, so this never reads a stale copy.
+    """
+    tenants_dir = tenants_dir or settings.git_tenants_dir
+    with _lock:
+        try:
+            repo = _get_repo()
+            file_path = _tenant_file_path(repo, tenant_slug, tenants_dir)
+            return file_path.read_text() if file_path.exists() else None
+        except GitCommandError as e:
+            raise GitServiceError(f"git operation failed: {e}") from e
+
+
 def delete_tenant_manifest(tenant_slug: str, message: str, tenants_dir: str = None) -> str:
     """Remove {tenants_dir}/{slug}.yaml and push. Returns the commit SHA (or current HEAD if already gone)."""
     tenants_dir = tenants_dir or settings.git_tenants_dir

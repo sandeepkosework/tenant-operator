@@ -466,6 +466,10 @@ def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int 
 
             logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
             values_yaml = _render_values_yaml(tenant, cluster)
+            # Keep any per-tenant overrides (image, tag, replicas, resources) that were added to the file by hand.
+            values_yaml = helm_values.carry_over_overrides(
+                values_yaml, git_service.read_tenant_manifest(tenant.slug, tenants_dir=_tenants_dir_for(tenant)),
+            )
 
             logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)
             commit_sha = git_service.commit_tenant_manifest(
