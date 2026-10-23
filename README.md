@@ -200,6 +200,12 @@ Key fields:
   file stay valid. Creating a tenant whose name equals an existing tenant's
   slug (e.g. a new `acme-2` while `acme` with sequence 2 exists) is rejected
   with a 400. `slug` is never used for anything customer-facing.
+- `cluster_seq` — which tenant this is **on its cluster**: 1 for the first tenant ever placed there, 2
+  for the next, and so on. It is given when the cluster is chosen, counts deleted tenants too (a number is
+  never reused), and is shown as `tenantSeq` in the tenant-info file and as `clusterSeq` in the API. Unlike
+  `tenant_seq` it is not part of the slug, so it changes no namespace or path. The column is added at
+  startup, and tenants that already exist are numbered in creation order, per cluster. The info file in
+  git is rewritten the next time the tenant's status changes (archive, restore, update, delete).
 - `helm_chart_version` — the **released chart version** this tenant is pinned to: a tag like
   `v0.1.0` of the chart repository. It is set from `HELM_CHART_VERSION` when the tenant is
   created, written into the tenant's values file as `chartVersion`, and read by the

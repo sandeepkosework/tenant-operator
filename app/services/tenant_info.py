@@ -31,7 +31,9 @@ def _iso(dt) -> str | None:
 def render_tenant_info_yaml(tenant: Tenant, cluster: ClusterInfo) -> str:
     data = {
         "tenantId": tenant.slug,
-        "tenantSeq": tenant.tenant_seq,
+        # Which tenant this is on its cluster (see Tenant.cluster_seq); an old tenant that somehow has
+        # none yet shows its original creation number instead.
+        "tenantSeq": tenant.cluster_seq if tenant.cluster_seq is not None else tenant.tenant_seq,
         "tenantName": tenant.tenant_name,
         "displayName": tenant.display_name,
         "email": tenant.email,
