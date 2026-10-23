@@ -46,7 +46,7 @@
   .alert{background:var(--bad-soft);color:var(--bad);border:1px solid var(--bad);border-radius:10px;padding:10px 14px;margin-bottom:14px}
 
   /* summary tiles */
-  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+  .tiles{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:18px}
   .tile{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow);text-align:left;color:var(--text);position:relative;overflow:hidden}
   .tile:hover{border-color:var(--accent)} .tile.active{outline:2px solid var(--accent);outline-offset:-1px}
   .tile .n{font-size:28px;font-weight:700;line-height:1.1} .tile .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
@@ -177,6 +177,7 @@
       <button class="tile" data-filter="running"  style="--c:var(--ok)"><div class="n" id="nRun">0</div><div class="l">Running</div></button>
       <button class="tile" data-filter="progress" style="--c:var(--prog)"><div class="n" id="nProg">0</div><div class="l">In progress</div></button>
       <button class="tile" data-filter="failed"   style="--c:var(--bad)"><div class="n" id="nFail">0</div><div class="l">Failed</div></button>
+      <button class="tile" data-filter="archived" style="--c:var(--gray)"><div class="n" id="nArch">0</div><div class="l">Archived</div></button>
     </div>
 
     <div class="toolbar">
@@ -205,15 +206,17 @@
   <div class="dbody" id="dBody"></div>
   <div class="dfoot">
     <span class="muted small" id="dFootTxt"></span>
-    <button class="btn danger" id="dDelete">Delete tenant</button>
+    <button class="btn" id="dArchive">Archive</button>
+    <button class="btn primary" id="dRestore">Restore</button>
+    <button class="btn danger" id="dDelete">Delete permanently</button>
   </div>
 </aside>
 
 <dialog id="confirm">
-  <h3>Delete this tenant?</h3>
-  <p class="muted" style="margin:0 0 4px">This removes its manifest and namespace. Databases and secrets are not dropped. Type <b id="cName"></b> to confirm.</p>
+  <h3>Delete this tenant permanently?</h3>
+  <p class="muted" style="margin:0 0 4px">This removes its manifest and namespace, and its volumes with them. It cannot be restored afterwards. Databases and secrets are not dropped. Type <b id="cName"></b> to confirm.</p>
   <input id="cInput" autocomplete="off" aria-label="Type the tenant name to confirm">
-  <div class="dlgbtns"><button class="btn" id="cCancel">Cancel</button><button class="btn danger" id="cOk" disabled>Delete</button></div>
+  <div class="dlgbtns"><button class="btn" id="cCancel">Cancel</button><button class="btn danger" id="cOk" disabled>Delete permanently</button></div>
 </dialog>
 <div id="toasts"></div>
 
@@ -227,8 +230,10 @@ const S = { tenants: [], prog: {}, filter: "all", q: "", showDeleted: false, ope
 /* ---------- helpers ---------- */
 const h = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const GROUP = st => st === "RUNNING" ? "running" : st === "FAILED" ? "failed" : st === "DELETED" ? "deleted"
-  : st === "DELETING" ? "deleting" : "progress";
-const BADGE = { running: ["s-ok","Running"], failed: ["s-bad","Failed"], deleted: ["s-gray","Deleted"], deleting: ["s-warn","Deleting"], progress: ["s-prog","In progress"] };
+  : st === "ARCHIVED" ? "archived" : st === "DELETING" ? "deleting" : "progress";
+const BADGE = { running: ["s-ok","Running"], failed: ["s-bad","Failed"], deleted: ["s-gray","Deleted"], deleting: ["s-warn","Deleting"], progress: ["s-prog","In progress"], archived: ["s-gray","Archived"] };
+// What each tenant can be asked to do, by state. A running tenant is archived first; only an archived (or failed) one is deleted.
+const CAN = g => ({ archive: g === "running", restore: g === "archived", del: g === "archived" || g === "failed" });
 function timeAgo(iso){
   if(!iso) return "–"; const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
   if(s < 60) return Math.floor(s) + "s ago"; if(s < 3600) return Math.floor(s/60) + "m ago";
@@ -283,7 +288,9 @@ function visible(){
   });
 }
 function pct(t){ const p = S.prog[t.id], g = GROUP(t.status);
-  return ((g === "progress" || g === "failed") && p && p.hasDetail && p.percent != null) ? p.percent : t.progress; }
+  // The step detail is about creating a tenant; archiving and restoring use the status estimate.
+  const creating = g === "progress" && !["ARCHIVING", "RESTORING"].includes(t.status);
+  return ((creating || g === "failed") && p && p.hasDetail && p.percent != null) ? p.percent : t.progress; }
 function failedAt(t){ const s = S.prog[t.id]?.steps?.find(x => x.state === "failed"); return s ? s.label : ""; }
 
 function render(){
@@ -292,14 +299,15 @@ function render(){
   $("nRun").textContent = live.filter(t => GROUP(t.status) === "running").length;
   $("nProg").textContent = live.filter(t => GROUP(t.status) === "progress").length;
   $("nFail").textContent = live.filter(t => GROUP(t.status) === "failed").length;
+  $("nArch").textContent = live.filter(t => GROUP(t.status) === "archived").length;
   document.querySelectorAll(".tile").forEach(b => b.classList.toggle("active", b.dataset.filter === S.filter));
 
   const list = visible();
   $("empty").hidden = list.length > 0;
   $("rows").innerHTML = list.map(t => {
     const g = GROUP(t.status), [cls, txt] = BADGE[g], p = pct(t), cur = S.prog[t.id]?.currentStep?.label;
-    const color = g === "failed" ? "var(--bad)" : g === "running" ? "var(--ok)" : g === "deleting" ? "var(--warn)" : "var(--prog)";
-    const sub = g === "failed" ? (failedAt(t) ? "Failed at: " + failedAt(t) : "Failed — see details") : g === "progress" ? (cur || t.status.replaceAll("_"," ").toLowerCase()) : g === "running" ? "All services healthy" : txt;
+    const color = g === "failed" ? "var(--bad)" : g === "running" ? "var(--ok)" : g === "deleting" ? "var(--warn)" : g === "archived" ? "var(--gray)" : "var(--prog)";
+    const sub = g === "failed" ? (failedAt(t) ? "Failed at: " + failedAt(t) : "Failed — see details") : g === "progress" ? (cur || t.status.replaceAll("_"," ").toLowerCase()) : g === "running" ? "All services healthy" : g === "archived" ? "Stopped — data kept" : txt;
     return `<tr data-id="${h(t.id)}">
       <td><div class="tname">${h(t.displayName || t.tenantName)}</div><div class="muted small">${h(t.slug)}${t.domain ? " · " + h(t.domain) : ""}</div></td>
       <td class="hide-m"><div>${h(t.cluster || "–")}</div><div class="muted small mono">${h(t.namespace || "")}</div></td>
@@ -308,7 +316,9 @@ function render(){
         <div class="pline"><span title="${h(sub)}">${h(sub)}</span><span>${p}%</span></div></td>
       <td class="hide-m muted" title="${h(t.createdAt)}">${timeAgo(t.createdAt)}</td>
       <td class="actions"><button class="btn" data-act="open">Details</button>
-        <button class="btn ghost-danger" data-act="del" ${["deleting","deleted"].includes(g) ? "disabled" : ""}>Delete</button></td>
+        ${CAN(g).archive ? `<button class="btn" data-act="archive">Archive</button>` : ""}
+        ${CAN(g).restore ? `<button class="btn primary" data-act="restore">Restore</button>` : ""}
+        ${CAN(g).del ? `<button class="btn ghost-danger" data-act="del">${g === "archived" ? "Delete permanently" : "Delete"}</button>` : ""}</td>
     </tr>`;
   }).join("");
   if(S.open) renderDrawer();
@@ -317,7 +327,7 @@ function render(){
 $("rows").onclick = e => {
   const tr = e.target.closest("tr[data-id]"); if(!tr) return;
   const id = tr.dataset.id, act = e.target.closest("button")?.dataset.act;
-  if(act === "del") askDelete(id); else openDrawer(id);
+  if(act === "del") askDelete(id); else if(act === "archive") askArchive(id); else if(act === "restore") doRestore(id); else openDrawer(id);
 };
 document.querySelectorAll(".tile").forEach(b => b.onclick = () => { S.filter = (S.filter === b.dataset.filter ? "all" : b.dataset.filter); render(); });
 $("search").oninput = e => { S.q = e.target.value; render(); };
@@ -342,10 +352,12 @@ const ICON = { done: "✓", warn: "!", failed: "✕", skipped: "–", running: "
 function renderDrawer(){
   const t = S.tenants.find(x => x.id === S.open); if(!t) return;
   const g = GROUP(t.status), [cls, txt] = BADGE[g], p = S.openProg, pc = pct(t);
-  const color = g === "failed" ? "var(--bad)" : g === "running" ? "var(--ok)" : g === "deleting" ? "var(--warn)" : "var(--prog)";
+  const color = g === "failed" ? "var(--bad)" : g === "running" ? "var(--ok)" : g === "deleting" ? "var(--warn)" : g === "archived" ? "var(--gray)" : "var(--prog)";
   $("dTitle").innerHTML = `${h(t.displayName || t.tenantName)} <span class="badge ${cls} ${g === "progress" ? "prog" : ""}" style="vertical-align:middle;margin-left:6px"><i></i>${txt}</span>`;
   $("dSub").textContent = `${t.slug}${t.domain ? " · " + t.domain : ""}`;
-  $("dDelete").disabled = ["deleting","deleted"].includes(g);
+  $("dArchive").hidden = !CAN(g).archive;
+  $("dRestore").hidden = !CAN(g).restore;
+  $("dDelete").hidden = !CAN(g).del;
 
   let html = `<div class="bigbar"><div class="pbar ${g === "progress" ? "running" : ""}"><div style="width:${pc}%;--c:${color}"></div></div>
     <div class="pline"><span>${h(g === "failed" ? (failedAt(t) ? "Failed at: " + failedAt(t) : "Failed") : (p?.currentStep?.label || (g === "running" ? "Complete" : t.status.toLowerCase())))}</span><span>${pc}%</span></div></div>`;
@@ -376,6 +388,24 @@ function renderDrawer(){
 }
 $("dBody").onclick = e => { const b = e.target.closest("[data-copy]"); if(b){ navigator.clipboard?.writeText(b.dataset.copy).then(() => toast("Copied"), () => {}); } };
 $("dDelete").onclick = () => S.open && askDelete(S.open);
+$("dArchive").onclick = () => S.open && askArchive(S.open);
+$("dRestore").onclick = () => S.open && doRestore(S.open);
+
+/* ---------- archive / restore ---------- */
+async function lifecycle(id, action, okMsg, failMsg){
+  try {
+    const r = await api(`/tenant/${id}/${action}`, {method: "POST"});
+    if(!r.ok){ toast((await r.json().catch(() => ({}))).detail || failMsg, true); }
+    else { toast(okMsg); }
+  } catch (e) { if(e.message !== "session expired") toast(failMsg + ": " + e.message, true); }
+  refresh();
+}
+function askArchive(id){
+  const t = S.tenants.find(x => x.id === id); if(!t) return;
+  if(confirm(`Archive ${t.slug}?\n\nAll its services stop and its ingress is removed. Its data, databases and secrets are kept, and you can restore it at any time.`))
+    lifecycle(id, "archive", "Archiving started", "Archive failed");
+}
+function doRestore(id){ lifecycle(id, "restore", "Restore started", "Restore failed"); }
 
 /* ---------- delete ---------- */
 let delId = null;

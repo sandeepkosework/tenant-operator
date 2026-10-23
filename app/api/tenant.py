@@ -14,7 +14,7 @@ from app.models.schemas import (
     TenantResponse,
     TenantUpdateRequest,
 )
-from app.services import helm_values, preflight, progress, provisioner, purge_service, vault_service
+from app.services import chart_versions, helm_values, preflight, progress, provisioner, purge_service, vault_service
 from app.services.validation import ValidationError, validate_create_request
 
 logger = logging.getLogger("tenant-operator.api.tenant")
@@ -33,9 +33,10 @@ settings = get_settings()
         "write Vault secrets, commit the per-tenant `values.yaml` to the GitOps repo, let Argo CD sync it, "
         "then seed the tenant database.\n\n"
         "Poll `GET /tenant/{id}` (or subscribe on Socket.IO) to follow progress.\n\n"
+        "`chartVersion` is optional: omit it for the newest chart release, or name an older tag (like `v0.1.0`) to stay on it.\n\n"
         "`password` is the tenant admin's initial password; it is used in memory only and never stored."
     ),
-    responses={400: {"description": "Validation failed (bad name, duplicate active tenant, unknown service, ...)"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
+    responses={400: {"description": "Validation failed (bad name, duplicate active tenant, unknown service, unknown chartVersion, ...)"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
 )
 def create_tenant(
     req: TenantCreateRequest,
@@ -64,6 +65,11 @@ def create_tenant(
                    + "; ".join(unverified),
         )
 
+    try:
+        chart_version = chart_versions.resolve_for_create(req.chartVersion)
+    except chart_versions.ChartVersionError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
     # No sequence number is allocated any more: tenant_seq stays NULL, so the
     # tenant's slug (namespace, Vault path, git file, ...) is just its bare name.
     # Name collisions with older, sequence-suffixed tenants are rejected in
@@ -81,6 +87,9 @@ def create_tenant(
         disabled_services=helm_values.compute_disabled_services(req.services, req.onlyListedServices),
         application=settings.default_application,
         version=settings.default_version,
+        # Pinned for the tenant's whole life: this is the chart release it is created on, and
+        # it only changes through an update that passes a new chartVersion.
+        helm_chart_version=chart_version,
         users=req.users,
         database_size=req.database.size,
         status=TenantStatus.PENDING,
@@ -223,7 +232,7 @@ def list_tenants(
     "/{tenant_id}",
     response_model=TenantResponse,
     summary="Update a tenant",
-    description="Change version, user count, database size or the enabled-service selection. Only allowed while the tenant is `RUNNING` or `FAILED`. Returns the current record immediately; the change is applied in the background (status goes to `UPDATING`).",
+    description="Change version, user count, database size, the enabled-service selection or the chart release (`chartVersion`, a tag like `v0.1.1`). Only allowed while the tenant is `RUNNING` or `FAILED`. A tenant keeps the chart release it was created on until an update passes a new `chartVersion`. Returns the current record immediately; the change is applied in the background (status goes to `UPDATING`).",
     responses={404: {"description": "Tenant not found"}, 409: {"description": "Tenant is not RUNNING/FAILED"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
 )
 def update_tenant(
@@ -240,6 +249,20 @@ def update_tenant(
             status_code=409,
             detail=f"tenant is currently {tenant.status}; updates are only allowed once RUNNING or FAILED",
         )
+    if tenant.helm_chart_version is None and req.chartVersion is None:
+        # An update re-renders the tenant's values file from our record. With no pinned chart
+        # version the file would carry none, and the tenant would move onto whatever chart the
+        # ApplicationSet falls back to. Make the caller choose the version explicitly.
+        raise HTTPException(
+            status_code=409,
+            detail="this tenant has no pinned chart version, so an update could move it onto a different "
+                   "chart. Pin it first by sending chartVersion (the release it is running now) in this request.",
+        )
+    if req.chartVersion:
+        try:
+            chart_versions.check_exists(req.chartVersion)
+        except chart_versions.ChartVersionError as e:
+            raise HTTPException(status_code=e.status_code, detail=str(e))
     new_disabled_services = None
     if req.services is not None:
         new_disabled_services = helm_values.compute_disabled_services(req.services, req.onlyListedServices)
@@ -251,6 +274,7 @@ def update_tenant(
         req.users,
         req.database.size if req.database else None,
         new_disabled_services,
+        req.chartVersion,
     )
     return tenant
 
@@ -262,13 +286,66 @@ def _purge_http_error(e: purge_service.PurgeNotAllowed) -> HTTPException:
     return HTTPException(status_code=_PURGE_STATUS.get(e.code, 400), detail=e.message)
 
 
+@router.post(
+    "/{tenant_id}/archive",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Archive a tenant",
+    description=(
+        "Stops the tenant without deleting anything: every service is scaled to zero and the ingress is removed, "
+        "while the namespace, volumes, SQL and Mongo databases, Vault secrets and registry entries are kept. "
+        "Status goes to `ARCHIVING`, then `ARCHIVED`. Undo it with `POST /tenant/{id}/restore`. Only a `RUNNING` "
+        "tenant on a chart release that supports archiving (`ARCHIVE_MIN_CHART_VERSION` or later) can be archived."
+    ),
+    responses={404: {"description": "Tenant not found"}, 409: {"description": "Tenant is not RUNNING, or its chart release is too old"},
+               401: {"description": "Missing/invalid token or API key"}},
+)
+def archive_tenant(tenant_id: uuid.UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    if tenant.status != TenantStatus.RUNNING:
+        raise HTTPException(status_code=409, detail=f"tenant is currently {tenant.status}; only a RUNNING tenant can be archived")
+    if not helm_values.supports_archive(tenant.helm_chart_version, settings.archive_min_chart_version):
+        raise HTTPException(
+            status_code=409,
+            detail=f"this tenant is on chart {tenant.helm_chart_version or '(not pinned)'}, which does not support archiving "
+                   f"(needs {settings.archive_min_chart_version} or later). Update it with PUT /tenant/{{id}} and a newer "
+                   "chartVersion first; archiving it now would report success while its pods kept running.",
+        )
+    background_tasks.add_task(provisioner.archive_tenant, tenant.id)
+    return {"tenantId": tenant.id, "status": "ARCHIVING"}
+
+
+@router.post(
+    "/{tenant_id}/restore",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Restore an archived tenant",
+    description=(
+        "Brings an `ARCHIVED` tenant back: its values file is committed without `archived`, Argo CD starts the "
+        "services again and the status goes to `RESTORING`, then `RUNNING`. Its data was never touched, so nothing "
+        "is re-seeded."
+    ),
+    responses={404: {"description": "Tenant not found"}, 409: {"description": "Tenant is not ARCHIVED"},
+               401: {"description": "Missing/invalid token or API key"}},
+)
+def restore_tenant(tenant_id: uuid.UUID, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    if tenant.status != TenantStatus.ARCHIVED:
+        raise HTTPException(status_code=409, detail=f"tenant is currently {tenant.status}; only an ARCHIVED tenant can be restored")
+    background_tasks.add_task(provisioner.restore_tenant, tenant.id)
+    return {"tenantId": tenant.id, "status": "RESTORING"}
+
+
 @router.delete(
     "/{tenant_id}",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Delete a tenant",
     description=(
         "Starts teardown in the background: removes the tenant's manifest from git, lets Argo CD prune it and deletes the namespace. "
-        "Status goes to `DELETING`, then `DELETED` (the row is soft-deleted). **Destructive.**\n\n"
+        "Status goes to `DELETING`, then `DELETED` (the row is soft-deleted). **Destructive.** "
+        "A `RUNNING` tenant must be archived first (`POST /tenant/{id}/archive`); pass `force=true` to skip that.\n\n"
         "By default the tenant's data is kept: the SQL database and login, the Mongo databases, the Vault secrets and the onboarding-server record "
         "stay in place, and creating a tenant with the same name is refused until they are removed.\n\n"
         "`purge=true` removes that data too, once the tenant is `DELETED`. It is off unless the operator has `PURGE_ENABLED=true`, only works "
@@ -279,13 +356,14 @@ def _purge_http_error(e: purge_service.PurgeNotAllowed) -> HTTPException:
         400: {"description": "`confirm` does not match the tenant name"},
         403: {"description": "`purge=true` but purging is disabled, or not allowed for this tenant's environment"},
         404: {"description": "Tenant not found"},
-        409: {"description": "Deletion already in progress"},
+        409: {"description": "Deletion already in progress, the tenant is mid archive/restore, or it is RUNNING and was not archived"},
         **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}},
     },
 )
 def delete_tenant(
     tenant_id: uuid.UUID,
     background_tasks: BackgroundTasks,
+    force: bool = Query(False, description="Delete a RUNNING tenant directly instead of archiving it first"),
     purge: bool = Query(False, description="Also remove the tenant's SQL database/login, Mongo databases, Vault secrets and onboarding record"),
     confirm: str | None = Query(None, description="Required with purge=true: must equal the tenant name"),
     db: Session = Depends(get_db),
@@ -295,6 +373,14 @@ def delete_tenant(
         raise HTTPException(status_code=404, detail="tenant not found")
     if tenant.status == TenantStatus.DELETING:
         raise HTTPException(status_code=409, detail="deletion already in progress")
+    if tenant.status in (TenantStatus.ARCHIVING, TenantStatus.RESTORING):
+        raise HTTPException(status_code=409, detail=f"tenant is currently {tenant.status}; wait for it to finish")
+    if tenant.status == TenantStatus.RUNNING and not force:
+        raise HTTPException(
+            status_code=409,
+            detail="this tenant is RUNNING. Archive it first (POST /tenant/{id}/archive), then delete the archived "
+                   "tenant; or pass force=true to delete it directly.",
+        )
     if purge:
         # Refuse before anything is deleted, so a rejected purge leaves the tenant untouched.
         try:

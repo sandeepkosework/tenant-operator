@@ -130,6 +130,23 @@ def is_fully_ready(cluster_context: str, namespace: str, instance_label: str) ->
     )
 
 
+def all_scaled_down(cluster_context: str, namespace: str, instance_label: str) -> bool:
+    """True when every Deployment the chart created for this tenant (label
+    app.kubernetes.io/instance=<release>) has been scaled to zero and has no replica left. Only the
+    chart's own Deployments are looked at, so pods something else runs in the namespace (the ereps
+    erep-server starts, which are left running on purpose) never count."""
+    if not namespace_exists(cluster_context, namespace):
+        return False
+    apps_v1 = client.AppsV1Api(_get_api_client(cluster_context))
+    try:
+        deployments = apps_v1.list_namespaced_deployment(
+            namespace, label_selector=f"app.kubernetes.io/instance={instance_label}",
+        ).items
+    except ApiException as e:
+        raise KubernetesServiceError(f"deployment check failed: {e}") from e
+    return all((d.spec.replicas or 0) == 0 and (d.status.replicas or 0) == 0 for d in deployments)
+
+
 def namespace_fully_deleted(cluster_context: str, namespace: str) -> bool:
     return not namespace_exists(cluster_context, namespace)
 

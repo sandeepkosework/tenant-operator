@@ -17,6 +17,12 @@ class TenantStatus(str, enum.Enum):
     DELETING = "DELETING"
     DELETED = "DELETED"
     FAILED = "FAILED"
+    # Archive = every service scaled to zero and the ingress removed, with the namespace, volumes,
+    # databases, Vault secrets and registry entries all kept, so RESTORING brings the tenant back
+    # exactly as it was. The only way to a permanent delete runs through ARCHIVED.
+    ARCHIVING = "ARCHIVING"
+    ARCHIVED = "ARCHIVED"
+    RESTORING = "RESTORING"
 
 
 # Rough progress heuristic for a loading bar -- not meant to be precise
@@ -34,11 +40,14 @@ STATUS_PROGRESS: dict[TenantStatus, int] = {
     TenantStatus.DELETING: 50,
     TenantStatus.DELETED: 100,
     TenantStatus.FAILED: 100,
+    TenantStatus.ARCHIVING: 50,
+    TenantStatus.ARCHIVED: 100,
+    TenantStatus.RESTORING: 50,
 }
 
 # Closes the onboarding push subscription (status_bus.py) once the tenant
 # reaches one of these.
-TERMINAL_STATUSES = {TenantStatus.RUNNING, TenantStatus.FAILED, TenantStatus.DELETED}
+TERMINAL_STATUSES = {TenantStatus.RUNNING, TenantStatus.FAILED, TenantStatus.DELETED, TenantStatus.ARCHIVED}
 
 
 class Tenant(Base):
@@ -116,12 +125,24 @@ class Tenant(Base):
     error_message = Column(Text, nullable=True)
 
     git_commit = Column(String(64), nullable=True)
+    # The released chart version (a git tag of the chart repository, "vMAJOR.MINOR.PATCH")
+    # this tenant is PINNED to. Set from settings.helm_chart_version when the tenant is
+    # created, written into its values file as `chartVersion` (the ApplicationSet uses it
+    # as the chart's targetRevision), and changed only by an update that passes a new
+    # chartVersion -- never by a change to the default. NULL means the tenant predates
+    # pinning and has not been pinned yet: updates are refused until it is (api/tenant.py),
+    # because re-rendering its file with no version would move it onto whatever chart the
+    # ApplicationSet falls back to.
     helm_chart_version = Column(String(32), nullable=True)
 
     created_by = Column(String(128), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
+    # When the tenant was archived; NULL while it is not. Also what tells a re-render of its values
+    # file (update, restore) whether to write `archived: true`. Added to an existing database at
+    # startup by database.ensure_schema().
+    archived_at = Column(DateTime(timezone=True), nullable=True)
 
     @property
     def slug(self) -> str:

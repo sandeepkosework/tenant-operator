@@ -5,6 +5,25 @@
  *****************************************
  * {...tenantid...} => Actual TenantId
  *
+ * Schema aligned with Jira_Revamp_MicroSevice Database/mssql.js and
+ * Database/schema_dbeaver_init.sql (models + runtime DDL).
+ * NIU_* duplicate chat tables removed; to drop on existing DBs (after backup):
+ *   DROP TABLE IF EXISTS {...tenantid...}.dbo.NIU_CHAT_DIRECT_MESSAGES;
+ *   DROP TABLE IF EXISTS {...tenantid...}.dbo.NIU_CHAT_ROOM_USERS;
+ *   DROP TABLE IF EXISTS {...tenantid...}.dbo.NIU_CHAT_USERS;
+ *   DROP TABLE IF EXISTS {...tenantid...}.dbo.NIU_CHAT_ROOMS;
+ *   DROP TABLE IF EXISTS {...tenantid...}.dbo.NIU_CHAT_MESSAGES;
+ *
+ * DEVICE_TOKENS legacy artifacts removed (updated_at is now set by the model,
+ * and all DB access goes through Sequelize). To drop on existing DBs that ran
+ * the old create_device_tokens_table.sql migration:
+ *   IF EXISTS (SELECT 1 FROM sys.triggers WHERE name = 'TR_DeviceTokens_UpdateTimestamp') DROP TRIGGER TR_DeviceTokens_UpdateTimestamp;
+ *   IF EXISTS (SELECT 1 FROM sys.objects WHERE name = 'sp_RegisterDeviceToken' AND type = 'P') DROP PROCEDURE sp_RegisterDeviceToken;
+ *   IF EXISTS (SELECT 1 FROM sys.objects WHERE name = 'sp_UnregisterDeviceToken' AND type = 'P') DROP PROCEDURE sp_UnregisterDeviceToken;
+ *   IF EXISTS (SELECT 1 FROM sys.objects WHERE name = 'sp_GetMemberDeviceTokens' AND type = 'P') DROP PROCEDURE sp_GetMemberDeviceTokens;
+ *   IF EXISTS (SELECT 1 FROM sys.objects WHERE name = 'sp_GetDeviceTokensForMembers' AND type = 'P') DROP PROCEDURE sp_GetDeviceTokensForMembers;
+ *   IF EXISTS (SELECT 1 FROM sys.objects WHERE name = 'sp_CleanupInactiveDeviceTokens' AND type = 'P') DROP PROCEDURE sp_CleanupInactiveDeviceTokens;
+ *
 */
 
 -- Create database if it doesn't exist
@@ -172,71 +191,6 @@ CREATE TABLE {...tenantid...}.dbo.MODULE_LOOKUP (
 );
 
 
--- {...tenantid...}.dbo.NIU_CHAT_MESSAGES definition
-
--- Drop table
-
--- DROP TABLE {...tenantid...}.dbo.NIU_CHAT_MESSAGES;
-
-CREATE TABLE {...tenantid...}.dbo.NIU_CHAT_MESSAGES (
-        id bigint NOT NULL,
-        content nvarchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        [timestamp] datetime NOT NULL,
-        fromUserName nvarchar(100) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        fromFullName nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
-        roomName nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        avatar nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
-        CONSTRAINT PK__ChatMess__3213E83F004367F6 PRIMARY KEY (id)
-);
-
-
--- {...tenantid...}.dbo.NIU_CHAT_ROOMS definition
-
--- Drop table
-
--- DROP TABLE {...tenantid...}.dbo.NIU_CHAT_ROOMS;
-
-CREATE TABLE {...tenantid...}.dbo.NIU_CHAT_ROOMS (
-        id bigint NOT NULL,
-        name nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        admin nvarchar(100) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        createdAt datetime DEFAULT getdate() NULL,
-        CONSTRAINT PK__ChatRoom__3213E83F261CD8AE PRIMARY KEY (id),
-        CONSTRAINT UQ__ChatRoom__72E12F1BECF48FB0 UNIQUE (name)
-);
-
-
--- {...tenantid...}.dbo.NIU_CHAT_ROOM_USERS definition
-
--- Drop table
-
--- DROP TABLE {...tenantid...}.dbo.NIU_CHAT_ROOM_USERS;
-
-CREATE TABLE {...tenantid...}.dbo.NIU_CHAT_ROOM_USERS (
-        roomName nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        userName nvarchar(100) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        joinedAt datetime DEFAULT getdate() NULL,
-        CONSTRAINT PK__ChatRoom__2EA1B8B961513C74 PRIMARY KEY (roomName,userName)
-);
-
-
--- {...tenantid...}.dbo.NIU_CHAT_USERS definition
-
--- Drop table
-
--- DROP TABLE {...tenantid...}.dbo.NIU_CHAT_USERS;
-
-CREATE TABLE {...tenantid...}.dbo.NIU_CHAT_USERS (
-        id nvarchar(50) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        userName nvarchar(100) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        fullName nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
-        avatar nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
-        device nvarchar(50) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
-        lastSeen datetime DEFAULT getdate() NULL,
-        CONSTRAINT PK__ChatUser__3213E83FB45C4EB5 PRIMARY KEY (id)
-);
-
-
 -- {...tenantid...}.dbo.system_api_accesstokens definition
 
 -- Drop table
@@ -260,6 +214,37 @@ CREATE TABLE {...tenantid...}.dbo.system_api_accesstokens (
 );
 
 
+-- {...tenantid...}.dbo.ASK_STATUS_LOOKUP definition (before ASK — status FK)
+
+-- DROP TABLE {...tenantid...}.dbo.ASK_STATUS_LOOKUP;
+
+CREATE TABLE {...tenantid...}.dbo.ASK_STATUS_LOOKUP (
+        status_id int IDENTITY(1,1) NOT NULL,
+        status_name nvarchar(200) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        description nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        is_default bit NOT NULL DEFAULT 0,
+        sort_order int NOT NULL DEFAULT 0,
+        category_id nvarchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        is_active bit NOT NULL DEFAULT 1,
+        CONSTRAINT PK_ASK_STATUS_LOOKUP PRIMARY KEY (status_id),
+        CONSTRAINT UQ_AskStatusLookup_StatusName UNIQUE (status_name)
+);
+ CREATE NONCLUSTERED INDEX IX_AskStatusLookup_SortOrder ON dbo.ASK_STATUS_LOOKUP (  sort_order ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+ CREATE NONCLUSTERED INDEX IX_AskStatusLookup_IsActive ON dbo.ASK_STATUS_LOOKUP (  is_active ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+
+INSERT INTO {...tenantid...}.dbo.ASK_STATUS_LOOKUP (status_name, description, is_default, sort_order)
+VALUES
+        (N'open', N'Newly created ticket', 1, 1),
+        (N'in-progress', N'Ticket is being worked on', 0, 2),
+        (N'resolved', N'Ticket has been resolved', 0, 3),
+        (N'closed', N'Ticket is closed', 0, 4),
+        (N'reopened', N'Ticket was reopened', 0, 5);
+
+
 -- {...tenantid...}.dbo.ASK definition
 
 -- Drop table
@@ -271,23 +256,37 @@ CREATE TABLE {...tenantid...}.dbo.ASK (
         tenant_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
         summary nvarchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
         reporter nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        authorized_closer nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
         escalation_level int NULL,
         module nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
         description_detail nvarchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
         ETA datetime NULL,
         project_name nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
-        status nvarchar(20) COLLATE SQL_Latin1_General_CP1_CI_AS DEFAULT 'open' NULL,
-        priority nvarchar(20) COLLATE SQL_Latin1_General_CP1_CI_AS DEFAULT 'low' NULL,
+        status nvarchar(200) COLLATE SQL_Latin1_General_CP1_CI_AS DEFAULT N'open' NULL,
+        priority nvarchar(20) COLLATE SQL_Latin1_General_CP1_CI_AS DEFAULT N'low' NULL,
         created_by nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
         created_at datetime DEFAULT getdate() NULL,
         modified_by nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
         modified_at datetime DEFAULT getdate() NULL,
         issue_type_id int NULL,
+        issue_category_id int NULL,
+        priority_rank int NULL DEFAULT 0,
         CONSTRAINT PK_Ask PRIMARY KEY (ask_id,tenant_id)
 );
 ALTER TABLE {...tenantid...}.dbo.ASK WITH NOCHECK ADD CONSTRAINT CK__ASK__escalation___67DE6983 CHECK (([escalation_level]>=(0) AND [escalation_level]<=(5)));
-ALTER TABLE {...tenantid...}.dbo.ASK WITH NOCHECK ADD CONSTRAINT CK__ASK__status__68D28DBC CHECK (([status]='closed' OR [status]='resolved' OR [status]='in-progress' OR [status]='open'));
 ALTER TABLE {...tenantid...}.dbo.ASK WITH NOCHECK ADD CONSTRAINT CK__ASK__priority__6ABAD62E CHECK (([priority]='blocker' OR [priority]='critical' OR [priority]='high' OR [priority]='medium' OR [priority]='low'));
+ALTER TABLE {...tenantid...}.dbo.ASK WITH NOCHECK ADD CONSTRAINT CK_ASK_priority_rank CHECK (([priority_rank] IS NULL OR ([priority_rank]>=(0) AND [priority_rank]<=(100))));
+ CREATE NONCLUSTERED INDEX IX_ASK_issue_category_id ON dbo.ASK (  issue_category_id ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+ CREATE NONCLUSTERED INDEX IX_ASK_priority_rank ON dbo.ASK (  priority_rank ASC  )
+         INCLUDE ( ask_id , tenant_id , status )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+ CREATE NONCLUSTERED INDEX IX_ASK_authorized_closer ON dbo.ASK (  authorized_closer ASC  )
+         INCLUDE ( ask_id , tenant_id , status )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
 
 
 -- {...tenantid...}.dbo.ASK_ATTACHMENT definition
@@ -741,6 +740,8 @@ CREATE TABLE {...tenantid...}.dbo.ISSUE_CATEGORY_LOOKUP (
         is_active bit DEFAULT 1 NOT NULL,
         sort_order int DEFAULT 0 NOT NULL,
         tenant_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        for_customer bit NOT NULL DEFAULT 1,
+        for_owner bit NOT NULL DEFAULT 1,
         CONSTRAINT PK__ISSUE_CA__D54EE9B4AEC7D8E7 PRIMARY KEY (category_id),
         CONSTRAINT UQ_ISSUE_CATEGORY_CODE UNIQUE (category_code)
 );
@@ -776,9 +777,26 @@ CREATE TABLE {...tenantid...}.dbo.ISSUE_TYPE_LOOKUP (
         issue_type_name nvarchar(100) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
         description nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
         category_id int NOT NULL,
-        CONSTRAINT PK__ISSUE_TY__4F07869BB122379F PRIMARY KEY (issue_type_id)
+        for_customer bit NOT NULL DEFAULT 1,
+        for_owner bit NOT NULL DEFAULT 1,
+        CONSTRAINT PK__ISSUE_TY__4F07869BB122379F PRIMARY KEY (issue_type_id),
+        CONSTRAINT UQ_ISSUE_TYPE_NAME UNIQUE (issue_type_name)
 );
  CREATE NONCLUSTERED INDEX IX_ISSUE_TYPE_CATEGORY_ID ON dbo.ISSUE_TYPE_LOOKUP (  category_id ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+
+
+-- {...tenantid...}.dbo.ISSUE_TYPE_CATEGORY definition (many-to-many issue type ↔ categories)
+
+-- DROP TABLE {...tenantid...}.dbo.ISSUE_TYPE_CATEGORY;
+
+CREATE TABLE {...tenantid...}.dbo.ISSUE_TYPE_CATEGORY (
+        issue_type_id int NOT NULL,
+        category_id int NOT NULL,
+        CONSTRAINT PK_ISSUE_TYPE_CATEGORY PRIMARY KEY (issue_type_id,category_id)
+);
+ CREATE NONCLUSTERED INDEX IX_ISSUE_TYPE_CATEGORY_category_id ON dbo.ISSUE_TYPE_CATEGORY (  category_id ASC  )
          WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
          ON [PRIMARY ] ;
 
@@ -836,12 +854,60 @@ CREATE TABLE {...tenantid...}.dbo.[MEMBER] (
         approved_by nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
         totp_secret nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS DEFAULT NULL NULL,
         Agent_details nvarchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        mobile_number nvarchar(20) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        profile_attachment_id int NULL,
+        designation nvarchar(100) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        total_active_time bigint NULL DEFAULT 0,
         CONSTRAINT PK__MEMBER__B29B8534EAD18723 PRIMARY KEY (member_id),
         CONSTRAINT UQ__MEMBER__AB6E6164A3379C31 UNIQUE (email),
         CONSTRAINT UQ__MEMBER__F3DBC57231FF59B9 UNIQUE (username)
 );
 ALTER TABLE {...tenantid...}.dbo.[MEMBER] WITH NOCHECK ADD CONSTRAINT CK__MEMBER__approval__0169315C CHECK (([approval_status]='rejected' OR [approval_status]='approved' OR [approval_status]='pending'));
 ALTER TABLE {...tenantid...}.dbo.[MEMBER] WITH NOCHECK ADD CONSTRAINT CK_MEMBER_EXTERNAL_USER CHECK (([EXTERNAL_USER]=case when upper([tenant_id])=upper('{...tenantid...}') then (0) else (1) end));
+
+GO
+
+/* Member id sequence (matches mssql.js — used for M… member_id generation) */
+IF NOT EXISTS (SELECT 1 FROM sys.sequences WHERE name = N'MemberSequence' AND schema_id = SCHEMA_ID(N'dbo'))
+BEGIN
+    DECLARE @maxMemberIdSeq int = 0;
+    IF EXISTS (SELECT 1 FROM dbo.[MEMBER])
+        SELECT @maxMemberIdSeq = ISNULL(MAX(TRY_CAST(SUBSTRING(member_id, 2, LEN(member_id) - 1) AS int)), 0)
+        FROM dbo.[MEMBER] WHERE member_id LIKE N'M%';
+    DECLARE @seqSql nvarchar(400) = N'CREATE SEQUENCE [dbo].[MemberSequence] AS int START WITH '
+        + CAST(@maxMemberIdSeq + 1 AS nvarchar(20)) + N' INCREMENT BY 1;';
+    EXEC sp_executesql @seqSql;
+END
+GO
+
+SET QUOTED_IDENTIFIER ON;
+
+-- {...tenantid...}.dbo.LOGIN_HISTORY definition
+
+-- DROP TABLE {...tenantid...}.dbo.LOGIN_HISTORY;
+
+CREATE TABLE {...tenantid...}.dbo.LOGIN_HISTORY (
+        session_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        member_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        login_time datetime NOT NULL DEFAULT getdate(),
+        logout_time datetime NULL,
+        session_duration_seconds bigint NULL,
+        ip_address nvarchar(50) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        user_agent nvarchar(500) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        device_info nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        created_at datetime DEFAULT getdate() NULL,
+        location nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        CONSTRAINT PK_LOGIN_HISTORY PRIMARY KEY (session_id)
+);
+ CREATE NONCLUSTERED INDEX IX_LoginHistory_MemberId ON dbo.LOGIN_HISTORY (  member_id ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+ CREATE NONCLUSTERED INDEX IX_LoginHistory_LoginTime ON dbo.LOGIN_HISTORY (  login_time ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+ CREATE NONCLUSTERED INDEX IX_LoginHistory_MemberIdLoginTime ON dbo.LOGIN_HISTORY (  member_id ASC  , login_time ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
 
 
 -- {...tenantid...}.dbo.MEMBER_USER_PERMISSION definition
@@ -900,60 +966,79 @@ CREATE TABLE {...tenantid...}.dbo.MESSAGE_ATTACHMENTS (
 ALTER TABLE {...tenantid...}.dbo.MESSAGE_ATTACHMENTS WITH NOCHECK ADD CONSTRAINT CHK_MessageAttachments_MessageType CHECK (([message_id] IS NOT NULL AND [channel_message_id] IS NULL OR [message_id] IS NULL AND [channel_message_id] IS NOT NULL));
 
 
--- {...tenantid...}.dbo.MESSAGE_READ_STATUS definition
+-- {...tenantid...}.dbo.MESSAGE_BOOKMARK definition
+-- Bookmarks (stars). Replaces the is_marked/marked_at columns from the
+-- retired MESSAGE_READ_STATUS table. Read state lives in channel_read_cursor /
+-- dm_read_cursor.
 
--- Drop table
+-- DROP TABLE {...tenantid...}.dbo.MESSAGE_BOOKMARK;
 
--- DROP TABLE {...tenantid...}.dbo.MESSAGE_READ_STATUS;
-
-CREATE TABLE {...tenantid...}.dbo.MESSAGE_READ_STATUS (
-        read_status_id int IDENTITY(1,1) NOT NULL,
+CREATE TABLE {...tenantid...}.dbo.MESSAGE_BOOKMARK (
+        bookmark_id int IDENTITY(1,1) NOT NULL,
         message_id int NULL,
         channel_message_id int NULL,
         member_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
         tenant_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        is_read bit DEFAULT 0 NULL,
-        read_at datetime NULL,
-        delivered_at datetime DEFAULT getdate() NULL,
         message_type nvarchar(20) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        CONSTRAINT PK__MESSAGE___568846CA67607208 PRIMARY KEY (read_status_id)
+        marked_at datetime NOT NULL DEFAULT getdate(),
+        CONSTRAINT PK_MESSAGE_BOOKMARK PRIMARY KEY (bookmark_id)
 );
- CREATE  UNIQUE NONCLUSTERED INDEX UQ_MessageReadStatus_Channel ON dbo.MESSAGE_READ_STATUS (  channel_message_id ASC  , member_id ASC  )
-         WHERE  ([channel_message_id] IS NOT NULL)
-         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
-         ON [PRIMARY ] ;
- CREATE  UNIQUE NONCLUSTERED INDEX UQ_MessageReadStatus_Direct ON dbo.MESSAGE_READ_STATUS (  message_id ASC  , member_id ASC  )
-         WHERE  ([message_id] IS NOT NULL)
-         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
-         ON [PRIMARY ] ;
- CREATE NONCLUSTERED INDEX idx_message_read_status_member ON dbo.MESSAGE_READ_STATUS (  member_id ASC  )
-         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
-         ON [PRIMARY ] ;
- CREATE NONCLUSTERED INDEX idx_message_read_status_tenant ON dbo.MESSAGE_READ_STATUS (  tenant_id ASC  )
-         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
-         ON [PRIMARY ] ;
- CREATE NONCLUSTERED INDEX idx_message_read_status_unread ON dbo.MESSAGE_READ_STATUS (  member_id ASC  , is_read ASC  , message_type ASC  )
-         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
-         ON [PRIMARY ] ;
-ALTER TABLE {...tenantid...}.dbo.MESSAGE_READ_STATUS WITH NOCHECK ADD CONSTRAINT CK__MESSAGE_R__messa__55808D7D CHECK (([message_type]='channel' OR [message_type]='direct'));
-ALTER TABLE {...tenantid...}.dbo.MESSAGE_READ_STATUS WITH NOCHECK ADD CONSTRAINT CHK_MessageReadStatus_MessageType CHECK (([message_id] IS NOT NULL AND [channel_message_id] IS NULL AND [message_type]='direct' OR [message_id] IS NULL AND [channel_message_id] IS NOT NULL AND [message_type]='channel'));
+ CREATE UNIQUE NONCLUSTERED INDEX UQ_MessageBookmark_Channel ON dbo.MESSAGE_BOOKMARK ( channel_message_id ASC , member_id ASC )
+         WHERE ([channel_message_id] IS NOT NULL)
+         WITH ( PAD_INDEX = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, STATISTICS_NORECOMPUTE = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON )
+         ON [PRIMARY] ;
+ CREATE UNIQUE NONCLUSTERED INDEX UQ_MessageBookmark_Direct ON dbo.MESSAGE_BOOKMARK ( message_id ASC , member_id ASC )
+         WHERE ([message_id] IS NOT NULL)
+         WITH ( PAD_INDEX = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, STATISTICS_NORECOMPUTE = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON )
+         ON [PRIMARY] ;
+ CREATE NONCLUSTERED INDEX idx_message_bookmark_member ON dbo.MESSAGE_BOOKMARK ( member_id ASC , message_type ASC )
+         WITH ( PAD_INDEX = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, STATISTICS_NORECOMPUTE = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON )
+         ON [PRIMARY] ;
+ CREATE NONCLUSTERED INDEX idx_message_bookmark_tenant ON dbo.MESSAGE_BOOKMARK ( tenant_id ASC )
+         WITH ( PAD_INDEX = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, STATISTICS_NORECOMPUTE = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON )
+         ON [PRIMARY] ;
+ALTER TABLE {...tenantid...}.dbo.MESSAGE_BOOKMARK WITH NOCHECK ADD CONSTRAINT CK_MessageBookmark_MessageType CHECK (([message_type]='channel' OR [message_type]='direct'));
+ALTER TABLE {...tenantid...}.dbo.MESSAGE_BOOKMARK WITH NOCHECK ADD CONSTRAINT CHK_MessageBookmark_MessageType CHECK (([message_id] IS NOT NULL AND [channel_message_id] IS NULL AND [message_type]='direct' OR [message_id] IS NULL AND [channel_message_id] IS NOT NULL AND [message_type]='channel'));
 
 
--- {...tenantid...}.dbo.NIU_CHAT_DIRECT_MESSAGES definition
+-- {...tenantid...}.dbo.channel_read_cursor definition
+-- Last-read watermark per (channel, member). Replaces is_read tracking from MESSAGE_READ_STATUS.
 
--- Drop table
+-- DROP TABLE {...tenantid...}.dbo.channel_read_cursor;
 
--- DROP TABLE {...tenantid...}.dbo.NIU_CHAT_DIRECT_MESSAGES;
-
-CREATE TABLE {...tenantid...}.dbo.NIU_CHAT_DIRECT_MESSAGES (
-        id bigint NOT NULL,
-        sender_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        receiver_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        content nvarchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
-        [timestamp] datetime DEFAULT getdate() NULL,
-        is_read bit DEFAULT 0 NULL,
-        CONSTRAINT PK__DirectMe__3213E83FBCEA7F06 PRIMARY KEY (id)
+CREATE TABLE {...tenantid...}.dbo.channel_read_cursor (
+        cursor_id int IDENTITY(1,1) NOT NULL,
+        channel_id int NOT NULL,
+        member_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        tenant_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        last_read_msg_id int NOT NULL,
+        last_read_at datetime NOT NULL DEFAULT getdate(),
+        CONSTRAINT PK_channel_read_cursor PRIMARY KEY (cursor_id),
+        CONSTRAINT uq_channel_cursor UNIQUE (channel_id, member_id, tenant_id)
 );
+ CREATE NONCLUSTERED INDEX ix_channel_cursor_lookup ON dbo.channel_read_cursor (  tenant_id ASC  , channel_id ASC  , member_id ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+
+
+-- {...tenantid...}.dbo.dm_read_cursor definition
+-- Last-read watermark per (member, partner). No dm_threads table — pair-keyed.
+
+-- DROP TABLE {...tenantid...}.dbo.dm_read_cursor;
+
+CREATE TABLE {...tenantid...}.dbo.dm_read_cursor (
+        cursor_id int IDENTITY(1,1) NOT NULL,
+        member_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        partner_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        tenant_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        last_read_msg_id int NOT NULL,
+        last_read_at datetime NOT NULL DEFAULT getdate(),
+        CONSTRAINT PK_dm_read_cursor PRIMARY KEY (cursor_id),
+        CONSTRAINT uq_dm_cursor UNIQUE (member_id, partner_id, tenant_id)
+);
+ CREATE NONCLUSTERED INDEX ix_dm_cursor_lookup ON dbo.dm_read_cursor (  tenant_id ASC  , member_id ASC  , partner_id ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
 
 
 -- {...tenantid...}.dbo.NOTIFICATIONS definition
@@ -997,7 +1082,31 @@ CREATE TABLE {...tenantid...}.dbo.NOTIFICATIONS (
  CREATE NONCLUSTERED INDEX idx_notifications_unread ON dbo.NOTIFICATIONS (  recipient_id ASC  , is_read ASC  , created_at ASC  )
          WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
          ON [PRIMARY ] ;
-ALTER TABLE {...tenantid...}.dbo.NOTIFICATIONS WITH NOCHECK ADD CONSTRAINT CK__NOTIFICAT__notif__4535171B CHECK (([notification_type]='reaction' OR [notification_type]='reply' OR [notification_type]='mention' OR [notification_type]='channel_message' OR [notification_type]='direct_message'));
+ALTER TABLE {...tenantid...}.dbo.NOTIFICATIONS WITH NOCHECK ADD CONSTRAINT CK__NOTIFICAT__notif__4535171B CHECK (([notification_type]='ticket_updated' OR [notification_type]='ticket_created' OR [notification_type]='alert' OR [notification_type]='reaction' OR [notification_type]='reply' OR [notification_type]='mention' OR [notification_type]='channel_message' OR [notification_type]='direct_message'));
+
+
+-- {...tenantid...}.dbo.MESSAGE_REACTIONS definition
+
+-- DROP TABLE {...tenantid...}.dbo.MESSAGE_REACTIONS;
+
+CREATE TABLE {...tenantid...}.dbo.MESSAGE_REACTIONS (
+        reaction_id int IDENTITY(1,1) NOT NULL,
+        message_id int NOT NULL,
+        message_type nvarchar(20) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        user_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        tenant_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        emoji nvarchar(50) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        created_at datetime DEFAULT getdate() NULL,
+        CONSTRAINT PK_MESSAGE_REACTIONS PRIMARY KEY (reaction_id),
+        CONSTRAINT UQ_user_message_reaction UNIQUE (message_id,message_type,user_id)
+);
+ALTER TABLE {...tenantid...}.dbo.MESSAGE_REACTIONS WITH NOCHECK ADD CONSTRAINT CK_MESSAGE_REACTIONS_type CHECK (([message_type]='channel' OR [message_type]='direct'));
+ CREATE NONCLUSTERED INDEX idx_reactions_message ON dbo.MESSAGE_REACTIONS (  message_id ASC  , message_type ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+ CREATE NONCLUSTERED INDEX idx_reactions_user ON dbo.MESSAGE_REACTIONS (  user_id ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
 
 
 -- {...tenantid...}.dbo.PERMISSION_LOOKUP definition
@@ -1018,7 +1127,8 @@ CREATE TABLE {...tenantid...}.dbo.PERMISSION_LOOKUP (
         modified_at datetime DEFAULT getdate() NULL,
         tenant_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
         permission_def_value nvarchar(1) COLLATE SQL_Latin1_General_CP1_CI_AS DEFAULT 'N' NULL,
-        CONSTRAINT PK__PERMISSI__E5331AFAE131E4D7 PRIMARY KEY (permission_id)
+        CONSTRAINT PK__PERMISSI__E5331AFAE131E4D7 PRIMARY KEY (permission_id),
+        CONSTRAINT UQ_PermissionLookup UNIQUE (tenant_id,category,permission_name)
 );
 
 
@@ -1197,6 +1307,71 @@ CREATE TABLE {...tenantid...}.dbo.TENANT (
 ALTER TABLE {...tenantid...}.dbo.TENANT WITH NOCHECK ADD CONSTRAINT CK__TENANT__status__7E02B4CC CHECK (([status]='INACTIVE' OR [status]='ACTIVE'));
 
 
+-- {...tenantid...}.dbo.PROFILE_ATTACHMENT definition
+
+-- DROP TABLE {...tenantid...}.dbo.PROFILE_ATTACHMENT;
+
+CREATE TABLE {...tenantid...}.dbo.PROFILE_ATTACHMENT (
+        attachment_id int IDENTITY(1,1) NOT NULL,
+        member_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        tenant_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        file_name nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        file_path nvarchar(500) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        file_type nvarchar(50) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        file_size int NOT NULL,
+        file_hash nvarchar(64) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        created_by nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        created_at datetime DEFAULT getdate() NULL,
+        modified_by nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        modified_at datetime DEFAULT getdate() NULL,
+        CONSTRAINT PK_PROFILE_ATTACHMENT PRIMARY KEY (attachment_id),
+        CONSTRAINT UQ_ProfileAttachment_Member UNIQUE (member_id)
+);
+ CREATE NONCLUSTERED INDEX IX_ProfileAttachment_TenantId ON dbo.PROFILE_ATTACHMENT (  tenant_id ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+
+
+-- {...tenantid...}.dbo.DEVICE_TOKENS definition (FCM push notifications)
+
+-- DROP TABLE {...tenantid...}.dbo.DEVICE_TOKENS;
+
+CREATE TABLE {...tenantid...}.dbo.DEVICE_TOKENS (
+        token_id int IDENTITY(1,1) NOT NULL,
+        member_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        tenant_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        device_token nvarchar(500) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+        device_type nvarchar(20) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL DEFAULT N'android',
+        device_name nvarchar(100) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        device_id nvarchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        app_version nvarchar(20) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        os_version nvarchar(50) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+        is_active bit DEFAULT 1 NULL,
+        created_at datetime DEFAULT getdate() NULL,
+        updated_at datetime DEFAULT getdate() NULL,
+        last_used_at datetime NULL,
+        CONSTRAINT PK_DEVICE_TOKENS PRIMARY KEY (token_id),
+        CONSTRAINT UQ_DeviceToken_Member UNIQUE (device_token,member_id)
+);
+ALTER TABLE {...tenantid...}.dbo.DEVICE_TOKENS WITH NOCHECK ADD CONSTRAINT CK_DEVICE_TOKENS_device_type CHECK (([device_type]='web' OR [device_type]='ios' OR [device_type]='android'));
+ CREATE NONCLUSTERED INDEX IX_DeviceTokens_MemberId ON dbo.DEVICE_TOKENS (  member_id ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+ CREATE NONCLUSTERED INDEX IX_DeviceTokens_TenantId ON dbo.DEVICE_TOKENS (  tenant_id ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+ CREATE NONCLUSTERED INDEX IX_DeviceTokens_Active ON dbo.DEVICE_TOKENS (  is_active ASC  )
+         WHERE  ([is_active]=(1))
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+ CREATE NONCLUSTERED INDEX IX_DeviceTokens_MemberTenant ON dbo.DEVICE_TOKENS (  member_id ASC  , tenant_id ASC  , is_active ASC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+ CREATE NONCLUSTERED INDEX IX_DeviceTokens_LastUsed ON dbo.DEVICE_TOKENS (  last_used_at DESC  )
+         WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+         ON [PRIMARY ] ;
+
+
 -- {...tenantid...}.dbo.USER_PREFERENCES definition
 
 -- Drop table
@@ -1269,6 +1444,24 @@ CREATE TABLE {...tenantid...}.dbo.USER_STATUS (
 ALTER TABLE {...tenantid...}.dbo.USER_STATUS WITH NOCHECK ADD CONSTRAINT CK_USER_STATUS_NOTE_LENGTH CHECK ((len([status_note])<=(100)));
 ALTER TABLE {...tenantid...}.dbo.USER_STATUS WITH NOCHECK ADD CONSTRAINT CK_USER_STATUS_EMOJI_LENGTH CHECK ((len([status_emoji])<=(10)));
 
+GO
+
+/* Active status templates (matches createStatusTables in mssql.js) */
+CREATE VIEW dbo.vw_ActiveStatusLookup AS
+SELECT
+    template_id,
+    template_key,
+    display_text,
+    emoji_unicode,
+    default_duration_minutes,
+    status_type,
+    sort_order,
+    tenant_id
+FROM dbo.STATUS_LOOKUP
+WHERE is_active = 1;
+GO
+
+SET QUOTED_IDENTIFIER ON;
 
 -- {...tenantid...}.dbo.ASK foreign keys
 
@@ -1277,6 +1470,9 @@ ALTER TABLE {...tenantid...}.dbo.ASK ADD CONSTRAINT FK_Ask_IssueType FOREIGN KEY
 ALTER TABLE {...tenantid...}.dbo.ASK ADD CONSTRAINT FK_Ask_ModifiedBy FOREIGN KEY (modified_by) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
 ALTER TABLE {...tenantid...}.dbo.ASK ADD CONSTRAINT FK_Ask_Reporter FOREIGN KEY (reporter) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
 ALTER TABLE {...tenantid...}.dbo.ASK ADD CONSTRAINT FK_Ask_Tenant FOREIGN KEY (tenant_id) REFERENCES {...tenantid...}.dbo.TENANT(tenant_id);
+ALTER TABLE {...tenantid...}.dbo.ASK ADD CONSTRAINT FK_Ask_AskStatusLookup FOREIGN KEY (status) REFERENCES {...tenantid...}.dbo.ASK_STATUS_LOOKUP(status_name);
+ALTER TABLE {...tenantid...}.dbo.ASK ADD CONSTRAINT FK_Ask_IssueCategoryLookup FOREIGN KEY (issue_category_id) REFERENCES {...tenantid...}.dbo.ISSUE_CATEGORY_LOOKUP(category_id);
+ALTER TABLE {...tenantid...}.dbo.ASK ADD CONSTRAINT FK_Ask_AuthorizedCloser FOREIGN KEY (authorized_closer) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
 
 
 -- {...tenantid...}.dbo.ASK_ATTACHMENT foreign keys
@@ -1392,6 +1588,12 @@ ALTER TABLE {...tenantid...}.dbo.ISSUE_CATEGORY_LOOKUP ADD CONSTRAINT FK_ISSUE_C
 ALTER TABLE {...tenantid...}.dbo.ISSUE_TYPE_LOOKUP ADD CONSTRAINT FK_IssueType_Category FOREIGN KEY (category_id) REFERENCES {...tenantid...}.dbo.ISSUE_CATEGORY_LOOKUP(category_id);
 
 
+-- {...tenantid...}.dbo.ISSUE_TYPE_CATEGORY foreign keys
+
+ALTER TABLE {...tenantid...}.dbo.ISSUE_TYPE_CATEGORY ADD CONSTRAINT FK_ITC_IssueType FOREIGN KEY (issue_type_id) REFERENCES {...tenantid...}.dbo.ISSUE_TYPE_LOOKUP(issue_type_id) ON DELETE CASCADE;
+ALTER TABLE {...tenantid...}.dbo.ISSUE_TYPE_CATEGORY ADD CONSTRAINT FK_ITC_Category FOREIGN KEY (category_id) REFERENCES {...tenantid...}.dbo.ISSUE_CATEGORY_LOOKUP(category_id);
+
+
 -- {...tenantid...}.dbo.JOB foreign keys
 
 ALTER TABLE {...tenantid...}.dbo.JOB ADD CONSTRAINT FK_Job_CreatedBy FOREIGN KEY (created_by) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
@@ -1405,6 +1607,7 @@ ALTER TABLE {...tenantid...}.dbo.JOB ADD CONSTRAINT FK_Job_User FOREIGN KEY (use
 ALTER TABLE {...tenantid...}.dbo.[MEMBER] ADD CONSTRAINT FK_Member_ApprovedBy FOREIGN KEY (approved_by) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
 ALTER TABLE {...tenantid...}.dbo.[MEMBER] ADD CONSTRAINT FK_Member_ManagementRole FOREIGN KEY (management_role) REFERENCES {...tenantid...}.dbo.MANAGEMENT_ROLES_LOOKUP(lead_type_code);
 ALTER TABLE {...tenantid...}.dbo.[MEMBER] ADD CONSTRAINT FK_Member_Tenant FOREIGN KEY (tenant_id) REFERENCES {...tenantid...}.dbo.TENANT(tenant_id);
+ALTER TABLE {...tenantid...}.dbo.[MEMBER] ADD CONSTRAINT FK_Member_ProfileAttachment FOREIGN KEY (profile_attachment_id) REFERENCES {...tenantid...}.dbo.PROFILE_ATTACHMENT(attachment_id);
 
 
 -- {...tenantid...}.dbo.MEMBER_USER_PERMISSION foreign keys
@@ -1421,18 +1624,46 @@ ALTER TABLE {...tenantid...}.dbo.MESSAGE_ATTACHMENTS ADD CONSTRAINT FK_MessageAt
 ALTER TABLE {...tenantid...}.dbo.MESSAGE_ATTACHMENTS ADD CONSTRAINT FK_MessageAttachments_UploadedBy FOREIGN KEY (uploaded_by) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
 
 
--- {...tenantid...}.dbo.MESSAGE_READ_STATUS foreign keys
+-- {...tenantid...}.dbo.MESSAGE_BOOKMARK foreign keys
 
-ALTER TABLE {...tenantid...}.dbo.MESSAGE_READ_STATUS ADD CONSTRAINT FK_MessageReadStatus_ChannelMessage FOREIGN KEY (channel_message_id) REFERENCES {...tenantid...}.dbo.CHANNEL_MESSAGES(message_id) ON DELETE CASCADE;
-ALTER TABLE {...tenantid...}.dbo.MESSAGE_READ_STATUS ADD CONSTRAINT FK_MessageReadStatus_DirectMessage FOREIGN KEY (message_id) REFERENCES {...tenantid...}.dbo.DIRECT_MESSAGES(message_id) ON DELETE CASCADE;
-ALTER TABLE {...tenantid...}.dbo.MESSAGE_READ_STATUS ADD CONSTRAINT FK_MessageReadStatus_Member FOREIGN KEY (member_id) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
-ALTER TABLE {...tenantid...}.dbo.MESSAGE_READ_STATUS ADD CONSTRAINT FK_MessageReadStatus_Tenant FOREIGN KEY (tenant_id) REFERENCES {...tenantid...}.dbo.TENANT(tenant_id);
+ALTER TABLE {...tenantid...}.dbo.MESSAGE_BOOKMARK ADD CONSTRAINT FK_MessageBookmark_ChannelMessage FOREIGN KEY (channel_message_id) REFERENCES {...tenantid...}.dbo.CHANNEL_MESSAGES(message_id) ON DELETE CASCADE;
+ALTER TABLE {...tenantid...}.dbo.MESSAGE_BOOKMARK ADD CONSTRAINT FK_MessageBookmark_DirectMessage FOREIGN KEY (message_id) REFERENCES {...tenantid...}.dbo.DIRECT_MESSAGES(message_id) ON DELETE CASCADE;
+ALTER TABLE {...tenantid...}.dbo.MESSAGE_BOOKMARK ADD CONSTRAINT FK_MessageBookmark_Member FOREIGN KEY (member_id) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
+ALTER TABLE {...tenantid...}.dbo.MESSAGE_BOOKMARK ADD CONSTRAINT FK_MessageBookmark_Tenant FOREIGN KEY (tenant_id) REFERENCES {...tenantid...}.dbo.TENANT(tenant_id);
 
 
--- {...tenantid...}.dbo.NIU_CHAT_DIRECT_MESSAGES foreign keys
+-- {...tenantid...}.dbo.channel_read_cursor foreign keys
+-- Intentionally no FK on last_read_msg_id: cursor survives message deletion.
 
-ALTER TABLE {...tenantid...}.dbo.NIU_CHAT_DIRECT_MESSAGES ADD CONSTRAINT FK_DirectMessages_Receiver FOREIGN KEY (receiver_id) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
-ALTER TABLE {...tenantid...}.dbo.NIU_CHAT_DIRECT_MESSAGES ADD CONSTRAINT FK_DirectMessages_Sender FOREIGN KEY (sender_id) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
+ALTER TABLE {...tenantid...}.dbo.channel_read_cursor ADD CONSTRAINT FK_channel_cursor_Channel FOREIGN KEY (channel_id) REFERENCES {...tenantid...}.dbo.CHAT_CHANNELS(channel_id) ON DELETE CASCADE;
+ALTER TABLE {...tenantid...}.dbo.channel_read_cursor ADD CONSTRAINT FK_channel_cursor_Member FOREIGN KEY (member_id) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
+ALTER TABLE {...tenantid...}.dbo.channel_read_cursor ADD CONSTRAINT FK_channel_cursor_Tenant FOREIGN KEY (tenant_id) REFERENCES {...tenantid...}.dbo.TENANT(tenant_id);
+
+
+-- {...tenantid...}.dbo.dm_read_cursor foreign keys
+-- Intentionally no FK on last_read_msg_id: cursor survives message deletion.
+
+ALTER TABLE {...tenantid...}.dbo.dm_read_cursor ADD CONSTRAINT FK_dm_cursor_Member FOREIGN KEY (member_id) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
+ALTER TABLE {...tenantid...}.dbo.dm_read_cursor ADD CONSTRAINT FK_dm_cursor_Partner FOREIGN KEY (partner_id) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
+ALTER TABLE {...tenantid...}.dbo.dm_read_cursor ADD CONSTRAINT FK_dm_cursor_Tenant FOREIGN KEY (tenant_id) REFERENCES {...tenantid...}.dbo.TENANT(tenant_id);
+
+
+-- {...tenantid...}.dbo.LOGIN_HISTORY foreign keys
+
+ALTER TABLE {...tenantid...}.dbo.LOGIN_HISTORY ADD CONSTRAINT FK_LoginHistory_Member FOREIGN KEY (member_id) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
+
+
+-- {...tenantid...}.dbo.PROFILE_ATTACHMENT foreign keys
+
+ALTER TABLE {...tenantid...}.dbo.PROFILE_ATTACHMENT ADD CONSTRAINT FK_ProfileAttachment_Member FOREIGN KEY (member_id) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
+ALTER TABLE {...tenantid...}.dbo.PROFILE_ATTACHMENT ADD CONSTRAINT FK_ProfileAttachment_Tenant FOREIGN KEY (tenant_id) REFERENCES {...tenantid...}.dbo.TENANT(tenant_id);
+ALTER TABLE {...tenantid...}.dbo.PROFILE_ATTACHMENT ADD CONSTRAINT FK_ProfileAttachment_CreatedBy FOREIGN KEY (created_by) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
+
+
+-- {...tenantid...}.dbo.DEVICE_TOKENS foreign keys
+
+ALTER TABLE {...tenantid...}.dbo.DEVICE_TOKENS ADD CONSTRAINT FK_DeviceTokens_Member FOREIGN KEY (member_id) REFERENCES {...tenantid...}.dbo.[MEMBER](member_id);
+ALTER TABLE {...tenantid...}.dbo.DEVICE_TOKENS ADD CONSTRAINT FK_DeviceTokens_Tenant FOREIGN KEY (tenant_id) REFERENCES {...tenantid...}.dbo.TENANT(tenant_id);
 
 
 -- {...tenantid...}.dbo.NOTIFICATIONS foreign keys

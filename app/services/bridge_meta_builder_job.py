@@ -185,6 +185,17 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
         {"name": "K8S_SERVICE_PREFIX", "value": vault_service._k8s_service_slug(tenant.slug)},
     ]
 
+    # The QraieBot credential the operator already generated and wrote to Vault (it is
+    # what bridge-cp-conductor logs in with). Handing the same one to the seed makes it
+    # store this credential instead of inventing its own. Absent for a tenant created
+    # before this existed, or with Vault off; the seed then generates one, as before.
+    qraie_bot = vault_service.read_qraie_bot_credential(tenant.slug)
+    if qraie_bot:
+        env += [
+            {"name": "QRAIE_BOT_PASSWORD", "value": qraie_bot["password"]},
+            {"name": "QRAIE_BOT_PASSWORD_HASH", "value": qraie_bot["password_hash"]},
+        ]
+
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",

@@ -50,34 +50,34 @@ def _client(tenant):
 
 
 def test_plain_delete_is_unchanged(calls):
-    r = _client(_tenant()).delete(f"/tenant/{TID}")
+    r = _client(_tenant(status=TenantStatus.ARCHIVED)).delete(f"/tenant/{TID}")
     assert r.status_code == 202
     assert r.json()["purge"] is False
     assert calls["delete"] == [(TID, False)]
 
 
 def test_delete_with_purge_starts_a_purging_delete(calls):
-    r = _client(_tenant()).delete(f"/tenant/{TID}?purge=true&confirm=hbss-036")
+    r = _client(_tenant(status=TenantStatus.ARCHIVED)).delete(f"/tenant/{TID}?purge=true&confirm=hbss-036")
     assert r.status_code == 202
     assert r.json()["purge"] is True
     assert calls["delete"] == [(TID, True)]
 
 
 def test_purge_without_confirm_is_refused_and_nothing_is_deleted(calls):
-    r = _client(_tenant()).delete(f"/tenant/{TID}?purge=true")
+    r = _client(_tenant(status=TenantStatus.ARCHIVED)).delete(f"/tenant/{TID}?purge=true")
     assert r.status_code == 400
     assert calls["delete"] == []
 
 
 def test_purge_when_disabled_is_refused_and_nothing_is_deleted(calls, monkeypatch):
     monkeypatch.setattr(purge_service.settings, "purge_enabled", False)
-    r = _client(_tenant()).delete(f"/tenant/{TID}?purge=true&confirm=hbss-036")
+    r = _client(_tenant(status=TenantStatus.ARCHIVED)).delete(f"/tenant/{TID}?purge=true&confirm=hbss-036")
     assert r.status_code == 403
     assert calls["delete"] == []
 
 
 def test_purge_for_a_disallowed_environment_is_refused(calls):
-    r = _client(_tenant(environment="prod")).delete(f"/tenant/{TID}?purge=true&confirm=hbss-036")
+    r = _client(_tenant(status=TenantStatus.ARCHIVED, environment="prod")).delete(f"/tenant/{TID}?purge=true&confirm=hbss-036")
     assert r.status_code == 403
     assert calls["delete"] == []
 

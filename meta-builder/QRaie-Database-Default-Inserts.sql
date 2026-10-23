@@ -89,6 +89,15 @@ INSERT INTO {...tenantid...}.dbo.ISSUE_CATEGORY_LOOKUP (category_code, category_
 -- ISSUE_TYPE_LOOKUP
 INSERT INTO {...tenantid...}.dbo.ISSUE_TYPE_LOOKUP (issue_type_name, description, category_id) VALUES(N'Information Only', N'For informational purposes only.', IDENT_CURRENT('{...tenantid...}.dbo.ISSUE_CATEGORY_LOOKUP'));
 
+/* Many-to-many: link each issue type to its primary category (ISSUE_TYPE_CATEGORY) */
+INSERT INTO {...tenantid...}.dbo.ISSUE_TYPE_CATEGORY (issue_type_id, category_id)
+SELECT itl.issue_type_id, itl.category_id
+FROM {...tenantid...}.dbo.ISSUE_TYPE_LOOKUP itl
+WHERE NOT EXISTS (
+    SELECT 1 FROM {...tenantid...}.dbo.ISSUE_TYPE_CATEGORY itc
+    WHERE itc.issue_type_id = itl.issue_type_id AND itc.category_id = itl.category_id
+);
+
 
 -- MODULE_LOOKUP
 INSERT INTO {...tenantid...}.dbo.MODULE_LOOKUP (module_code, module_name, description) VALUES(N'MANAGEMENT', N'Management', N'Framework for planning, executing, and closing projects.');
@@ -150,8 +159,8 @@ INSERT INTO {...tenantid...}.dbo.PERMISSION_LOOKUP (category, permission_name, d
 INSERT INTO {...tenantid...}.dbo.PERMISSION_LOOKUP (category, permission_name, description, is_active, created_by, created_at, tenant_id, permission_def_value) VALUES(N'USER', N'view_users', N'Can view user list and details', 1, N'M100', getdate(), N'{...tenantid_upper...}', N'N');
 
 /* Insert Permission for USER Member */
-insert into {...tenantid...}.dbo.MEMBER_USER_PERMISSION
-select N'M100', N'{...tenantid...}', permission_id, 1, getdate() from PERMISSION_LOOKUP  ;
+INSERT INTO {...tenantid...}.dbo.MEMBER_USER_PERMISSION
+SELECT N'M100', N'{...tenantid_upper...}', permission_id, 1, getdate() FROM {...tenantid...}.dbo.PERMISSION_LOOKUP;
 
 /* Create general Channel */
 INSERT INTO {...tenantid...}.dbo.CHAT_CHANNELS (channel_name, tenant_id, description, is_private, created_by, created_at, updated_at, target_tenant_id, is_cross_tenant)
@@ -167,7 +176,7 @@ VALUES(N'support', N'{...tenantid_upper...}', N'Channel to receive all NEW Asq t
 
 /* Configure it in CHANNEL_NOTIFS table */
 INSERT INTO {...tenantid...}.dbo.CATEGORY_CHANNELS (category_id,channel_id,tenant_id,is_active,created_by,created_at,modified_at )
-VALUES(N'1', IDENT_CURRENT('{...tenantid...}.dbo.CHAT_CHANNELS'), N'{...tenantid_upper...}', N'1', N'M100', getdate(), getdate());
+VALUES(1, IDENT_CURRENT('{...tenantid...}.dbo.CHAT_CHANNELS'), N'{...tenantid_upper...}', 1, N'M100', getdate(), getdate());
 
 -- Re-enable All Foreign Keys:
 EXEC sp_MSforeachtable 'ALTER TABLE ? CHECK CONSTRAINT ALL';

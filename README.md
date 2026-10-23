@@ -110,7 +110,7 @@ tenant-operator/
 │   ├── bridge-schema-definition.js     Mongoose schemas for the Mongo-side seed (bridgeMetaInfo, sequence, etc.)
 │   ├── actor.template.js               ControlOps default-actor template the Mongo seed inserts
 │   ├── metaBridgeInfo_template.json    the tenant's bridgeMetaInfo doc template -- {{...}} placeholders, no real secrets
-│   ├── QRaie-Table-Script-11Sep25.sql  the real CREATE TABLE schema, applied verbatim (bracket-substituted) per tenant
+│   ├── QRaie-Table-Script-16April26.sql  the real CREATE TABLE schema, applied verbatim (bracket-substituted) per tenant
 │   ├── QRaie-Database-Default-Inserts.sql  default SQL rows (admin MEMBER, TENANT, permissions, etc.) per tenant
 │   ├── package.json / Dockerfile       node:20-slim image, deps baked in at build time -- see below
 │   └── 02_sql_mongo.sh                 the ORIGINAL legacy bash script this was ported from, kept for reference only
@@ -200,6 +200,16 @@ Key fields:
   file stay valid. Creating a tenant whose name equals an existing tenant's
   slug (e.g. a new `acme-2` while `acme` with sequence 2 exists) is rejected
   with a 400. `slug` is never used for anything customer-facing.
+- `helm_chart_version` — the **released chart version** this tenant is pinned to: a tag like
+  `v0.1.0` of the chart repository. It is set from `HELM_CHART_VERSION` when the tenant is
+  created, written into the tenant's values file as `chartVersion`, and read by the
+  ApplicationSet as the chart's `targetRevision`, so the tenant keeps running exactly that
+  chart. Merging to the chart's `main` changes nothing for it. It changes only when an update
+  passes a new `chartVersion` (`PUT /tenant/{id}`), and then only for that tenant. Changing
+  `HELM_CHART_VERSION` affects only tenants created afterwards. `NULL` means the tenant predates
+  pinning: updates are refused (409) until it is pinned by sending `chartVersion` (the release it
+  is running now), because re-rendering its file with no version would move it to a different
+  chart. See the chart repository's `RELEASING.md` for how a release is cut.
 - `app_type` — always `"qraie-bridge"` now (`server_default="qraie-bridge"`);
   kept as a real column only for API/DB back-compat, not settable per
   request any more. See "The retired `workplace` chart".
@@ -219,7 +229,12 @@ Key fields:
   any step -> FAILED (error_message set)
   RUNNING -> DELETING -> DELETED
   RUNNING -> UPDATING -> SYNCING -> RUNNING
+  RUNNING -> ARCHIVING -> ARCHIVED -> RESTORING -> SYNCING -> RUNNING
+  ARCHIVED -> DELETING -> DELETED
   ```
+
+  `ARCHIVED` is a stopped tenant that keeps everything (see "Archiving a tenant"); the
+  `archived_at` column records when. A running tenant is archived before it is deleted.
 
   `STATUS_PROGRESS` maps each status to a rough 0–100 heuristic used by both
   the plain `GET` response's `progress` field and every status-push event
@@ -346,6 +361,36 @@ pages themselves are open (schema only, no data); the endpoints they call
 are not. Route `/docs`, `/redoc`, `/openapi.json` and `/doc` through your
 ingress to reach them.
 
+## Archiving a tenant
+
+Archive stops a tenant without deleting anything, and restore brings it back as it was. A permanent
+delete is a separate, later step, so a mistaken click on "Delete" no longer destroys a running tenant.
+
+```
+RUNNING --archive--> ARCHIVING --> ARCHIVED --restore--> RESTORING --> RUNNING
+                                      \--delete--> DELETING --> DELETED
+```
+
+- **Archive** commits `archived: true` in the tenant's values file. The chart (from the release in
+  `ARCHIVE_MIN_CHART_VERSION`) then renders every service at zero replicas and drops the ingress and
+  autoscalers, and the operator waits until every Deployment the chart created for the tenant is at zero. Pods the chart does not own
+  (the ereps erep-server started, labelled `app=erep`) are **left running** and are not waited for. Kept: the namespace, volumes, SQL and Mongo
+  databases and logins, Vault secrets, registry and onboarding entries, git manifest. It still counts
+  against its spoke's capacity, so a restore always fits.
+- **Restore** commits the file without `archived` and waits for the pods like a normal rollout. Nothing
+  is re-seeded: the databases were never touched.
+- **Delete** is allowed from `ARCHIVED` or `FAILED`; a `RUNNING` tenant is refused with 409 unless
+  `?force=true`. It removes the manifest and namespace; the databases and secrets stay unless you also pass `purge=true` (see "Purging a deleted tenant's data"), so the normal route is archive, then delete with purge.
+- A tenant pinned to a chart release older than `ARCHIVE_MIN_CHART_VERSION` is refused (409): that chart
+  would ignore `archived`, and the operator would report success with the pods still running. Update it
+  to a newer `chartVersion` first.
+- A failed archive leaves the tenant `FAILED` with the flag already committed; an update re-renders its
+  file from the database and so starts it again.
+- On upgrade the operator adds the `archived_at` column and the three new status values to an existing
+  database itself at startup (`database.ensure_schema()`), so no manual migration is needed.
+
+In the web UI a running tenant has **Archive**; an archived one has **Restore** and **Delete permanently**.
+
 ## API
 
 All routes below except `/health` require authentication (see above).
@@ -356,7 +401,9 @@ POST   /api/v1/tenant            -> 202 Accepted, { tenantId, status: PENDING }
 GET    /api/v1/tenant/{id}       -> current tenant record incl. status + progress
 GET    /api/v1/tenant            -> list, filterable by ?environment=&status_filter=
 PUT    /api/v1/tenant/{id}       -> update version/users/db size/services (only when RUNNING/FAILED)
-DELETE /api/v1/tenant/{id}       -> 202 Accepted, tears down via git delete + Argo CD prune + namespace delete
+POST   /api/v1/tenant/{id}/archive -> 202 Accepted, stops the tenant and keeps its data (RUNNING only)
+POST   /api/v1/tenant/{id}/restore -> 202 Accepted, starts an ARCHIVED tenant again
+DELETE /api/v1/tenant/{id}       -> 202 Accepted, tears down via git delete + Argo CD prune + namespace delete (a RUNNING tenant needs ?force=true; archive it first)
 GET    /api/v1/tenant/{id}/vault -> this tenant's current Vault secrets (one path per qraie-bridge service)
 GET    /api/v1/cluster           -> SpokeCluster CR content for every registered spoke
 GET    /api/v1/cluster/{name}    -> SpokeCluster CR content for one spoke
@@ -638,7 +685,7 @@ secrets are written (`write_initial_qraie_bridge_tenant_secrets`):
    every tenant's seeding Job operates on the *same* database/login,
    silently colliding.
 2. **`QRAIE_BRIDGE_GENERATED_KEYS`** (`REDIS_PASSWORD`, `DB_PASSWORD`,
-   `WORKPLACE_DM_PASSWORD`, `RADICALE_AGENT_PASS`, `JWT_SECRET`,
+   `RADICALE_AGENT_PASS`, `JWT_SECRET`,
    `G_JWT_SECRETKEY`, `G_RT_SECRETKEY`) — a fresh, random,
    complexity-guaranteed value generated per tenant
    (`_generate_secret()` guarantees at least one upper/lower/digit/symbol
@@ -648,6 +695,21 @@ secrets are written (`write_initial_qraie_bridge_tenant_secrets`):
    integration naming — it has nothing to do with the retired
    `appType="workplace"` tenant chart discussed below; it just happens to
    share the word.*
+
+   **`WORKPLACE_DM_PASSWORD` is not in that list on purpose.** It is the password
+   `bridge-cp-conductor` uses to log in as the built-in `QraieBot` user when it sends
+   a direct message, so it must be QraieBot's real credential, which the seed
+   creates. The operator therefore generates that credential once
+   (`vault_service.generate_qraie_bot_credential()`: a password and its bcrypt hash),
+   writes it to `secret/k8s/<slug>/qraie-bot`, puts the **hash** in
+   `WORKPLACE_DM_PASSWORD` (what the old compose files carried), and passes the same
+   pair to the seed Job as `QRAIE_BOT_PASSWORD` / `QRAIE_BOT_PASSWORD_HASH`. The seed
+   stores that pair (SQL `system_api_accesstokens`, Mongo `workplace.authTokenPassword`,
+   the actor templates) instead of inventing its own, so Vault and the databases hold one
+   credential. `WORKPLACE_DM_PASSWORD_AS=plain` puts the plain password in Vault instead,
+   if a server version needs that form. A tenant created before this keeps its old
+   values until its Vault value is set to its `workplace.authTokenPassword` and the
+   conductor is restarted.
 3. **Two keys with their own dedicated derivation, not a platform default**:
    - `VIRTUAL_HOST` → the tenant's own `domain` from the request, verbatim.
      Safe to derive automatically (unlike every other self-referencing URL
@@ -783,7 +845,7 @@ is set.
 
 Separate from `meta_builder_job.py` above, which only creates the empty
 database + login. This Job does everything after that: applies the real SQL
-schema (`QRaie-Table-Script-11Sep25.sql`), runs the SQL default-data inserts
+schema (`QRaie-Table-Script-16April26.sql`), runs the SQL default-data inserts
 (`QRaie-Database-Default-Inserts.sql`), and fully seeds this tenant's own
 MongoDB (a `bridgeMetaInfo` aggregate document, an admin user + auth/RBAC
 record, default WFM lookup data, default ControlOps actors, default IoT
@@ -884,7 +946,7 @@ manual re-runs don't collide:
   SQL always agree once an attempt succeeds.
 
 **Rebuild the image after changing anything in `meta-builder/`**
-(`bridge_meta_builder_image_tag`, currently `0.1.16`): the Job runs the code
+(`bridge_meta_builder_image_tag`, currently `0.1.17`): the Job runs the code
 baked into that image, not this directory.
 
 **Verification status**: the schema/inserts/Mongo-seed logic above was
@@ -954,6 +1016,7 @@ Selected settings worth knowing about explicitly:
 | `PURGE_ENABLED` | `false` | Allows `purge=true` / `POST /tenant/{id}/purge`. Off means purge requests are refused (a dry run still works). |
 | `PURGE_ALLOWED_ENVIRONMENTS` | `["stage"]` | Environments whose tenants may be purged. |
 | `PURGE_SQL_TIMEOUT_SECONDS` | `180` | How long the SQL purge Job may run. |
+| `WORKPLACE_DM_PASSWORD_AS` | `hash` | Form of the QraieBot password given to `bridge-cp-conductor` as `WORKPLACE_DM_PASSWORD`: `hash` (bcrypt, as in the old compose files) or `plain`. The seed stores the same credential either way. |
 | `ENVIRONMENT` | `stage` | Which environment *this* deployment serves — drives spoke capacity thresholds. One deployment = one environment. |
 | `DATABASE_URL` | `postgresql+psycopg2://...` | Points at the Helm chart's own lightweight in-chart Postgres by default (auto-assembled, see `helm-charts/README.md`'s "Persistence" section); set it yourself to use a real external Postgres instead. SQLite is no longer supported in the chart. |
 | `VAULT_ENABLED` | `false` | Gates every real Vault write in `vault_service.py`; `false` means log/echo only. |
@@ -968,7 +1031,9 @@ Selected settings worth knowing about explicitly:
 | `GIT_BRIDGE_TENANTS_DIR` | `bridge-tenants` | **Currently unused by any live code path** — `_tenants_dir_for()` in `provisioner.py` always returns `GIT_TENANTS_DIR` now that there's only one chart/one tenant flow. Kept because `git_service.py`'s functions already accept a `tenants_dir` override and nothing currently calls them with it; harmless to leave set. |
 | `MSSQL_ADMIN_HOST` / `..._PORT` / `..._USER` / `..._PASSWORD` | unset | Admin login the meta-builder Job uses to create each tenant's real MSSQL database + login. Both host and password must be set for the Job to actually run — otherwise it's skipped (logged, not failed). |
 | `BRIDGE_META_BUILDER_JOB_NAMESPACE` | `tenant-operator` | Namespace the bridge-meta-builder Job is submitted into — same namespace as the meta-builder Job, no cross-namespace RBAC needed. |
-| `BRIDGE_META_BUILDER_IMAGE_REPOSITORY` / `..._TAG` | `sandeepkosework/bridge-meta-builder` / `0.1.16` | The Node.js Job image built from `meta-builder/` (see "Bridge meta-builder Job"). Bump the tag here whenever that image is rebuilt/repushed. |
+| `BRIDGE_META_BUILDER_IMAGE_REPOSITORY` / `..._TAG` | `sandeepkosework/bridge-meta-builder` / `0.1.17` | The Node.js Job image built from `meta-builder/` (see "Bridge meta-builder Job"). Bump the tag here whenever that image is rebuilt/repushed. |
+| `HELM_CHART_VERSION` | `v0.1.0` | The released chart version (a tag, `vMAJOR.MINOR.PATCH`) **new** tenants are created on. Existing tenants keep the version they are pinned to; see `helm_chart_version` above. An invalid value stops the operator from starting. |
+| `ARCHIVE_MIN_CHART_VERSION` | `v0.1.3` | The first chart release that understands `archived: true`. A tenant pinned to an older release cannot be archived. An invalid value stops the operator from starting. |
 | `BRIDGE_BASE_DOMAIN` | `qraie.ai` | The public domain every tenant's hostname is built under, matching the legacy convention (`<tenant_name>-bridge<stg-suffix>.<this>`). |
 | `BRIDGE_DLM_SECRET_KEY` / `BRIDGE_SLM_KB_AUTH_PASSWORD` | unset | Shared (not per-tenant) secrets for the Mongo seed's `dlmObj` block — **functionally required, not optional**: the Job's `requireEnv()` throws if either is empty, failing the Job for every tenant, not skipping it. Set both before relying on this Job in any real deployment. |
 | `ARGOCD_UNREACHABLE_FAIL_AFTER` | `5` | Consecutive unreachable polls before a rollout fails fast — see "Argo CD failure monitoring". |

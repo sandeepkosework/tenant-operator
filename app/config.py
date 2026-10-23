@@ -5,12 +5,28 @@ Everything is driven by environment variables so the same image can be
 promoted across environments without rebuilding. See `.env.example` for
 the full list of knobs.
 """
+import re
 from functools import lru_cache
-from typing import Optional
+from typing import Literal, Optional
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.vault_bootstrap import load_env_from_vault
+
+# A released chart version is a git tag, vMAJOR.MINOR.PATCH. Strict on purpose: the value
+# is written into a tenant's values file and read by Argo CD as a git revision, so a
+# branch name ("main"), a SHA or anything with odd characters must never get through.
+CHART_VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+
+
+def validate_chart_version(value: str) -> str:
+    """Returns `value` if it is a release tag like "v0.1.0", otherwise raises ValueError."""
+    if not isinstance(value, str) or not CHART_VERSION_RE.fullmatch(value) or len(value) > 32:
+        raise ValueError(
+            f"chart version must be a release tag like 'v0.1.0' (vMAJOR.MINOR.PATCH), got {value!r}"
+        )
+    return value
 
 # Must run before Settings() is ever constructed -- fills any config key not
 # already set via a real env var/.env from Vault. No-ops entirely if
@@ -70,6 +86,40 @@ class Settings(BaseSettings):
     default_version: str = "1.0.0"
     default_tier: str = "standard"
 
+    # The released chart version -- a git tag of the chart repository, "vMAJOR.MINOR.PATCH"
+    # -- that a NEW tenant is created on when the request names none and the newest release
+    # cannot be looked up (or helm_chart_use_latest is off). It is stored on the tenant
+    # (Tenant.helm_chart_version) and written into its values file as `chartVersion`, which
+    # the ApplicationSet uses as that tenant's chart targetRevision, so the tenant keeps
+    # running exactly that chart. Changing this setting only affects tenants created
+    # afterwards; an existing tenant stays on the version it was created (or pinned) with
+    # until it is updated with a new chartVersion (PUT /tenant/{id}).
+    helm_chart_version: str = "v0.1.0"
+
+    # When true (default) a new tenant that names no chartVersion is created on the HIGHEST
+    # release tag (vN.N.N) found in the chart repository, so a newly cut release is picked up
+    # without touching this operator. Existing tenants never move. Set false to always use
+    # helm_chart_version above.
+    helm_chart_use_latest: bool = True
+
+    # Where the chart's release tags are read from. Unset = the sibling of git_repo_url named
+    # "helm-chart-bridge" (same server, owner and credentials as the tenant-values repo).
+    helm_chart_repo_url: Optional[str] = None
+
+    @field_validator("helm_chart_version")
+    @classmethod
+    def _check_helm_chart_version(cls, value: str) -> str:
+        return validate_chart_version(value)
+
+    # The first chart release that understands `archived: true` (scales every service to zero and drops
+    # the ingress). A tenant pinned to an older release cannot be archived until it is updated to one.
+    archive_min_chart_version: str = "v0.1.3"
+
+    @field_validator("archive_min_chart_version")
+    @classmethod
+    def _check_archive_min_chart_version(cls, value: str) -> str:
+        return validate_chart_version(value)
+
     # --- Meta-builder Job (DB seeding, triggered post-provisioning) ---
     # Runs in tenant-operator's own namespace on the hub -- same cluster
     # tenant-operator itself runs on and the MSSQL server it talks to lives
@@ -94,7 +144,7 @@ class Settings(BaseSettings):
     # database + login. Triggered at the same point in provisioner.py.
     bridge_meta_builder_job_namespace: str = "tenant-operator"
     bridge_meta_builder_image_repository: str = "sandeepkosework/bridge-meta-builder"
-    bridge_meta_builder_image_tag: str = "0.1.16"
+    bridge_meta_builder_image_tag: str = "0.1.17"
     # Base public domain every tenant's hostname is built under (the
     # legacy system's own convention: "<tenant_name>-bridge<stg-suffix>.
     # <this>", e.g. "hbss-bridgestg.qraie.ai" -- see bridge_meta_builder_job.py).
@@ -105,6 +155,12 @@ class Settings(BaseSettings):
     # Vault write. Set via env var/Vault like every other secret Setting
     # in this file -- never hardcoded here.
     bridge_dlm_secret_key: Optional[str] = None
+    # Which form of the QraieBot password bridge-cp-conductor gets as
+    # WORKPLACE_DM_PASSWORD: the bcrypt hash of it (what the old compose files
+    # carried), or the plain password. The tenant's seed stores the same
+    # credential, so Vault and the databases agree either way. See
+    # vault_service.generate_qraie_bot_credential().
+    workplace_dm_password_as: Literal["hash", "plain"] = "hash"
     bridge_slm_kb_auth_password: Optional[str] = None
 
     # --- Vault ---

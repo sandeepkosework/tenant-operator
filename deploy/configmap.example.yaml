@@ -19,6 +19,8 @@ data:
   # --- Git (GitOps source of truth) ---
   GIT_REPO_URL: "git@github.com:your-org/tenant-config.git"
   GIT_BRANCH: "main"
+  # Released chart version (a tag) NEW tenants are created on; existing tenants keep theirs.
+  HELM_CHART_VERSION: "v0.1.0"
   GIT_LOCAL_PATH: "/data/tenant-config"
   GIT_AUTHOR_NAME: "tenant-operator"
   GIT_AUTHOR_EMAIL: "tenant-operator@your-org.com"
@@ -128,3 +130,9 @@ data:
   # PURGE_SQL_TIMEOUT_SECONDS: "180"
   # The onboarding server must have ADMIN_TOKEN set to the same value as
   # ONBOARDING_SERVER_TOKEN (Secret), or its record cannot be deleted.
+
+  # --- QraieBot credential for bridge-cp-conductor (see README) ---
+  # WORKPLACE_DM_PASSWORD is QraieBot's real credential, generated once per tenant and
+  # shared with the seed. "hash" (default) gives the conductor the bcrypt hash, as the old
+  # compose files did; "plain" gives it the plain password.
+  # WORKPLACE_DM_PASSWORD_AS: "hash"

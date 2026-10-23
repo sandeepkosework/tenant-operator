@@ -13,6 +13,8 @@ import logging
 import time
 import uuid
 
+import yaml
+
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -66,7 +68,7 @@ def _commit_tenant_info(tenant: Tenant, cluster, message: str) -> None:
         logger.exception("tenant=%s failed to write tenant-info record (non-fatal)", tenant.tenant_name)
 
 
-def _render_values_yaml(tenant: Tenant, cluster) -> str:
+def _render_values_yaml(tenant: Tenant, cluster, archived: bool | None = None) -> str:
     """Renders this tenant's values.yaml via the qraie-bridge chart's Jinja
     template -- the only chart tenants are provisioned onto."""
     return helm_values.render_qraie_bridge_values_yaml(
@@ -79,7 +81,41 @@ def _render_values_yaml(tenant: Tenant, cluster) -> str:
         disabled_services=tenant.disabled_services,
         vault_server=cluster.vault_server,
         ingress_class_name=cluster.ingress_class_name,
+        # The tenant's OWN pinned chart version, never the current default: re-rendering
+        # (every update) must not move a tenant onto a newer chart by accident.
+        chart_version=tenant.helm_chart_version,
+        # None = follow the tenant's own state, so an update to an archived tenant cannot restart it.
+        archived=(tenant.archived_at is not None) if archived is None else archived,
     )
+
+
+def _with_service_config(tenant: Tenant, values_yaml: str, existing: str | None, old_chart_version: str | None) -> str:
+    """Adds this tenant's per-service image/resources (`serviceConfig`) to the rendered file.
+
+    - Chart older than SERVICE_CONFIG_MIN_VERSION: the chart would ignore it, so none is written
+      (the legacy override maps from the earlier release are carried over instead).
+    - Otherwise the section is built from the chart's own values.yaml at the tenant's pinned release,
+      keeping whatever the tenant edited in `existing`. Moving to a new release refreshes the values
+      that were never edited (compared against the release it moved from).
+    - If the chart cannot be read right now, the existing section is kept as it is rather than
+      dropped, and a brand-new tenant simply gets no section (it still runs the chart's values).
+    """
+    version = tenant.helm_chart_version
+    if not helm_values.supports_service_config(version):
+        return helm_values.carry_over_overrides(values_yaml, existing)
+    kept = helm_values.existing_service_config(existing)      # ValueError on an unreadable file
+    try:
+        new_defaults = helm_values.chart_service_defaults(git_service.read_chart_file(version), tenant.disabled_services)
+        old_defaults = None
+        if kept and old_chart_version and old_chart_version != version and helm_values.supports_service_config(old_chart_version):
+            old_defaults = helm_values.chart_service_defaults(
+                git_service.read_chart_file(old_chart_version), tenant.disabled_services)
+        service_config = helm_values.merge_service_config(new_defaults, kept, old_defaults)
+    except (git_service.GitServiceError, ValueError, yaml.YAMLError):
+        logger.warning("tenant=%s could not read the chart values to build serviceConfig; keeping what the file has",
+                       tenant.tenant_name, exc_info=True)
+        service_config = kept
+    return helm_values.append_service_config(values_yaml, service_config)
 
 
 def _set_status(db: Session, tenant: Tenant, status: TenantStatus, error: str | None = None) -> None:
@@ -358,7 +394,7 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
 
             logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
             progress.record(tenant.id, "manifest", "start", "Rendering the Helm values for this tenant")
-            values_yaml = _render_values_yaml(tenant, cluster)
+            values_yaml = _with_service_config(tenant, _render_values_yaml(tenant, cluster), None, None)
 
             logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)
             commit_sha = git_service.commit_tenant_manifest(
@@ -420,13 +456,23 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
 
 
 def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int | None,
-                   new_db_size: str | None, new_disabled_services: list[str] | None = None) -> None:
-    """Entry point for PUT /tenants/{id}. Re-renders values.yaml and re-commits."""
+                   new_db_size: str | None, new_disabled_services: list[str] | None = None,
+                   new_chart_version: str | None = None) -> None:
+    """Entry point for PUT /tenants/{id}. Re-renders values.yaml and re-commits.
+
+    new_chart_version is the only way a tenant's pinned chart release changes: None keeps
+    the version the tenant already has (which is what gets re-rendered into its file)."""
     db = SessionLocal()
     try:
         tenant = db.get(Tenant, tenant_id)
         if tenant is None:
             logger.error("tenant_id=%s not found -- cannot update", tenant_id)
+            return
+        if tenant.helm_chart_version is None and new_chart_version is None:
+            # PUT /tenant/{id} already refuses this; kept here so no other caller can re-render
+            # an unpinned tenant's file and silently move it to a different chart.
+            logger.error("tenant=%s has no pinned chart version and none was given -- refusing to update",
+                         tenant.tenant_name)
             return
 
         try:
@@ -442,6 +488,11 @@ def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int 
                 tenant.database_size = new_db_size
             if new_disabled_services is not None:
                 tenant.disabled_services = new_disabled_services
+            old_chart_version = tenant.helm_chart_version
+            if new_chart_version:
+                logger.info("[step] tenant=%s chart version %s -> %s",
+                            tenant.tenant_name, tenant.helm_chart_version, new_chart_version)
+                tenant.helm_chart_version = new_chart_version
             db.add(tenant)
             db.commit()
             db.refresh(tenant)
@@ -449,13 +500,18 @@ def update_tenant(tenant_id: uuid.UUID, new_version: str | None, new_users: int 
             cluster = next(c for c in cluster_selector.load_cluster_registry() if c.name == tenant.cluster)
 
             logger.info("[step] tenant=%s rendering Helm values", tenant.tenant_name)
-            values_yaml = _render_values_yaml(tenant, cluster)
+            # Keep the per-tenant image/resources (serviceConfig) that are in the file, edits included.
+            values_yaml = _with_service_config(
+                tenant, _render_values_yaml(tenant, cluster),
+                git_service.read_tenant_manifest(tenant.slug, tenants_dir=_tenants_dir_for(tenant)),
+                old_chart_version,
+            )
 
             logger.info("[step] tenant=%s committing Helm values to GitOps repo", tenant.tenant_name)
             commit_sha = git_service.commit_tenant_manifest(
                 tenant.slug,
                 values_yaml,
-                message=f"tenant-operator: update {tenant.tenant_name} -> version={tenant.version}",
+                message=f"tenant-operator: update {tenant.tenant_name} -> version={tenant.version} chart={tenant.helm_chart_version}",
                 tenants_dir=_tenants_dir_for(tenant),
             )
             tenant.git_commit = commit_sha
@@ -523,6 +579,100 @@ def purge_tenant(tenant_id: uuid.UUID) -> None:
             logger.error("tenant_id=%s not found -- cannot purge", tenant_id)
             return
         _run_purge(db, tenant)
+    finally:
+        db.close()
+
+
+def _rerender_and_commit(db: Session, tenant: Tenant, cluster, archived: bool, message: str) -> None:
+    """Re-render the tenant's values file with `archived` set as given, keeping its per-service
+    config and hand-edited overrides, and commit it. Argo CD does the rest."""
+    existing = git_service.read_tenant_manifest(tenant.slug, tenants_dir=_tenants_dir_for(tenant))
+    values_yaml = _with_service_config(
+        tenant, _render_values_yaml(tenant, cluster, archived=archived), existing, tenant.helm_chart_version,
+    )
+    tenant.git_commit = git_service.commit_tenant_manifest(
+        tenant.slug, values_yaml, message=message, tenants_dir=_tenants_dir_for(tenant),
+    )
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    logger.info("[step] tenant=%s git commit created: %s", tenant.tenant_name, tenant.git_commit)
+
+
+def archive_tenant(tenant_id: uuid.UUID) -> None:
+    """Entry point for POST /tenant/{id}/archive. Commits `archived: true` for the tenant; the chart then
+    runs no pods and no ingress. Nothing is deleted: namespace, volumes, databases, Vault secrets, the
+    registry and onboarding entries all stay, so restore_tenant() brings it back as it was. Pods the
+    chart does not own (the ereps erep-server started) are left running."""
+    from datetime import datetime, timezone
+
+    db = SessionLocal()
+    try:
+        tenant = db.get(Tenant, tenant_id)
+        if tenant is None:
+            logger.error("tenant_id=%s not found -- cannot archive", tenant_id)
+            return
+        try:
+            logger.info("[step] tenant=%s archive started", tenant.tenant_name)
+            _set_status(db, tenant, TenantStatus.ARCHIVING)
+            cluster = next(c for c in cluster_selector.load_cluster_registry() if c.name == tenant.cluster)
+
+            _rerender_and_commit(db, tenant, cluster, archived=True,
+                                 message=f"tenant-operator: archive {tenant.tenant_name}")
+
+            deadline = time.monotonic() + settings.provisioning_timeout_seconds
+            while time.monotonic() < deadline:
+                try:
+                    if argocd_service.classify(argocd_service.get_application_status(tenant.slug)) == "healthy" \
+                            and kubernetes_service.all_scaled_down(cluster.context, tenant.namespace, tenant.slug):
+                        tenant.archived_at = datetime.now(timezone.utc)
+                        db.add(tenant)
+                        db.commit()
+                        _set_status(db, tenant, TenantStatus.ARCHIVED)
+                        spoke_cr.upsert_spoke_cluster_cr(cluster, db)
+                        _commit_tenant_info(tenant, cluster, message=f"tenant-operator: archive {tenant.tenant_name}")
+                        logger.info("[step] tenant=%s archived", tenant.tenant_name)
+                        return
+                except Exception as e:  # noqa: BLE001 -- transient Argo CD / API errors: keep polling
+                    logger.warning("tenant=%s archive poll error (will retry): %s", tenant.tenant_name, e)
+                time.sleep(settings.provisioning_poll_interval_seconds)
+
+            _set_status(db, tenant, TenantStatus.FAILED,
+                        error=f"timed out after {settings.provisioning_timeout_seconds}s waiting for the services to stop")
+        except Exception as e:  # noqa: BLE001
+            logger.exception("tenant=%s unexpected archive failure", tenant.tenant_name)
+            _set_status(db, tenant, TenantStatus.FAILED, error=f"unexpected error during archive: {e}")
+    finally:
+        db.close()
+
+
+def restore_tenant(tenant_id: uuid.UUID) -> None:
+    """Entry point for POST /tenant/{id}/restore. Commits the tenant's file without `archived`, waits for
+    the pods to come back, and marks it RUNNING. The databases are not touched, so no seed Job runs."""
+    db = SessionLocal()
+    try:
+        tenant = db.get(Tenant, tenant_id)
+        if tenant is None:
+            logger.error("tenant_id=%s not found -- cannot restore", tenant_id)
+            return
+        try:
+            logger.info("[step] tenant=%s restore started", tenant.tenant_name)
+            _set_status(db, tenant, TenantStatus.RESTORING)
+            cluster = next(c for c in cluster_selector.load_cluster_registry() if c.name == tenant.cluster)
+
+            tenant.archived_at = None
+            db.add(tenant)
+            db.commit()
+            _rerender_and_commit(db, tenant, cluster, archived=False,
+                                 message=f"tenant-operator: restore {tenant.tenant_name}")
+            _wait_for_argocd_and_k8s(db, tenant, cluster.context)
+            if tenant.status == TenantStatus.RUNNING:
+                spoke_cr.upsert_spoke_cluster_cr(cluster, db)
+                _commit_tenant_info(tenant, cluster, message=f"tenant-operator: restore {tenant.tenant_name}")
+                logger.info("[step] tenant=%s restored", tenant.tenant_name)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("tenant=%s unexpected restore failure", tenant.tenant_name)
+            _set_status(db, tenant, TenantStatus.FAILED, error=f"unexpected error during restore: {e}")
     finally:
         db.close()
 

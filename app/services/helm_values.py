@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import yaml
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 _TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
@@ -59,6 +60,8 @@ def render_qraie_bridge_values_yaml(
     disabled_services: list[str] | None = None,
     vault_server: str | None = None,
     ingress_class_name: str | None = None,
+    chart_version: str | None = None,
+    archived: bool = False,
 ) -> str:
     """Renders a tenant's values.yaml for the qraie-bridge chart -- the only
     chart tenants are provisioned onto (see app/models/tenant.py's
@@ -89,4 +92,155 @@ def render_qraie_bridge_values_yaml(
         disabled_services=disabled_services or [],
         vault_server=vault_server,
         ingress_class_name=ingress_class_name,
+        chart_version=chart_version,
+        archived=archived,
     )
+
+
+def supports_archive(chart_version: str | None, minimum: str) -> bool:
+    """True when the tenant's pinned chart release honours `archived: true`. An older chart ignores the
+    key, so archiving would report success while every service kept running."""
+    return bool(chart_version) and _version_tuple(chart_version) >= _version_tuple(minimum)
+
+
+# Per-tenant overrides an operator edits by hand in tenants/<slug>.yaml (the chart's
+# imageTags / imageRepositories / replicaOverrides / resourceOverrides, see its README).
+# They are not in the database, so a re-render has to copy them from the file it replaces.
+OVERRIDE_KEYS = ("imageTags", "imageRepositories", "replicaOverrides", "resourceOverrides")
+
+_OVERRIDE_HEADER = (
+    "\n# Per-tenant overrides, edited by hand and kept by the operator when it re-renders this file.\n"
+    "# Each is a map keyed by service name; see the helm-chart-bridge README.\n"
+)
+
+
+def carry_over_overrides(rendered: str, existing: str | None) -> str:
+    """Append the override blocks found in `existing` (the tenant's current file) to `rendered`.
+
+    Raises ValueError when the existing file cannot be read as YAML: failing the update is
+    better than silently dropping someone's overrides. Empty blocks are not copied.
+    """
+    if not existing:
+        return rendered
+    try:
+        data = yaml.safe_load(existing) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"existing tenant file is not valid YAML, refusing to overwrite its overrides: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError("existing tenant file is not a YAML mapping, refusing to overwrite it")
+    kept = {k: data[k] for k in OVERRIDE_KEYS if data.get(k)}
+    if not kept:
+        return rendered
+    return rendered.rstrip("\n") + "\n" + _OVERRIDE_HEADER + yaml.safe_dump(kept, default_flow_style=False, sort_keys=False)
+
+# ---- per-tenant serviceConfig ---------------------------------------------------------------
+# Chart release that introduced `serviceConfig` (image + resources per service). An older chart
+# ignores the key, so the operator writes the section only for tenants pinned to this or later.
+SERVICE_CONFIG_MIN_VERSION = (0, 1, 2)
+
+_SERVICE_CONFIG_HEADER = (
+    "\n# The image and resources each service runs for THIS tenant, taken from the chart release above.\n"
+    "# Edit a value here (and commit) to change it for this tenant only; the operator keeps your edits\n"
+    "# when it rewrites this file. Anything you remove falls back to the chart's own value.\n"
+    "# Put a tag in quotes if it looks like a number (tag: '1.10'), or YAML reads it as 1.1.\n"
+)
+
+
+def _version_tuple(tag: str) -> tuple:
+    return tuple(int(part) for part in tag[1:].split("."))
+
+
+def supports_service_config(chart_version: str | None) -> bool:
+    return bool(chart_version) and _version_tuple(chart_version) >= SERVICE_CONFIG_MIN_VERSION
+
+
+def chart_service_defaults(chart_values_yaml: str, disabled_services: list[str] | None = None) -> dict:
+    """{service: {image: {repository, tag}, resources: {...}}} for every service the chart enables and
+    this tenant does not disable, as found in the chart's values.yaml text."""
+    disabled = set(disabled_services or [])
+    out = {}
+    for svc in (yaml.safe_load(chart_values_yaml) or {}).get("services") or []:
+        name = svc.get("name")
+        if not name or svc.get("enabled", True) is False or name in disabled:
+            continue
+        image = svc.get("image") or {}
+        entry = {"image": {"repository": image.get("repository"), "tag": image.get("tag")}}
+        if svc.get("resources"):
+            entry["resources"] = svc["resources"]
+        out[name] = entry
+    return out
+
+
+def _flatten(d: dict, prefix: tuple = ()) -> dict:
+    flat = {}
+    for key, value in (d or {}).items():
+        if isinstance(value, dict):
+            flat.update(_flatten(value, prefix + (key,)))
+        else:
+            flat[prefix + (key,)] = value
+    return flat
+
+
+def _unflatten(flat: dict) -> dict:
+    out: dict = {}
+    for path, value in flat.items():
+        node = out
+        for key in path[:-1]:
+            node = node.setdefault(key, {})
+        node[path[-1]] = value
+    return out
+
+
+def existing_service_config(existing: str | None) -> dict:
+    """The serviceConfig section of a tenant's current file ({} when there is none).
+    Raises ValueError when the file cannot be read: failing is better than dropping someone's edits."""
+    if not existing:
+        return {}
+    try:
+        data = yaml.safe_load(existing) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"existing tenant file is not valid YAML, refusing to overwrite its serviceConfig: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError("existing tenant file is not a YAML mapping, refusing to overwrite it")
+    cfg = data.get("serviceConfig") or {}
+    if not isinstance(cfg, dict):
+        raise ValueError("serviceConfig in the existing tenant file is not a mapping, refusing to overwrite it")
+    return cfg
+
+
+def merge_service_config(new_defaults: dict, existing: dict, old_defaults: dict | None = None) -> dict:
+    """The serviceConfig to write: the chart's values for every enabled service, with the tenant's
+    own edits kept.
+
+    A value in `existing` is kept unless `old_defaults` (the chart release the tenant is moving away
+    from) is given and the value still equals that old default, in which case it follows the new
+    default. Values the chart has and the file lacks are added; services that are no longer enabled
+    are dropped.
+    """
+    same = lambda a, b: str(a) == str(b)  # noqa: E731 -- a tag may be written as 7 or '7'
+    out = {}
+    for name, new in new_defaults.items():
+        new_flat = _flatten(new)
+        cur_flat = _flatten((existing or {}).get(name) or {})
+        old_flat = _flatten((old_defaults or {}).get(name) or {}) if old_defaults is not None else None
+        merged = {}
+        for path, default in new_flat.items():
+            if path not in cur_flat:
+                merged[path] = default
+            elif old_flat is not None and path in old_flat and same(cur_flat[path], old_flat[path]):
+                merged[path] = default            # never edited: follow the new release
+            else:
+                merged[path] = cur_flat[path]
+        for path, value in cur_flat.items():      # values the tenant added that the chart does not have
+            if path not in new_flat and not (old_flat is not None and path in old_flat and same(value, old_flat[path])):
+                merged[path] = value
+        out[name] = _unflatten(merged)
+    return out
+
+
+def append_service_config(rendered: str, service_config: dict) -> str:
+    """`rendered` with the serviceConfig section added at the end (unchanged when it is empty)."""
+    if not service_config:
+        return rendered
+    body = yaml.safe_dump({"serviceConfig": service_config}, default_flow_style=False, sort_keys=False, width=200)
+    return rendered.rstrip("\n") + "\n" + _SERVICE_CONFIG_HEADER + body
