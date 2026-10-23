@@ -390,6 +390,11 @@ RUNNING --archive--> ARCHIVING --> ARCHIVED --restore--> RESTORING --> RUNNING
   database itself at startup (`database.ensure_schema()`), so no manual migration is needed.
 
 In the web UI a running tenant has **Archive**; an archived one has **Restore** and **Delete permanently**.
+**Delete permanently** first runs the purge dry run and lists what exists in each data store (SQL, Mongo, Vault,
+onboarding record). The "Also permanently delete its data" box is ticked when the operator would accept a purge
+(`PURGE_ENABLED`, an allowed environment); otherwise it is greyed out with the reason and only the namespace and
+manifest are removed. Nothing happens until you type the tenant name, and the button then sends
+`DELETE ...?purge=true&confirm=<name>`.
 
 ## API
 
@@ -1285,7 +1290,7 @@ a step: `create_tenant_cr()` only echoes it, so nothing exists to delete.
 ```
 DELETE /api/v1/tenant/{id}?purge=true&confirm=<tenant name>   # delete, then purge
 POST   /api/v1/tenant/{id}/purge?confirm=<tenant name>        # purge an already DELETED tenant (202, background)
-POST   /api/v1/tenant/{id}/purge?dry_run=true                 # report what exists and would go; removes nothing
+POST   /api/v1/tenant/{id}/purge?dry_run=true                 # report what exists and would go; removes nothing. Works for an ARCHIVED, FAILED or DELETED tenant, and says whether a real purge would be accepted (purgeAllowed)
 ```
 
 **Safeguards**

@@ -399,7 +399,7 @@ def delete_tenant(
         "Removes the data a plain delete leaves behind, for a tenant that is already `DELETED`: the onboarding-server record, "
         "the Mongo databases, the SQL database and login, and the Vault secrets. The Postgres row, the registry record and the "
         "tenant-info file in git are kept as the audit trail.\n\n"
-        "`dry_run=true` only reports what exists and what would be removed, and answers with the steps. Without it, the purge runs in the "
+        "`dry_run=true` only reports what exists and what would be removed, and answers with the steps; it works for an `ARCHIVED`, `FAILED` or `DELETED` tenant, and says whether a real purge would be accepted (`purgeAllowed`, `purgeBlockedReason`). Without it, the purge runs in the "
         "background (202) and each step is recorded in the tenant's progress events; it needs `PURGE_ENABLED=true`, an allowed environment, "
         "and `confirm` equal to the tenant name. Safe to repeat. Refused while another tenant with the same name exists. **Irreversible.**"
     ),
@@ -407,7 +407,7 @@ def delete_tenant(
         400: {"description": "`confirm` does not match the tenant name, or the name is not purgeable"},
         403: {"description": "Purging is disabled, or not allowed for this tenant's environment"},
         404: {"description": "Tenant not found"},
-        409: {"description": "The tenant is not DELETED, a live tenant has the same name, or a purge is already running"},
+        409: {"description": "The tenant is not DELETED (a dry run: not ARCHIVED, FAILED or DELETED), a live tenant has the same name, or a purge is already running"},
         **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}},
     },
 )
@@ -424,14 +424,24 @@ def purge_tenant(
     try:
         if not dry_run:
             purge_service.check_purge_allowed(tenant, confirm)
-        purge_service.check_purgeable(db, tenant)
+        if dry_run:
+            purge_service.check_previewable(db, tenant)
+        else:
+            purge_service.check_purgeable(db, tenant)
     except purge_service.PurgeNotAllowed as e:
         raise _purge_http_error(e) from e
 
     if dry_run:
-        # Read-only, so it answers directly (the SQL check can take a little while).
+        # Read-only, so it answers directly (the SQL check can take a little while). It also says
+        # whether a real purge would be accepted, so a UI can offer it only when it can work.
         steps = purge_service.purge_tenant_data(tenant, dry_run=True)
-        return {"tenantId": tenant.id, "tenantName": tenant.tenant_name, "dryRun": True, "steps": steps}
+        try:
+            purge_service.check_purge_allowed(tenant, tenant.tenant_name)
+            allowed, blocked = True, None
+        except purge_service.PurgeNotAllowed as e:
+            allowed, blocked = False, e.message
+        return {"tenantId": tenant.id, "tenantName": tenant.tenant_name, "dryRun": True, "steps": steps,
+                "purgeAllowed": allowed, "purgeBlockedReason": blocked}
 
     if purge_service.is_running(tenant.id):
         raise HTTPException(status_code=409, detail="a purge is already running for this tenant")
