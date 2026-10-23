@@ -202,7 +202,9 @@ Key fields:
   with a 400. `slug` is never used for anything customer-facing.
 - `tenant_number` — this tenant's number **across all spokes**: 1 for the first tenant ever placed, 2 for the
   next, whichever cluster it lands on (after 10 tenants on `spoke-1`, the first on `spoke-2` is 11). It is
-  given when the cluster is chosen, counts deleted tenants too (a number is never reused), and is shown as
+  given when the cluster is chosen, counts deleted tenants too (a number is never reused), is **unique in the
+  database** (a unique index, so two tenants placed at the same moment cannot share one: the one that loses
+  simply takes the next number), and is shown as
   `tenantSeq` in the tenant-info file and as `tenantNumber` in the API. Unlike `tenant_seq` it is not part
   of the slug, so it changes no namespace or path. The column is added at startup (renamed from
   `cluster_seq`, the per-cluster first version), and tenants that already exist are numbered in creation

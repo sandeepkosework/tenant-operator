@@ -84,7 +84,8 @@ class Tenant(Base):
     # part of the slug (tenant_seq above is, for old tenants), so it changes no namespace or path. Added
     # to an existing database, and filled in for the tenants already in it by creation order, at startup
     # (database.ensure_schema). Earlier called cluster_seq, when it was numbered per cluster.
-    tenant_number = Column(Integer, nullable=True, index=True)
+    # Unique (NULLs, for a tenant not placed yet, do not clash), so two tenants can never share one.
+    tenant_number = Column(Integer, nullable=True, unique=True, index=True)
     display_name = Column(String(255), nullable=True)
     email = Column(String(255), nullable=True)
     domain = Column(String(255), nullable=True)

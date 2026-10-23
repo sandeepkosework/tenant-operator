@@ -60,6 +60,14 @@ def ensure_schema() -> None:
     except Exception:  # noqa: BLE001
         log.exception("could not number the existing tenants")
 
+    try:
+        # After the numbering above, so there are no repeats left to refuse. A database made by create_all()
+        # already has this index (the model's unique=True); this adds it to one that came before.
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ix_{table}_tenant_number ON {table} (tenant_number)"))
+    except Exception:  # noqa: BLE001
+        log.exception("could not make tenants.tenant_number unique -- two tenants could share a number until it is")
+
     if engine.dialect.name != "postgresql":
         return      # elsewhere the status column is plain text; nothing to add
     type_name = Tenant.__table__.c.status.type.name

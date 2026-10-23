@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import yaml
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app import database
@@ -61,6 +62,59 @@ def test_a_deleted_tenants_number_is_not_reused(db):
     assert cluster_selector.next_tenant_number(db) == 3
 
 
+# ---- two tenants never share a number ----------------------------------------------------
+
+def test_the_database_refuses_a_number_that_is_already_taken(db):
+    _tenant(db, "a", "spoke-1", number=1)
+    with pytest.raises(IntegrityError):
+        _tenant(db, "b", "spoke-2", number=1)
+
+
+def test_tenants_with_no_number_yet_do_not_clash(db):
+    _tenant(db, "a", None)
+    _tenant(db, "b", None)                                      # two NULLs are fine
+
+
+def test_a_collision_is_retried_with_the_next_number(db, monkeypatch):
+    """Two tenants placed at the same moment both read "highest = 4" and try for 5; the loser gets 6."""
+    _tenant(db, "taken", "spoke-1", number=5)
+    mine = _tenant(db, "mine", "spoke-2")
+    reads = iter([5, 5, 6])                                     # a stale read twice, then the free one
+    monkeypatch.setattr(cluster_selector, "next_tenant_number", lambda session: next(reads))
+    assert cluster_selector.assign_tenant_number(db, mine) == 6
+    db.expire_all()
+    assert _numbers(db) == {"taken": 5, "mine": 6}
+
+
+def test_it_gives_up_after_too_many_collisions(db, monkeypatch):
+    _tenant(db, "taken", "spoke-1", number=5)
+    mine = _tenant(db, "mine", "spoke-2")
+    monkeypatch.setattr(cluster_selector, "next_tenant_number", lambda session: 5)
+    with pytest.raises(RuntimeError):
+        cluster_selector.assign_tenant_number(db, mine, attempts=3)
+
+
+def test_assigning_gives_the_next_free_number(db):
+    _tenant(db, "a", "spoke-1", number=1)
+    mine = _tenant(db, "mine", "spoke-2")
+    assert cluster_selector.assign_tenant_number(db, mine) == 2
+
+
+def test_the_startup_adds_the_unique_index_to_an_old_database(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'old2.db'}", future=True)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE tenants (id VARCHAR(36) PRIMARY KEY, tenant_name VARCHAR(63), cluster VARCHAR(64), "
+                          "created_at DATETIME, tenant_number INTEGER)"))
+        conn.execute(text("INSERT INTO tenants VALUES ('a', 'a', 'spoke-1', '2026-10-01', 1)"))
+    monkeypatch.setattr(database, "engine", engine)
+    database.ensure_schema()
+    with engine.begin() as conn:
+        cols = "(id, tenant_name, cluster, created_at, tenant_number)"
+        conn.execute(text(f"INSERT INTO tenants {cols} VALUES ('b', 'b', 'spoke-2', '2026-10-02', 2)"))
+        with pytest.raises(IntegrityError):
+            conn.execute(text(f"INSERT INTO tenants {cols} VALUES ('c', 'c', 'spoke-2', '2026-10-03', 2)"))
+
+
 # ---- tenants that already exist ----------------------------------------------------------
 
 def test_existing_tenants_are_numbered_across_clusters_in_creation_order(db):
@@ -71,16 +125,6 @@ def test_existing_tenants_are_numbered_across_clusters_in_creation_order(db):
     assert database.backfill_tenant_numbers() == 4
     db.expire_all()
     assert _numbers(db) == {"a": 1, "b": 2, "c": 3, "d": 4}
-
-
-def test_numbers_given_per_cluster_are_renumbered_across_clusters(db):
-    """The first version numbered each cluster from 1, so the same number repeated on two spokes."""
-    _tenant(db, "a", "spoke-1", number=1, minutes=1)
-    _tenant(db, "b", "spoke-1", number=2, minutes=2)
-    _tenant(db, "c", "spoke-2", number=1, minutes=3)
-    database.backfill_tenant_numbers()
-    db.expire_all()
-    assert _numbers(db) == {"a": 1, "b": 2, "c": 3}
 
 
 def test_the_backfill_continues_after_numbers_already_given(db):

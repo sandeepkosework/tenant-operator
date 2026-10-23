@@ -16,6 +16,7 @@ from typing import Optional
 
 import yaml
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -110,6 +111,24 @@ def select_cluster(environment: str, db: Session) -> tuple[ClusterInfo, int]:
         f"all clusters eligible for environment '{environment}' are at capacity: "
         f"{[(c.name, counts.get(c.name, 0)) for c in clusters]}"
     )
+
+
+def assign_tenant_number(db: Session, tenant: Tenant, attempts: int = 25) -> int:
+    """Give `tenant` the next free tenant number and save it. The database refuses a number that is
+    already taken (a unique index), so when two tenants are placed at the same moment and read the same
+    "highest so far", the loser's save fails and it simply tries the next number. Two tenants can never
+    end up with the same one."""
+    for _ in range(attempts):
+        tenant.tenant_number = next_tenant_number(db)
+        db.add(tenant)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            continue
+        db.refresh(tenant)
+        return tenant.tenant_number
+    raise RuntimeError(f"could not get a free tenant number after {attempts} attempts")
 
 
 def next_tenant_number(db: Session) -> int:
