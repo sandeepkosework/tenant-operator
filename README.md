@@ -380,7 +380,7 @@ RUNNING --archive--> ARCHIVING --> ARCHIVED --restore--> RESTORING --> RUNNING
 - **Restore** commits the file without `archived` and waits for the pods like a normal rollout. Nothing
   is re-seeded: the databases were never touched.
 - **Delete** is allowed from `ARCHIVED` or `FAILED`; a `RUNNING` tenant is refused with 409 unless
-  `?force=true`. It removes the manifest and namespace as before (databases and secrets are not dropped).
+  `?force=true`. It removes the manifest and namespace; the databases and secrets stay unless you also pass `purge=true` (see "Purging a deleted tenant's data"), so the normal route is archive, then delete with purge.
 - A tenant pinned to a chart release older than `ARCHIVE_MIN_CHART_VERSION` is refused (409): that chart
   would ignore `archived`, and the operator would report success with the pods still running. Update it
   to a newer `chartVersion` first.
@@ -552,7 +552,8 @@ and re-commits `values.yaml` with the updated version/users/db size/service
 selection, then re-runs the same Argo CD/Kubernetes wait loop.
 `DELETE /api/v1/tenant/{id}` removes the tenant's manifest from git, deletes
 its namespace directly (the one deliberate write exception — see below),
-and polls until the namespace is gone.
+and polls until the namespace is gone. The tenant's data stores are **kept**
+unless a purge is requested — see "Purging a deleted tenant's data" below.
 
 ## Argo CD failure monitoring
 
@@ -1012,6 +1013,9 @@ Selected settings worth knowing about explicitly:
 | Setting | Default | Notes |
 |---|---|---|
 | `ADMIN_PASSWORD` / `API_KEY` | unset | Auth — see "Authentication". At least one must be set or every API route returns 503. |
+| `PURGE_ENABLED` | `false` | Allows `purge=true` / `POST /tenant/{id}/purge`. Off means purge requests are refused (a dry run still works). |
+| `PURGE_ALLOWED_ENVIRONMENTS` | `["stage"]` | Environments whose tenants may be purged. |
+| `PURGE_SQL_TIMEOUT_SECONDS` | `180` | How long the SQL purge Job may run. |
 | `WORKPLACE_DM_PASSWORD_AS` | `hash` | Form of the QraieBot password given to `bridge-cp-conductor` as `WORKPLACE_DM_PASSWORD`: `hash` (bcrypt, as in the old compose files) or `plain`. The seed stores the same credential either way. |
 | `ENVIRONMENT` | `stage` | Which environment *this* deployment serves — drives spoke capacity thresholds. One deployment = one environment. |
 | `DATABASE_URL` | `postgresql+psycopg2://...` | Points at the Helm chart's own lightweight in-chart Postgres by default (auto-assembled, see `helm-charts/README.md`'s "Persistence" section); set it yourself to use a real external Postgres instead. SQLite is no longer supported in the chart. |
@@ -1258,7 +1262,52 @@ take a few seconds (up to `PREFLIGHT_SQL_TIMEOUT_SECONDS`) longer than before.
 
 Set `PREFLIGHT_ENABLED=false` to bypass it (for example when deliberately
 re-provisioning onto an existing database). To reuse a `tenantId` otherwise,
-drop its SQL database + login and its Mongo database first.
+purge the deleted tenant (next section) or drop its SQL database + login and
+its Mongo database by hand.
+
+## Purging a deleted tenant's data (`services/purge_service.py`)
+
+A plain delete leaves the tenant's data behind. A **purge** removes it, and only
+ever runs when explicitly requested:
+
+| Removed | How |
+| --- | --- |
+| Onboarding-server record | `DELETE <ONBOARDING_SERVER_URL>/config/<tenant name>` (404 counts as already gone) |
+| Mongo `<tenant name>-bridge` | `drop_database` |
+| Mongo env-config mirror | the database named after the slug, or, with `MONGO_ENV_CONFIG_SHARED_DB`, only this tenant's documents there |
+| SQL database and login | a Job on the hub (same pattern as the preflight check): single-user, `DROP DATABASE`, `DROP LOGIN` |
+| Vault secrets | every version and the metadata under `secret/<VAULT_TENANT_SECRET_PREFIX>/<slug>/` |
+
+**Kept on purpose** (the audit trail): the Postgres row (soft-deleted), the registry
+record (marked `DELETED`) and the tenant-info file in git. The hub `Tenant` CR is not
+a step: `create_tenant_cr()` only echoes it, so nothing exists to delete.
+
+```
+DELETE /api/v1/tenant/{id}?purge=true&confirm=<tenant name>   # delete, then purge
+POST   /api/v1/tenant/{id}/purge?confirm=<tenant name>        # purge an already DELETED tenant (202, background)
+POST   /api/v1/tenant/{id}/purge?dry_run=true                 # report what exists and would go; removes nothing
+```
+
+**Safeguards**
+- Off by default: `PURGE_ENABLED=false`. Even when on, the tenant's environment must be
+  in `PURGE_ALLOWED_ENVIRONMENTS` (default `["stage"]`), so a prod operator refuses.
+- `confirm` must equal the tenant name (not needed for `dry_run`).
+- The tenant must be `DELETED`, and no other, live tenant may have the same name:
+  a newer tenant that reused the name owns the same databases, so the purge is refused.
+- Names are validated before they reach Mongo, T-SQL or a Vault path. `admin`, `local`,
+  `config`, `test`, `qraieai` and the shared env-config database are never dropped, and a
+  mirror database holding collections the operator does not create is left alone.
+- Each step is independent: one that fails (SQL Server down, for example) is reported and
+  the rest still run; every step is safe to run again. Each result is recorded as a
+  progress event under the step `purge`.
+
+Permissions to check before turning it on: the operator's Vault policy needs `list` and
+`delete` on `secret/metadata/<prefix>/*`; the Mongo and SQL admin credentials it already
+uses can drop; the onboarding server needs `ADMIN_TOKEN` set to the same value as the
+operator's `ONBOARDING_SERVER_TOKEN`, otherwise its delete route answers 403 and that one
+step fails (the others still run).
+
+Purging is **irreversible and there is no backup step**. Preview with `dry_run=true` first.
 
 The tenant's SQL login password (`DB_PASSWORD`) is generated from letters,
 digits and `_` only: symbols in it were mangled on the way through `sqlcmd -v`

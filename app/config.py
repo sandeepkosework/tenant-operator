@@ -338,6 +338,16 @@ class Settings(BaseSettings):
     provisioning_timeout_seconds: int = 900          # 15 min ceiling before FAILED
     allowed_environments: list[str] = ["dev", "stage", "prod"]
 
+    # --- Tenant data purge (see services/purge_service.py) ---
+    # Deleting a tenant removes its namespace and manifest but leaves its data
+    # stores behind. A purge, only ever requested explicitly, also drops the
+    # SQL database and login, the Mongo databases, the Vault secrets and the
+    # onboarding-server record. Off unless PURGE_ENABLED=true, and only for the
+    # environments listed here, so a prod operator refuses until you opt in.
+    purge_enabled: bool = False
+    purge_allowed_environments: list[str] = ["stage"]
+    purge_sql_timeout_seconds: int = 180
+
 
     def spoke_capacity(self, environment: str) -> int:
         return self.prod_spoke_capacity if environment == "prod" else self.stage_spoke_capacity

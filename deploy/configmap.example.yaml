@@ -122,6 +122,15 @@ data:
   # ONBOARDING_SERVER_TIMEOUT_SECONDS: "15"
   # (ONBOARDING_SERVER_TOKEN, if you put auth in front of it, belongs in the Secret)
 
+  # --- Tenant data purge (OFF unless enabled; see README "Purging a deleted tenant's data") ---
+  # DELETE ...?purge=true and POST /tenant/{id}/purge remove a deleted tenant's SQL database
+  # and login, Mongo databases, Vault secrets and onboarding record. Irreversible; no backup.
+  # PURGE_ENABLED: "false"
+  # PURGE_ALLOWED_ENVIRONMENTS: '["stage"]'
+  # PURGE_SQL_TIMEOUT_SECONDS: "180"
+  # The onboarding server must have ADMIN_TOKEN set to the same value as
+  # ONBOARDING_SERVER_TOKEN (Secret), or its record cannot be deleted.
+
   # --- QraieBot credential for bridge-cp-conductor (see README) ---
   # WORKPLACE_DM_PASSWORD is QraieBot's real credential, generated once per tenant and
   # shared with the seed. "hash" (default) gives the conductor the bcrypt hash, as the old

@@ -16,6 +16,7 @@ otherwise logs/echoes what would happen, same pattern as vault_service.py
 and crossplane_service.py.
 """
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -220,3 +221,72 @@ def upsert_registry_record(tenant) -> None:
         _registry_retry_after = time.monotonic() + _REGISTRY_BACKOFF_SECONDS
         logger.warning("[mongo] tenant=%s could not update registry record in %s: %s",
                        tenant.slug, settings.qraieai_db_name, e)
+
+
+# --- tenant data purge --------------------------------------------------------
+
+_PURGE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# Never dropped, whatever the tenant is called.
+_PROTECTED_DATABASES = {"admin", "local", "config", "test"}
+
+
+def _protected_databases() -> set[str]:
+    protected = set(_PROTECTED_DATABASES)
+    protected.add(settings.qraieai_db_name)
+    if settings.mongo_env_config_shared_db:
+        protected.add(settings.mongo_env_config_shared_db)
+    return protected
+
+
+def _drop_if_allowed(client, name: str, dry_run: bool, allowed_collections: set[str] | None = None) -> dict:
+    """Drops database `name` unless it is protected, absent, or (when
+    allowed_collections is given) holds anything other than those collections."""
+    if not _PURGE_NAME_RE.fullmatch(name):
+        return {"database": name, "action": "skipped", "reason": "name is not a valid tenant database name"}
+    if name in _protected_databases():
+        return {"database": name, "action": "skipped", "reason": "protected database"}
+    collections = client[name].list_collection_names()
+    if not collections:
+        return {"database": name, "action": "absent", "collections": 0}
+    if allowed_collections is not None:
+        unexpected = sorted(set(collections) - allowed_collections)
+        if unexpected:
+            return {"database": name, "action": "skipped", "collections": len(collections),
+                    "reason": f"contains collections the operator does not create: {', '.join(unexpected[:5])}"}
+    if dry_run:
+        return {"database": name, "action": "would_drop", "collections": len(collections)}
+    client.drop_database(name)
+    logger.info("[mongo] dropped database %s (%d collections)", name, len(collections))
+    return {"database": name, "action": "dropped", "collections": len(collections)}
+
+
+def purge_tenant_databases(tenant_name: str, tenant_slug: str, dry_run: bool = False) -> list[dict]:
+    """Drops the tenant's data database "<tenant_name>-bridge" and removes its
+    env-config mirror (the database named after the slug, or, when
+    mongo_env_config_shared_db is set, just this tenant's documents in that shared
+    database -- the shared database itself is never dropped). Returns one result
+    dict per target. Raises MongoServiceError if Mongo is unavailable."""
+    client = _get_client()
+    results = [_drop_if_allowed(client, f"{tenant_name}-bridge", dry_run)]
+
+    if not settings.mongo_env_config_enabled:
+        results.append({"database": tenant_slug, "action": "skipped",
+                        "reason": "the env-config mirror is disabled, so the operator never created it"})
+    elif settings.mongo_env_config_shared_db:
+        coll = client[settings.mongo_env_config_shared_db][SHARED_ENV_CONFIG_COLLECTION]
+        count = coll.count_documents({"tenant": tenant_slug})
+        if count and not dry_run:
+            coll.delete_many({"tenant": tenant_slug})
+            logger.info("[mongo] removed %d env-config documents for %s from %s",
+                        count, tenant_slug, settings.mongo_env_config_shared_db)
+        results.append({
+            "database": f"{settings.mongo_env_config_shared_db} (tenant documents)",
+            "action": "absent" if not count else ("would_remove" if dry_run else "removed"),
+            "documents": count,
+        })
+    else:
+        # The mirror holds one collection per service group; refuse to drop a database
+        # named like the slug if it holds anything else (it would not be ours).
+        ours = set(QRAIE_BRIDGE_SERVICE_GROUPS.values()) | set(QRAIE_BRIDGE_SERVICE_GROUPS)
+        results.append(_drop_if_allowed(client, tenant_slug, dry_run, allowed_collections=ours))
+    return results
