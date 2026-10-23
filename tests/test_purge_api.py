@@ -96,6 +96,7 @@ def test_post_purge_needs_a_deleted_tenant(calls, monkeypatch):
 
 def test_post_purge_runs_in_the_background(calls, monkeypatch):
     monkeypatch.setattr(purge_service, "check_purgeable", lambda db, t: None)
+    monkeypatch.setattr(purge_service, "check_previewable", lambda db, t: None)
     r = _client(_tenant(status=TenantStatus.DELETED)).post(f"/tenant/{TID}/purge?confirm=hbss-036")
     assert r.status_code == 202
     assert r.json()["status"] == "PURGING"
@@ -104,6 +105,7 @@ def test_post_purge_runs_in_the_background(calls, monkeypatch):
 
 def test_post_purge_needs_confirm(calls, monkeypatch):
     monkeypatch.setattr(purge_service, "check_purgeable", lambda db, t: None)
+    monkeypatch.setattr(purge_service, "check_previewable", lambda db, t: None)
     r = _client(_tenant(status=TenantStatus.DELETED)).post(f"/tenant/{TID}/purge")
     assert r.status_code == 400
     assert calls["purge"] == []
@@ -111,6 +113,7 @@ def test_post_purge_needs_confirm(calls, monkeypatch):
 
 def test_dry_run_needs_no_confirm_and_deletes_nothing(calls, monkeypatch):
     monkeypatch.setattr(purge_service, "check_purgeable", lambda db, t: None)
+    monkeypatch.setattr(purge_service, "check_previewable", lambda db, t: None)
     seen = {}
 
     def fake_run(tenant, dry_run=False):
@@ -129,5 +132,35 @@ def test_dry_run_needs_no_confirm_and_deletes_nothing(calls, monkeypatch):
 def test_dry_run_works_even_when_purging_is_disabled(calls, monkeypatch):
     monkeypatch.setattr(purge_service.settings, "purge_enabled", False)
     monkeypatch.setattr(purge_service, "check_purgeable", lambda db, t: None)
+    monkeypatch.setattr(purge_service, "check_previewable", lambda db, t: None)
     monkeypatch.setattr(purge_service, "purge_tenant_data", lambda tenant, dry_run=False: [])
     assert _client(_tenant(status=TenantStatus.DELETED)).post(f"/tenant/{TID}/purge?dry_run=true").status_code == 200
+
+
+# ---- a preview before the delete ---------------------------------------------------------
+
+def test_a_preview_works_for_an_archived_tenant_and_says_a_purge_would_be_allowed(calls, monkeypatch):
+    monkeypatch.setattr(purge_service, "check_previewable", lambda db, t: None)
+    monkeypatch.setattr(purge_service, "purge_tenant_data", lambda tenant, dry_run=False: [])
+    r = _client(_tenant(status=TenantStatus.ARCHIVED)).post(f"/tenant/{TID}/purge?dry_run=true")
+    assert r.status_code == 200
+    assert r.json()["purgeAllowed"] is True and r.json()["purgeBlockedReason"] is None
+
+
+def test_a_preview_says_why_a_purge_would_be_refused(calls, monkeypatch):
+    monkeypatch.setattr(purge_service.settings, "purge_enabled", False)
+    monkeypatch.setattr(purge_service, "check_previewable", lambda db, t: None)
+    monkeypatch.setattr(purge_service, "purge_tenant_data", lambda tenant, dry_run=False: [])
+    body = _client(_tenant(status=TenantStatus.ARCHIVED)).post(f"/tenant/{TID}/purge?dry_run=true").json()
+    assert body["purgeAllowed"] is False and "PURGE_ENABLED" in body["purgeBlockedReason"]
+
+
+@pytest.mark.parametrize("status", [TenantStatus.RUNNING, TenantStatus.ARCHIVING, TenantStatus.DELETING])
+def test_a_running_tenants_data_is_not_previewed(calls, status):
+    r = _client(_tenant(status=status)).post(f"/tenant/{TID}/purge?dry_run=true")
+    assert r.status_code == 409 and "ARCHIVED, FAILED or DELETED" in r.json()["detail"]
+
+
+def test_a_real_purge_still_needs_the_tenant_to_be_deleted(calls):
+    r = _client(_tenant(status=TenantStatus.ARCHIVED)).post(f"/tenant/{TID}/purge?confirm=hbss-036")
+    assert r.status_code == 409 and calls["purge"] == []

@@ -96,9 +96,26 @@ def check_purge_allowed(tenant: Tenant, confirm: str | None) -> None:
 
 
 def check_purgeable(db: Session, tenant: Tenant) -> None:
-    """State guards, for dry runs and real purges alike."""
+    """State guards for a real purge: the tenant must already be DELETED."""
     if tenant.status != TenantStatus.DELETED:
         raise PurgeNotAllowed("state", f"the tenant is {tenant.status.value}; only a DELETED tenant can be purged")
+    _check_name_and_namesake(db, tenant)
+
+
+# A preview may run before the delete, so the operator can see what a permanent delete would remove.
+_PREVIEWABLE = (TenantStatus.ARCHIVED, TenantStatus.FAILED, TenantStatus.DELETED)
+
+
+def check_previewable(db: Session, tenant: Tenant) -> None:
+    """State guards for a dry run: an archived, failed or deleted tenant (never a running one)."""
+    if tenant.status not in _PREVIEWABLE:
+        raise PurgeNotAllowed(
+            "state", f"the tenant is {tenant.status.value}; its data can be previewed once it is ARCHIVED, FAILED or DELETED",
+        )
+    _check_name_and_namesake(db, tenant)
+
+
+def _check_name_and_namesake(db: Session, tenant: Tenant) -> None:
     if not _NAME_RE.fullmatch(tenant.tenant_name or ""):
         raise PurgeNotAllowed("name", f"'{tenant.tenant_name}' is not a valid tenant name for a purge")
     # A newer tenant may have reused this name; its data lives in the very same databases.

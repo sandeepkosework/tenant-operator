@@ -130,6 +130,12 @@
   dialog::backdrop{background:rgba(10,15,25,.5)} dialog h3{margin:0 0 8px;font-size:16px;text-transform:none;letter-spacing:0;color:var(--text)}
   dialog input{width:100%;padding:9px 11px;margin:10px 0 4px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--text)}
   .dlgbtns{display:flex;gap:10px;justify-content:flex-end;margin-top:14px}
+  dialog#confirm{width:min(540px,94vw)}
+  .pv{margin:10px 0 8px;border:1px solid var(--line);border-radius:9px;background:var(--soft);padding:8px 10px;font-size:12.5px;max-height:220px;overflow:auto}
+  .pv .row{display:grid;grid-template-columns:14px 1fr;gap:8px;padding:5px 0;border-bottom:1px solid var(--line)} .pv .row:last-child{border-bottom:0}
+  .pv .ic{font-weight:700} .pv .will{color:var(--bad)} .pv .none{color:var(--muted)} .pv .warn{color:var(--warn)}
+  .pv .d{color:var(--muted);word-break:break-word}
+  .pvopt{display:flex;gap:8px;align-items:flex-start;margin:6px 0 2px} .pvopt input{margin-top:3px;width:auto}
   #toasts{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:60;display:flex;flex-direction:column;gap:8px;align-items:center}
   .toast{background:var(--text);color:var(--bg);padding:9px 16px;border-radius:10px;box-shadow:var(--shadow);font-size:13px}
   .toast.err{background:var(--bad);color:#fff}
@@ -214,7 +220,11 @@
 
 <dialog id="confirm">
   <h3>Delete this tenant permanently?</h3>
-  <p class="muted" style="margin:0 0 4px">This removes its manifest and namespace, and its volumes with them. It cannot be restored afterwards. Databases and secrets are not dropped. Type <b id="cName"></b> to confirm.</p>
+  <p class="muted" style="margin:0 0 4px">This removes its manifest and namespace, and its volumes with them. It cannot be restored afterwards.</p>
+  <div class="pv" id="cPreview" aria-live="polite">Checking what exists…</div>
+  <label class="chk pvopt"><input type="checkbox" id="cPurge" disabled> <span>Also permanently delete its data: SQL database and login, Mongo databases, Vault secrets and the onboarding record</span></label>
+  <div class="muted small" id="cPurgeNote"></div>
+  <p class="muted" style="margin:10px 0 0">Type <b id="cName"></b> to confirm.</p>
   <input id="cInput" autocomplete="off" aria-label="Type the tenant name to confirm">
   <div class="dlgbtns"><button class="btn" id="cCancel">Cancel</button><button class="btn danger" id="cOk" disabled>Delete permanently</button></div>
 </dialog>
@@ -408,21 +418,61 @@ function askArchive(id){
 function doRestore(id){ lifecycle(id, "restore", "Restore started", "Restore failed"); }
 
 /* ---------- delete ---------- */
-let delId = null;
-function askDelete(id){
-  const t = S.tenants.find(x => x.id === id); if(!t) return; delId = id;
-  $("cName").textContent = t.slug; $("cInput").value = ""; $("cOk").disabled = true; $("confirm").showModal(); $("cInput").focus();
+// "Delete permanently" first runs a dry run of the data purge and lists what exists, then deletes
+// (and, when the box is ticked, purges) only after the tenant name has been typed.
+let delId = null, delName = "", delPreviewed = false;
+const STEP_VIEW = {
+  would_do: ["✕", "will", "will be removed"], absent: ["–", "none", "nothing to remove"],
+  skipped: ["–", "none", "not configured here"], failed: ["!", "warn", "could not be checked"],
+};
+function renderPreview(body){
+  const steps = body.steps || [];
+  $("cPreview").innerHTML = (steps.length ? steps.map(st => {
+    const [ic, cls, txt] = STEP_VIEW[st.status] || ["•", "none", st.status];
+    return `<div class="row"><span class="ic ${cls}">${ic}</span><div><b>${h(st.step)}</b> — <span class="${cls}">${h(txt)}</span><div class="d">${h(st.detail || "")}</div></div></div>`;
+  }).join("") : `<div class="none">No data stores are configured on this operator.</div>`);
 }
-$("cInput").oninput = e => { const t = S.tenants.find(x => x.id === delId); $("cOk").disabled = !t || e.target.value !== t.slug; };
-$("cCancel").onclick = () => $("confirm").close();
-$("cOk").onclick = async () => {
-  const id = delId; $("cOk").disabled = true;
+function syncDeleteDialog(){
+  const purge = $("cPurge").checked, typed = $("cInput").value === delName;
+  $("cOk").textContent = purge ? "Delete everything permanently" : "Delete (keep data)";
+  $("cOk").disabled = !(delPreviewed && typed);
+}
+async function askDelete(id){
+  const t = S.tenants.find(x => x.id === id); if(!t) return;
+  delId = id; delName = t.tenantName; delPreviewed = false;
+  $("cName").textContent = delName; $("cInput").value = "";
+  $("cPurge").checked = false; $("cPurge").disabled = true; $("cPurgeNote").textContent = "";
+  $("cPreview").textContent = "Checking what exists…"; syncDeleteDialog(); $("confirm").showModal(); $("cInput").focus();
   try {
-    const r = await api(`/tenant/${id}`, {method: "DELETE"});
+    const r = await api(`/tenant/${id}/purge?dry_run=true`, {method: "POST"});
+    const body = await r.json().catch(() => ({}));
+    if(delId !== id) return;                                   // the dialog was closed or reopened meanwhile
+    if(!r.ok){
+      $("cPreview").innerHTML = `<div class="warn">${h(body.detail || "Could not check the tenant's data")}</div>`;
+      $("cPurgeNote").textContent = "Its data cannot be deleted from here; deleting now removes only the namespace and manifest.";
+    } else {
+      renderPreview(body);
+      if(body.purgeAllowed){ $("cPurge").disabled = false; $("cPurge").checked = true; }
+      else $("cPurgeNote").textContent = "Its data will be kept: " + (body.purgeBlockedReason || "purging is not allowed");
+    }
+  } catch (e) {
+    if(e.message === "session expired") return;
+    $("cPreview").innerHTML = `<div class="warn">Could not check the tenant's data: ${h(e.message)}</div>`;
+  }
+  delPreviewed = true; syncDeleteDialog();
+}
+$("cInput").oninput = syncDeleteDialog;
+$("cPurge").onchange = syncDeleteDialog;
+$("cCancel").onclick = () => { delId = null; $("confirm").close(); };
+$("cOk").onclick = async () => {
+  const id = delId, purge = $("cPurge").checked; $("cOk").disabled = true;
+  try {
+    const qs = purge ? `?purge=true&confirm=${encodeURIComponent(delName)}` : "";
+    const r = await api(`/tenant/${id}${qs}`, {method: "DELETE"});
     if(!r.ok){ toast((await r.json().catch(() => ({}))).detail || "Delete failed", true); }
-    else { toast("Deletion started"); }
+    else { toast(purge ? "Deletion started; its data will be removed afterwards" : "Deletion started"); }
   } catch (e) { if(e.message !== "session expired") toast("Delete failed: " + e.message, true); }
-  $("confirm").close(); refresh();
+  delId = null; $("confirm").close(); refresh();
 };
 
 token ? enter() : show("login");
