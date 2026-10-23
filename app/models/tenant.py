@@ -77,13 +77,14 @@ class Tenant(Base):
     # codebase. Nullable so old rows created before this column existed
     # don't break; every tenant created going forward always gets one.
     tenant_seq = Column(Integer, nullable=True, index=True)
-    # Which tenant this is on its cluster: 1 for the first tenant ever placed there, 2 for the next, and
-    # so on. Counted over every tenant of that cluster, deleted ones included, so a number is never
-    # reused. Set when the cluster is chosen (provisioner.provision_tenant) and shown as `tenantSeq` in
-    # the tenant-info file. It is NOT part of the slug (tenant_seq above is, for old tenants), so it
-    # changes no namespace or path. Added to an existing database, and filled in for the tenants already
-    # in it by creation order, at startup (database.ensure_schema).
-    cluster_seq = Column(Integer, nullable=True, index=True)
+    # This tenant's number across ALL spokes: 1 for the first tenant ever placed, 2 for the next, and so
+    # on, whichever cluster it lands on (10 tenants on spoke-1 means the first on spoke-2 is 11). Counted
+    # over every tenant, deleted ones included, so a number is never reused. Set when the cluster is
+    # chosen (provisioner.provision_tenant) and shown as `tenantSeq` in the tenant-info file. It is NOT
+    # part of the slug (tenant_seq above is, for old tenants), so it changes no namespace or path. Added
+    # to an existing database, and filled in for the tenants already in it by creation order, at startup
+    # (database.ensure_schema). Earlier called cluster_seq, when it was numbered per cluster.
+    tenant_number = Column(Integer, nullable=True, index=True)
     display_name = Column(String(255), nullable=True)
     email = Column(String(255), nullable=True)
     domain = Column(String(255), nullable=True)

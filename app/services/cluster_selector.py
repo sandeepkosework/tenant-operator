@@ -112,8 +112,8 @@ def select_cluster(environment: str, db: Session) -> tuple[ClusterInfo, int]:
     )
 
 
-def next_cluster_seq(db: Session, cluster_name: str) -> int:
-    """The number the next tenant placed on this cluster gets: one more than the highest so far.
+def next_tenant_number(db: Session) -> int:
+    """The number the next tenant placed gets: one more than the highest so far, across every spoke.
     Deleted tenants count, so a number is never reused."""
-    highest = db.query(func.max(Tenant.cluster_seq)).filter(Tenant.cluster == cluster_name).scalar()
+    highest = db.query(func.max(Tenant.tenant_number)).scalar()
     return (highest or 0) + 1

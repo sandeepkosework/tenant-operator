@@ -309,7 +309,7 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             progress.record(tenant.id, "placement", "start", "Choosing a cluster with free capacity")
             cluster, projected_count = cluster_selector.select_cluster(tenant.environment, db)
             tenant.cluster = cluster.name
-            tenant.cluster_seq = cluster_selector.next_cluster_seq(db, cluster.name)
+            tenant.tenant_number = cluster_selector.next_tenant_number(db)
             # tenant.slug already carries the sequential id (see
             # Tenant.slug) -- "tenant-" here is just so this namespace
             # reads unambiguously as a tenant's own among argocd/vault/
