@@ -309,7 +309,6 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             progress.record(tenant.id, "placement", "start", "Choosing a cluster with free capacity")
             cluster, projected_count = cluster_selector.select_cluster(tenant.environment, db)
             tenant.cluster = cluster.name
-            tenant.cluster_seq = cluster_selector.next_cluster_seq(db, cluster.name)
             # tenant.slug already carries the sequential id (see
             # Tenant.slug) -- "tenant-" here is just so this namespace
             # reads unambiguously as a tenant's own among argocd/vault/
@@ -318,6 +317,9 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             db.add(tenant)
             db.commit()
             db.refresh(tenant)
+            # Its own step, after the placement is saved: the number is unique in the database, and a
+            # collision with a tenant placed at the same moment is retried here with the next one.
+            cluster_selector.assign_tenant_number(db, tenant)
             logger.info(
                 "[step] tenant=%s placed on cluster=%s (region=%s, %d/%d on that spoke)",
                 tenant.tenant_name, cluster.name, cluster.region, projected_count,

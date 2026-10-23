@@ -200,12 +200,16 @@ Key fields:
   file stay valid. Creating a tenant whose name equals an existing tenant's
   slug (e.g. a new `acme-2` while `acme` with sequence 2 exists) is rejected
   with a 400. `slug` is never used for anything customer-facing.
-- `cluster_seq` — which tenant this is **on its cluster**: 1 for the first tenant ever placed there, 2
-  for the next, and so on. It is given when the cluster is chosen, counts deleted tenants too (a number is
-  never reused), and is shown as `tenantSeq` in the tenant-info file and as `clusterSeq` in the API. Unlike
-  `tenant_seq` it is not part of the slug, so it changes no namespace or path. The column is added at
-  startup, and tenants that already exist are numbered in creation order, per cluster. The info file in
-  git is rewritten the next time the tenant's status changes (archive, restore, update, delete).
+- `tenant_number` — this tenant's number **across all spokes**: 1 for the first tenant ever placed, 2 for the
+  next, whichever cluster it lands on (after 10 tenants on `spoke-1`, the first on `spoke-2` is 11). It is
+  given when the cluster is chosen, counts deleted tenants too (a number is never reused), is **unique in the
+  database** (a unique index, so two tenants placed at the same moment cannot share one: the one that loses
+  simply takes the next number), and is shown as
+  `tenantSeq` in the tenant-info file and as `tenantNumber` in the API. Unlike `tenant_seq` it is not part
+  of the slug, so it changes no namespace or path. The column is added at startup (renamed from
+  `cluster_seq`, the per-cluster first version), and tenants that already exist are numbered in creation
+  order. The info file in git is rewritten the next time the tenant's status changes (archive, restore,
+  update, delete).
 - `helm_chart_version` — the **released chart version** this tenant is pinned to: a tag like
   `v0.1.0` of the chart repository. It is set from `HELM_CHART_VERSION` when the tenant is
   created, written into the tenant's values file as `chartVersion`, and read by the

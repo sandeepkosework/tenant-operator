@@ -143,8 +143,8 @@ class TenantResponse(BaseModel):
     id: uuid.UUID
     tenantName: str = Field(validation_alias="tenant_name")
     tenantSeq: Optional[int] = Field(default=None, validation_alias="tenant_seq")
-    # Which tenant this is on its cluster (1 = the first ever placed there); see Tenant.cluster_seq.
-    clusterSeq: Optional[int] = Field(default=None, validation_alias="cluster_seq")
+    # This tenant's number across all spokes (1 = the first ever placed); see Tenant.tenant_number.
+    tenantNumber: Optional[int] = Field(default=None, validation_alias="tenant_number")
     # Read via getattr(orm_obj, "slug") -- Tenant.slug is a plain @property,
     # not a column, but from_attributes=True below still picks it up.
     slug: str
