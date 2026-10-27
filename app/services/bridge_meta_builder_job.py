@@ -100,6 +100,7 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
     gating meta_builder_job.py uses (no controlops-server secret means no
     service in this tenant actually models a real DB connection)."""
     db_secret = vault_service.read_qraie_bridge_tenant_secret(tenant.slug, _DB_SERVICE)
+    common_secret = vault_service.read_qraie_bridge_tenant_secret(tenant.slug, "service-common") or {}
     if not db_secret or not db_secret.get("DB_NAME"):
         return None
 
@@ -161,7 +162,8 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
         # The tenant's qraie-redis-shared Service. Derived here, not read from Vault:
         # the chart now sets REDIS_HOST in the pods' env, so Vault no longer holds it.
         {"name": "REDIS_HOST", "value": vault_service.tenant_redis_host(tenant.slug)},
-        {"name": "REDIS_PASSWORD", "value": db_secret.get("REDIS_PASSWORD", "")},
+        # REDIS_PASSWORD is only in the tenant's service-common secret, not in each service's.
+        {"name": "REDIS_PASSWORD", "value": common_secret.get("REDIS_PASSWORD", "")},
         {"name": "MONGO_DB_HOST", "value": mongo_host},
         {"name": "MONGO_DB_PORT", "value": mongo_port},
         {"name": "MONGO_DB_USERNAME", "value": mongo_user},
