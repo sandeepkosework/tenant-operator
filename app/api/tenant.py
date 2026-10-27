@@ -193,9 +193,9 @@ def sync_shared_vault_keys(tenant_id: uuid.UUID, apply: bool = False, db: Sessio
 
 @router.post(
     "/{tenant_id}/vault/prune-chart-provided-keys",
-    summary="Remove TENANT_ID, VIRTUAL_HOST, REDIS_HOST and REDIS_PORT from a tenant's Vault secrets",
+    summary="Remove the chart-provided keys (TENANT_ID, VIRTUAL_HOST, REDIS_*) from a tenant's Vault secrets",
     description=(
-        "For a tenant created before helm-chart-bridge set these four keys in every service's env itself: removes "
+        "For a tenant created before helm-chart-bridge set these keys (TENANT_ID, VIRTUAL_HOST, REDIS_HOST, REDIS_PORT, REDIS_URL) in every service's env itself: removes "
         "them from each of the tenant's Vault paths (`REDIS_PASSWORD` is not touched; a path that would be left with "
         "no key is skipped). **Dry run by default**; pass `apply=true` to rewrite the secrets. The chart's value wins "
         "over Vault, so nothing changes once the chart is deployed -- but any key whose Vault value differs from the "

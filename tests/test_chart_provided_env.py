@@ -71,6 +71,7 @@ def test_prune_removes_only_chart_provided_keys_and_reports_differences(monkeypa
         "k8s/hbss-036-45/bridge": {"TENANT_ID": "hbss-036-45", "VIRTUAL_HOST": "hbss-036.qraie.ai",
                                    "REDIS_HOST": "hbss-036-45-qraie-redis-shared", "REDIS_PORT": "6379",
                                    "REDIS_PASSWORD": "pw", "PORT": "1"},
+        "k8s/hbss-036-45/enrollment-api": {"REDIS_URL": "redis://hbss-036-45-qraie-redis:6379", "SML_BASE_URL": "x"},
         "k8s/hbss-036-45/qraie-redis": {"TENANT_ID": "hbss-036"},
     }
     _fake_vault(monkeypatch, store)
@@ -83,6 +84,7 @@ def test_prune_removes_only_chart_provided_keys_and_reports_differences(monkeypa
 
     out = vault_service.prune_chart_provided_keys("hbss-036-45", "hbss-036", "hbss-036.qraie.ai", apply=True)
     assert store["k8s/hbss-036-45/bridge"] == {"REDIS_PASSWORD": "pw", "PORT": "1"}
+    assert store["k8s/hbss-036-45/enrollment-api"] == {"SML_BASE_URL": "x"}  # REDIS_URL matched the chart's, so not in differs
     # a path that would be left empty is skipped, not written
     assert out["services"]["qraie-redis"]["status"] == "skipped"
     assert store["k8s/hbss-036-45/qraie-redis"] == {"TENANT_ID": "hbss-036"}

@@ -342,10 +342,11 @@ def tenant_redis_host(tenant_slug: str) -> str:
 
 
 # Keys helm-chart-bridge now sets in each service's env itself (commonEnv for
-# TENANT_ID and VIRTUAL_HOST, serviceRefEnv for REDIS_HOST/REDIS_PORT), and which
+# TENANT_ID and VIRTUAL_HOST, serviceRefEnv for REDIS_HOST/REDIS_PORT and
+# enrollment-api's REDIS_URL), and which
 # win over the envFrom secrets anyway. They are still resolved into the returned
 # per-service mapping (mirrored to Mongo), but not written to Vault.
-CHART_PROVIDED_KEYS = frozenset({"TENANT_ID", "VIRTUAL_HOST", "REDIS_HOST", "REDIS_PORT"})
+CHART_PROVIDED_KEYS = frozenset({"TENANT_ID", "VIRTUAL_HOST", "REDIS_HOST", "REDIS_PORT", "REDIS_URL"})
 
 
 def read_qraie_bridge_platform_defaults() -> dict[str, dict]:
@@ -695,7 +696,7 @@ def prune_empty_tenant_secrets(tenant_slug: str, apply: bool = False) -> dict:
 
 def prune_chart_provided_keys(tenant_slug: str, tenant_name: str, tenant_domain: str, apply: bool = False) -> dict:
     """For a tenant created before the chart set them in the pods' env: removes
-    CHART_PROVIDED_KEYS (TENANT_ID, VIRTUAL_HOST, REDIS_HOST, REDIS_PORT) from every
+    CHART_PROVIDED_KEYS (TENANT_ID, VIRTUAL_HOST, REDIS_HOST, REDIS_PORT, REDIS_URL) from every
     one of the tenant's Vault paths. Dry run unless apply=True. REDIS_PASSWORD is not
     touched. A path left with no keys is skipped (it must keep one, or the pod's
     ExternalSecret can't sync), e.g. qraie-redis.
@@ -712,6 +713,7 @@ def prune_chart_provided_keys(tenant_slug: str, tenant_name: str, tenant_domain:
         "VIRTUAL_HOST": tenant_domain,
         "REDIS_HOST": tenant_redis_host(tenant_slug),
         "REDIS_PORT": "6379",
+        "REDIS_URL": f"redis://{_k8s_service_slug(tenant_slug)}-qraie-redis:6379",
     }
     base = f"{settings.vault_tenant_secret_prefix}/{tenant_slug}"
     services: dict[str, dict] = {}
