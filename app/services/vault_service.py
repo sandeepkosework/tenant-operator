@@ -206,9 +206,9 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     # These two have no custom `env:` block in the chart (raw redis/
     # redisgears images) -- but every enabled service still gets an
     # ExternalSecret (templates/externalsecret.yaml loops over ALL of
-    # .Values.services) and an implicit TENANT_ID secretKeyRef
-    # (templates/deployment.yaml), so they still need an entry here or
-    # their ExternalSecret would fail ("Secret does not exist") forever.
+    # .Values.services), so the path must exist or the ExternalSecret would
+    # fail ("Secret does not exist") forever. TENANT_ID is kept as the one key
+    # so the path is never empty, though the chart sets it in the env itself.
     "qraie-redis": ["TENANT_ID"],
     "bridge-cp-conductor-redis": ["TENANT_ID"],
     "acl-server": ["TENANT_ID", "ACTIVE_COLOR", "GLOBALAPIBASEURL", "PORT", "REDIS_HOST", "REDIS_PASSWORD", "REDIS_PORT", "START_PORT", "VIRTUAL_DEST", "VIRTUAL_HOST", "VIRTUAL_PATH", "VIRTUAL_PORT"],
@@ -332,6 +332,20 @@ def _k8s_service_slug(tenant_slug: str) -> str:
     (templates/_helpers.tpl "tenant-app.slug"): a Service name can't start with a
     digit, so a slug like "00042-acme" becomes "t-00042-acme"."""
     return f"t-{tenant_slug}" if tenant_slug[:1].isdigit() else tenant_slug
+
+
+def tenant_redis_host(tenant_slug: str) -> str:
+    """In-cluster address of the tenant's own qraie-redis-shared Service. The chart
+    sets REDIS_HOST/REDIS_PORT in every service's env (serviceRefEnv) from the same
+    name, so it is no longer in Vault; the bridge meta-builder Job derives it here."""
+    return f"{_k8s_service_slug(tenant_slug)}-qraie-redis-shared"
+
+
+# Keys helm-chart-bridge now sets in each service's env itself (commonEnv for
+# TENANT_ID and VIRTUAL_HOST, serviceRefEnv for REDIS_HOST/REDIS_PORT), and which
+# win over the envFrom secrets anyway. They are still resolved into the returned
+# per-service mapping (mirrored to Mongo), but not written to Vault.
+CHART_PROVIDED_KEYS = frozenset({"TENANT_ID", "VIRTUAL_HOST", "REDIS_HOST", "REDIS_PORT"})
 
 
 def read_qraie_bridge_platform_defaults() -> dict[str, dict]:
@@ -484,7 +498,7 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
     # Kubernetes Service names can't start with a digit, so a tenant_slug
     # like "00001-verify02" gets a "t-" prefix there, and this must match.
     redis_dns_slug = _k8s_service_slug(tenant_slug)
-    tenant_redis_host = f"{redis_dns_slug}-qraie-redis-shared"
+    redis_host = tenant_redis_host(tenant_slug)
     # Where the wfm-api-gateway reaches wfm-microservice: the chart's per-tenant
     # Service "<slug>-wfm-microservice" on the container port. The old compose file
     # had the container name "http://wfm-microservice:9001", which doesn't resolve
@@ -531,7 +545,7 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
             elif k in service_common_derived:
                 data[k] = service_common_derived[k]
             elif k == "REDIS_HOST":
-                data[k] = tenant_redis_host
+                data[k] = redis_host
             elif k == "REDIS_PORT":
                 data[k] = tenant_redis_port
             elif k == "REDIS_PASSWORD":
@@ -572,7 +586,10 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
         # operator set once in secret/k8s/tenant-common. Left out, the lower layer
         # supplies it. (If NOTHING has a value the keys are written anyway: the
         # path has to exist or the pod's ExternalSecret can't sync.)
-        payload = {k: v for k, v in data.items() if v != ""} or data
+        # Keys the chart sets in the pod's env itself are left out too. If that leaves
+        # nothing (qraie-redis, bridge-cp-conductor-redis only had TENANT_ID), the keys
+        # are written anyway, for the same reason as above.
+        payload = {k: v for k, v in data.items() if v != "" and k not in CHART_PROVIDED_KEYS} or data
         skipped = len(data) - len(payload)
         logger.info(
             "[vault] tenant=%s writing qraie-bridge secret %s/%s%s: %s%s",

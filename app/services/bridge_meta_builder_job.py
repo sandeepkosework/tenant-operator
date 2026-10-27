@@ -158,7 +158,9 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
         # its schema/inserts SQL substitution both key off this value, not
         # its CLI tenantId arg -- see that file's main() for why.
         {"name": "DB_NAME", "value": db_secret.get("DB_NAME", "")},
-        {"name": "REDIS_HOST", "value": db_secret.get("REDIS_HOST", "")},
+        # The tenant's qraie-redis-shared Service. Derived here, not read from Vault:
+        # the chart now sets REDIS_HOST in the pods' env, so Vault no longer holds it.
+        {"name": "REDIS_HOST", "value": vault_service.tenant_redis_host(tenant.slug)},
         {"name": "REDIS_PASSWORD", "value": db_secret.get("REDIS_PASSWORD", "")},
         {"name": "MONGO_DB_HOST", "value": mongo_host},
         {"name": "MONGO_DB_PORT", "value": mongo_port},

@@ -664,6 +664,18 @@ keys in `service-common` and **removes them from every other path of the tenant,
 whatever their value** (the report lists what each path had). Dry run by default; add
 `?apply=true` to write. Then let the chart re-sync and restart the tenant's pods.
 
+**`TENANT_ID`, `VIRTUAL_HOST`, `REDIS_HOST` and `REDIS_PORT` are set by the chart, not Vault.**
+helm-chart-bridge puts them in every service's env (`commonEnv` for `TENANT_ID` =
+`tenant.name` and `VIRTUAL_HOST` = `tenant.domain`; `serviceRefEnv` for the Redis host
+and port), and chart-set env wins over the Vault secrets. The operator therefore no longer
+writes these four keys to Vault (`CHART_PROVIDED_KEYS` in `vault_service.py`); the
+per-service mapping it returns, mirrored to Mongo, still has them. `REDIS_PASSWORD` stays
+in Vault (the same value for every service). The bridge meta-builder Job derives
+`REDIS_HOST` with `vault_service.tenant_redis_host()` instead of reading it back. The
+two Redis-only services keep `TENANT_ID` so their Vault path is not empty. Tenants created
+before this keep the old keys in Vault until they are removed by hand; they are harmless,
+since the chart's value wins. Deploy the chart change first.
+
 **`TENANT_ID` is the bare tenant name, not the slug.** Every service's Vault
 secret gets `TENANT_ID=<tenant_name>` (e.g. `hbss-010`), matching what the seed
 Job uses for the Mongo database (`<tenant_name>-bridge`) and `tenantObj.tenantId`,
