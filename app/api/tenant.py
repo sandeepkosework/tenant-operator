@@ -191,6 +191,31 @@ def sync_shared_vault_keys(tenant_id: uuid.UUID, apply: bool = False, db: Sessio
         raise HTTPException(status_code=503, detail=str(e))
 
 
+@router.post(
+    "/{tenant_id}/vault/prune-chart-provided-keys",
+    summary="Remove the chart-provided keys (TENANT_ID, VIRTUAL_HOST, REDIS_*) from a tenant's Vault secrets",
+    description=(
+        "For a tenant created before helm-chart-bridge set these keys (TENANT_ID, VIRTUAL_HOST, REDIS_HOST, REDIS_PORT, REDIS_URL) in every service's env itself: removes "
+        "them from each of the tenant's Vault paths (`REDIS_PASSWORD` is not touched; a path that would be left with "
+        "no key is skipped). **Dry run by default**; pass `apply=true` to rewrite the secrets. The chart's value wins "
+        "over Vault, so nothing changes once the chart is deployed -- but any key whose Vault value differs from the "
+        "chart's is listed under `differs` (an older tenant's `TENANT_ID` may still be the slug, and the pods then "
+        "move to the bare tenant name), so check that first. Deploy the chart change before applying. Afterwards the "
+        "chart re-syncs and the tenant's pods must be restarted."
+    ),
+    responses={404: {"description": "Tenant not found"}, 503: {"description": "Vault disabled or unreachable"},
+               401: {"description": "Missing/invalid token or API key"}},
+)
+def prune_chart_provided_vault_keys(tenant_id: uuid.UUID, apply: bool = False, db: Session = Depends(get_db)):
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    try:
+        return vault_service.prune_chart_provided_keys(tenant.slug, tenant.tenant_name, tenant.domain or "", apply=apply)
+    except vault_service.VaultServiceError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @router.get(
     "/{tenant_id}/vault",
     summary="Get a tenant's Vault secrets",
