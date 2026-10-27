@@ -693,6 +693,52 @@ def prune_empty_tenant_secrets(tenant_slug: str, apply: bool = False) -> dict:
     return {"tenant": tenant_slug, "applied": apply, "totalKeysRemoved" if apply else "totalKeysToRemove": total, "services": services}
 
 
+def prune_chart_provided_keys(tenant_slug: str, tenant_name: str, tenant_domain: str, apply: bool = False) -> dict:
+    """For a tenant created before the chart set them in the pods' env: removes
+    CHART_PROVIDED_KEYS (TENANT_ID, VIRTUAL_HOST, REDIS_HOST, REDIS_PORT) from every
+    one of the tenant's Vault paths. Dry run unless apply=True. REDIS_PASSWORD is not
+    touched. A path left with no keys is skipped (it must keep one, or the pod's
+    ExternalSecret can't sync), e.g. qraie-redis.
+
+    The chart's value wins over Vault, so removing a key changes nothing once the
+    chart is deployed -- unless Vault held a DIFFERENT value, which the pods then
+    stop seeing. Those are reported under "differs" so it can be checked first;
+    an older tenant's TENANT_ID may still be the slug (see
+    QRAIE_BRIDGE_TENANT_DERIVED_KEYS), where the chart's tenant.name now applies."""
+    if not settings.vault_enabled:
+        raise VaultServiceError("VAULT_ENABLED=false -- there is nothing in Vault to change")
+    expected = {
+        "TENANT_ID": tenant_name,
+        "VIRTUAL_HOST": tenant_domain,
+        "REDIS_HOST": tenant_redis_host(tenant_slug),
+        "REDIS_PORT": "6379",
+    }
+    base = f"{settings.vault_tenant_secret_prefix}/{tenant_slug}"
+    services: dict[str, dict] = {}
+    total = 0
+    for service in QRAIE_BRIDGE_SERVICE_KEYS:
+        path = f"{base}/{service}"
+        data = _read(path)
+        if data is None:
+            services[service] = {"status": "missing", "removed": []}
+            continue
+        removed = sorted(CHART_PROVIDED_KEYS & data.keys())
+        differs = {k: {"vault": data[k], "chart": expected[k]} for k in removed if data[k] != expected[k]}
+        kept = {k: v for k, v in data.items() if k not in CHART_PROVIDED_KEYS}
+        if not removed:
+            services[service] = {"status": "ok", "removed": []}
+        elif not kept:
+            services[service] = {"status": "skipped", "removed": [], "differs": differs,
+                                 "note": "every key would be removed; the path must keep at least one key"}
+        else:
+            if apply:
+                _write(path, kept)
+            services[service] = {"status": "pruned" if apply else "would_prune", "removed": removed, "differs": differs}
+            total += len(removed)
+    logger.info("[vault] tenant=%s prune-chart-provided-keys %s: %d key(s)", tenant_slug, "APPLIED" if apply else "dry run", total)
+    return {"tenant": tenant_slug, "applied": apply, "totalKeysRemoved" if apply else "totalKeysToRemove": total, "services": services}
+
+
 def sync_service_common_derived_keys(tenant_slug: str, apply: bool = False) -> dict:
     """For a tenant created before FABREQ_COMMAND_ENDPOINT_MAP and MCP_SERVER_URL
     moved to service-common: sets both in secret/<prefix>/<slug>/service-common (to

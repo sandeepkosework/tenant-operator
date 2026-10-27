@@ -673,8 +673,11 @@ per-service mapping it returns, mirrored to Mongo, still has them. `REDIS_PASSWO
 in Vault (the same value for every service). The bridge meta-builder Job derives
 `REDIS_HOST` with `vault_service.tenant_redis_host()` instead of reading it back. The
 two Redis-only services keep `TENANT_ID` so their Vault path is not empty. Tenants created
-before this keep the old keys in Vault until they are removed by hand; they are harmless,
-since the chart's value wins. Deploy the chart change first.
+before this keep the old keys in Vault; they are harmless, since the chart's value wins.
+`POST /api/v1/tenant/{id}/vault/prune-chart-provided-keys` removes them (dry run by default,
+`?apply=true` to write; `REDIS_PASSWORD` is kept, and a path that would be left empty is
+skipped). Check `differs` in the report first: an older tenant's `TENANT_ID` may still be the
+slug, and the pods then move to the bare tenant name. Deploy the chart change first.
 
 **`TENANT_ID` is the bare tenant name, not the slug.** Every service's Vault
 secret gets `TENANT_ID=<tenant_name>` (e.g. `hbss-010`), matching what the seed
