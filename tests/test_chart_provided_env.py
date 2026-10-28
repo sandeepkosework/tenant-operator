@@ -86,7 +86,9 @@ def test_prune_removes_only_chart_provided_keys_and_reports_differences(monkeypa
     assert set(out["services"]["bridge"]["differs"]) == {"TENANT_ID"}
 
     out = vault_service.prune_chart_provided_keys("hbss-036-45", "hbss-036", "hbss-036.qraie.ai", apply=True)
-    assert store["k8s/hbss-036-45/bridge"] == {"REDIS_PASSWORD": "pw", "PORT": "1"}
+    # service-common had none, so the one copy moved there
+    assert store["k8s/hbss-036-45/bridge"] == {"PORT": "1"}
+    assert store["k8s/hbss-036-45/service-common"] == {"REDIS_PASSWORD": "pw"}
     assert store["k8s/hbss-036-45/enrollment-api"] == {"SML_BASE_URL": "x"}  # REDIS_URL matched the chart's, so not in differs
     # a path that would be left empty is skipped, not written
     assert out["services"]["qraie-redis"]["status"] == "skipped"
@@ -117,3 +119,33 @@ def test_mongodb_uri_is_only_in_service_common(vault):
     assert [p for p, d in vault.items() if "MONGODB_URI" in d] == ["k8s/hbss-036/service-common"]
     # the services that used it still have it in the mapping mirrored to Mongo
     assert written["erep-server"]["MONGODB_URI"] == written["service-common"]["MONGODB_URI"]
+
+
+def test_prune_adds_a_missing_mongodb_uri_to_service_common_when_the_services_agree(monkeypatch):
+    store = {
+        "k8s/hbss-036-45/service-common": {"ACTIVE_COLOR": "blue"},
+        "k8s/hbss-036-45/erep-server": {"MONGODB_URI": "mongodb://a", "PORT": "1"},
+        "k8s/hbss-036-45/tranops-backend": {"MONGODB_URI": "mongodb://a", "PORT": "2"},
+    }
+    _fake_vault(monkeypatch, store)
+    out = vault_service.prune_chart_provided_keys("hbss-036-45", "hbss-036", "d", apply=False)
+    assert out["serviceCommon"]["MONGODB_URI"]["status"] == "would_add"
+    assert "MONGODB_URI" not in store["k8s/hbss-036-45/service-common"]  # dry run writes nothing
+
+    vault_service.prune_chart_provided_keys("hbss-036-45", "hbss-036", "d", apply=True)
+    assert store["k8s/hbss-036-45/service-common"]["MONGODB_URI"] == "mongodb://a"
+    assert store["k8s/hbss-036-45/erep-server"] == {"PORT": "1"}
+    assert store["k8s/hbss-036-45/tranops-backend"] == {"PORT": "2"}
+
+
+def test_prune_adds_nothing_when_service_copies_of_mongodb_uri_disagree(monkeypatch):
+    store = {
+        "k8s/hbss-036-45/service-common": {"ACTIVE_COLOR": "blue"},
+        "k8s/hbss-036-45/erep-server": {"MONGODB_URI": "mongodb://a", "PORT": "1"},
+        "k8s/hbss-036-45/tranops-backend": {"MONGODB_URI": "mongodb://b", "PORT": "2"},
+    }
+    _fake_vault(monkeypatch, store)
+    out = vault_service.prune_chart_provided_keys("hbss-036-45", "hbss-036", "d", apply=True)
+    assert out["serviceCommon"]["MONGODB_URI"]["status"] == "conflict"
+    assert "MONGODB_URI" not in store["k8s/hbss-036-45/service-common"]
+    assert store["k8s/hbss-036-45/erep-server"]["MONGODB_URI"] == "mongodb://a"

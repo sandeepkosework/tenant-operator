@@ -683,7 +683,9 @@ before this keep the old keys in Vault; they are harmless, since the chart's val
 `POST /api/v1/tenant/{id}/vault/prune-chart-provided-keys` removes them (dry run by default,
 `?apply=true` to write). It also removes `REDIS_PASSWORD` and `MONGODB_URI` from every path but
 `service-common`, only where it equals `service-common`'s (a different one is kept and
-reported). A path that would be left empty is skipped. Check `differs` in the report first: an older tenant's `TENANT_ID` may still be the
+reported). If `service-common` lacks one of them but service paths have it, it is first copied
+there when all those paths agree (see `serviceCommon` in the report); if they disagree nothing is
+added and the copies stay. A path that would be left empty is skipped. Check `differs` in the report first: an older tenant's `TENANT_ID` may still be the
 slug, and the pods then move to the bare tenant name. Deploy the chart change first.
 
 **`TENANT_ID` is the bare tenant name, not the slug.** Every service's Vault
