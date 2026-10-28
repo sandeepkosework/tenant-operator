@@ -202,7 +202,7 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     # in-cluster addresses of wfm-microservice and mcp-server) and live HERE, in the layer every service of the tenant
     # shares, not in wfm-api-gateway's own secret -- an own-secret key would sit
     # above this layer and, if empty, override it. See write_initial_*.
-    "service-common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT", "FABREQ_COMMAND_ENDPOINT_MAP", "MCP_SERVER_URL", "NEXT_PUBLIC_SOCKET_URL"],
+    "service-common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "MONGODB_URI", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT", "FABREQ_COMMAND_ENDPOINT_MAP", "MCP_SERVER_URL", "NEXT_PUBLIC_SOCKET_URL"],
     # These two have no custom `env:` block in the chart (raw redis/
     # redisgears images) -- but every enabled service still gets an
     # ExternalSecret (templates/externalsecret.yaml loops over ALL of
@@ -351,7 +351,7 @@ CHART_PROVIDED_KEYS = frozenset({"TENANT_ID", "VIRTUAL_HOST", "REDIS_HOST", "RED
 # Keys that live only in the tenant's service-common secret, which every service's
 # pod already gets (layer 2). One value per tenant, so there is nothing to gain from
 # a copy in each service's own secret -- and a stale copy there would override it.
-SERVICE_COMMON_ONLY_KEYS = frozenset({"REDIS_PASSWORD"})
+SERVICE_COMMON_ONLY_KEYS = frozenset({"REDIS_PASSWORD", "MONGODB_URI"})
 
 
 def read_qraie_bridge_platform_defaults() -> dict[str, dict]:
