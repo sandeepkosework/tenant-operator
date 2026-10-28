@@ -673,19 +673,14 @@ helm-chart-bridge puts them in every service's env (`commonEnv` for `TENANT_ID` 
 `tenant.name` and `VIRTUAL_HOST` = `tenant.domain`; `serviceRefEnv` for the Redis host
 and port, and enrollment-api's `REDIS_URL`), and chart-set env wins over the Vault secrets. The operator therefore no longer
 writes these keys to Vault (`CHART_PROVIDED_KEYS` in `vault_service.py`); the
-per-service mapping it returns, mirrored to Mongo, still has them. `REDIS_PASSWORD` and `MONGODB_URI` are
-written to the tenant's `service-common` secret only (`SERVICE_COMMON_ONLY_KEYS`), not to each
-service's own secret: every pod already gets `service-common`, and a stale copy in a service's own
-secret would override it. The bridge meta-builder Job derives `REDIS_HOST` with
-`vault_service.tenant_redis_host()` and reads `REDIS_PASSWORD` from `service-common`. The
+per-service mapping it returns, mirrored to Mongo, still has them. `REDIS_PASSWORD` stays
+in Vault (the same value for every service). The bridge meta-builder Job derives
+`REDIS_HOST` with `vault_service.tenant_redis_host()` instead of reading it back. The
 two Redis-only services keep `TENANT_ID` so their Vault path is not empty. Tenants created
 before this keep the old keys in Vault; they are harmless, since the chart's value wins.
 `POST /api/v1/tenant/{id}/vault/prune-chart-provided-keys` removes them (dry run by default,
-`?apply=true` to write). It also removes `REDIS_PASSWORD` and `MONGODB_URI` from every path but
-`service-common`, only where it equals `service-common`'s (a different one is kept and
-reported). If `service-common` lacks one of them but service paths have it, it is first copied
-there when all those paths agree (see `serviceCommon` in the report); if they disagree nothing is
-added and the copies stay. A path that would be left empty is skipped. Check `differs` in the report first: an older tenant's `TENANT_ID` may still be the
+`?apply=true` to write; `REDIS_PASSWORD` is kept, and a path that would be left empty is
+skipped). Check `differs` in the report first: an older tenant's `TENANT_ID` may still be the
 slug, and the pods then move to the bare tenant name. Deploy the chart change first.
 
 **`TENANT_ID` is the bare tenant name, not the slug.** Every service's Vault

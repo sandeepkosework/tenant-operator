@@ -38,14 +38,11 @@ def test_chart_provided_keys_are_not_written_to_vault(vault):
             assert not leaked, f"{path} still has {leaked}"
 
 
-def test_redis_password_is_only_in_service_common(vault):
-    written = _run()
-    holders = [p for p, d in vault.items() if "REDIS_PASSWORD" in d]
-    assert holders == ["k8s/hbss-036/service-common"]
-    # the qraie-redis-shared path keeps TENANT_ID so it is not empty
-    assert vault["k8s/hbss-036/qraie-redis-shared"] == {"TENANT_ID": "hbss-036"}
-    # the mapping mirrored to Mongo still has the same password for every service
-    assert len({d["REDIS_PASSWORD"] for d in written.values() if "REDIS_PASSWORD" in d}) == 1
+def test_redis_password_stays_in_vault_and_is_the_same_everywhere(vault):
+    _run()
+    values = {p: d["REDIS_PASSWORD"] for p, d in vault.items() if "REDIS_PASSWORD" in d}
+    assert "k8s/hbss-036/service-common" in values and "k8s/hbss-036/qraie-redis-shared" in values
+    assert len(set(values.values())) == 1
 
 
 def test_returned_mapping_still_has_the_keys_for_the_mongo_mirror(vault):
@@ -86,66 +83,8 @@ def test_prune_removes_only_chart_provided_keys_and_reports_differences(monkeypa
     assert set(out["services"]["bridge"]["differs"]) == {"TENANT_ID"}
 
     out = vault_service.prune_chart_provided_keys("hbss-036-45", "hbss-036", "hbss-036.qraie.ai", apply=True)
-    # service-common had none, so the one copy moved there
-    assert store["k8s/hbss-036-45/bridge"] == {"PORT": "1"}
-    assert store["k8s/hbss-036-45/service-common"] == {"REDIS_PASSWORD": "pw"}
+    assert store["k8s/hbss-036-45/bridge"] == {"REDIS_PASSWORD": "pw", "PORT": "1"}
     assert store["k8s/hbss-036-45/enrollment-api"] == {"SML_BASE_URL": "x"}  # REDIS_URL matched the chart's, so not in differs
     # a path that would be left empty is skipped, not written
     assert out["services"]["qraie-redis"]["status"] == "skipped"
     assert store["k8s/hbss-036-45/qraie-redis"] == {"TENANT_ID": "hbss-036"}
-
-
-def test_prune_removes_redis_password_from_service_paths_only_when_it_matches_service_common(monkeypatch):
-    store = {
-        "k8s/hbss-036-45/service-common": {"REDIS_PASSWORD": "pw", "ACTIVE_COLOR": "blue"},
-        "k8s/hbss-036-45/bridge": {"REDIS_PASSWORD": "pw", "PORT": "1"},
-        "k8s/hbss-036-45/acl-server": {"REDIS_PASSWORD": "other", "PORT": "2"},
-        "k8s/hbss-036-45/qraie-redis-shared": {"TENANT_ID": "hbss-036", "REDIS_PASSWORD": "pw"},
-    }
-    _fake_vault(monkeypatch, store)
-
-    out = vault_service.prune_chart_provided_keys("hbss-036-45", "hbss-036", "hbss-036.qraie.ai", apply=True)
-    assert store["k8s/hbss-036-45/service-common"] == {"REDIS_PASSWORD": "pw", "ACTIVE_COLOR": "blue"}
-    assert store["k8s/hbss-036-45/bridge"] == {"PORT": "1"}
-    # a different password is left alone and reported, not removed
-    assert store["k8s/hbss-036-45/acl-server"] == {"REDIS_PASSWORD": "other", "PORT": "2"}
-    assert out["services"]["acl-server"]["differs"]["REDIS_PASSWORD"]["kept"] is True
-    # nothing else would be left, so the path is skipped
-    assert out["services"]["qraie-redis-shared"]["status"] == "skipped"
-
-
-def test_mongodb_uri_is_only_in_service_common(vault):
-    written = _run()
-    assert [p for p, d in vault.items() if "MONGODB_URI" in d] == ["k8s/hbss-036/service-common"]
-    # the services that used it still have it in the mapping mirrored to Mongo
-    assert written["erep-server"]["MONGODB_URI"] == written["service-common"]["MONGODB_URI"]
-
-
-def test_prune_adds_a_missing_mongodb_uri_to_service_common_when_the_services_agree(monkeypatch):
-    store = {
-        "k8s/hbss-036-45/service-common": {"ACTIVE_COLOR": "blue"},
-        "k8s/hbss-036-45/erep-server": {"MONGODB_URI": "mongodb://a", "PORT": "1"},
-        "k8s/hbss-036-45/tranops-backend": {"MONGODB_URI": "mongodb://a", "PORT": "2"},
-    }
-    _fake_vault(monkeypatch, store)
-    out = vault_service.prune_chart_provided_keys("hbss-036-45", "hbss-036", "d", apply=False)
-    assert out["serviceCommon"]["MONGODB_URI"]["status"] == "would_add"
-    assert "MONGODB_URI" not in store["k8s/hbss-036-45/service-common"]  # dry run writes nothing
-
-    vault_service.prune_chart_provided_keys("hbss-036-45", "hbss-036", "d", apply=True)
-    assert store["k8s/hbss-036-45/service-common"]["MONGODB_URI"] == "mongodb://a"
-    assert store["k8s/hbss-036-45/erep-server"] == {"PORT": "1"}
-    assert store["k8s/hbss-036-45/tranops-backend"] == {"PORT": "2"}
-
-
-def test_prune_adds_nothing_when_service_copies_of_mongodb_uri_disagree(monkeypatch):
-    store = {
-        "k8s/hbss-036-45/service-common": {"ACTIVE_COLOR": "blue"},
-        "k8s/hbss-036-45/erep-server": {"MONGODB_URI": "mongodb://a", "PORT": "1"},
-        "k8s/hbss-036-45/tranops-backend": {"MONGODB_URI": "mongodb://b", "PORT": "2"},
-    }
-    _fake_vault(monkeypatch, store)
-    out = vault_service.prune_chart_provided_keys("hbss-036-45", "hbss-036", "d", apply=True)
-    assert out["serviceCommon"]["MONGODB_URI"]["status"] == "conflict"
-    assert "MONGODB_URI" not in store["k8s/hbss-036-45/service-common"]
-    assert store["k8s/hbss-036-45/erep-server"]["MONGODB_URI"] == "mongodb://a"
