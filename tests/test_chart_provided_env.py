@@ -48,7 +48,7 @@ def test_redis_password_stays_in_vault_and_is_the_same_everywhere(vault):
 def test_returned_mapping_still_has_the_keys_for_the_mongo_mirror(vault):
     written = _run()
     assert written["controlops-server"]["REDIS_HOST"] == "hbss-036-qraie-redis-shared"
-    assert written["controlops-server"]["TENANT_ID"] == "hbss-036"
+    assert written["controlops-server"]["TENANT_ID"] == "HBSS-036"
     assert written["controlops-server"]["VIRTUAL_HOST"] == "hbss-036.qraie.ai"
 
 
@@ -96,7 +96,7 @@ def test_wfm_microservice_tenant_key_is_the_fixed_string_wfm(vault):
     assert written["wfm-microservice"]["TENANT_KEY"] == "wfm"
 
 
-def test_wfm_microservice_tenant_ids_is_the_bare_tenant_name_not_the_slug(vault):
+def test_wfm_microservice_tenant_ids_is_the_upper_case_tenant_name_not_the_slug(vault):
     written = vault_service.write_initial_qraie_bridge_tenant_secrets("hbss-036-45", "hbss-036", "hbss-036.qraie.ai")
-    assert vault["k8s/hbss-036-45/wfm-microservice"]["TENANT_IDS"] == "hbss-036"
-    assert written["wfm-microservice"]["TENANT_IDS"] == written["wfm-microservice"]["TENANT_ID"] == "hbss-036"
+    assert vault["k8s/hbss-036-45/wfm-microservice"]["TENANT_IDS"] == "HBSS-036"
+    assert written["wfm-microservice"]["TENANT_IDS"] == written["wfm-microservice"]["TENANT_ID"] == "HBSS-036"

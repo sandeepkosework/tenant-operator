@@ -289,7 +289,8 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
 # bridge meta-builder seeds "<tenant_name>-bridge" under tenantObj.tenantId =
 # the bare name -- so a slug here made the apps use a second, unseeded database
 # ("<slug>-bridge") and miss the seeded data. infra-runner also used the bare name.
-# TENANT_IDS (wfm-microservice only) gets the same bare name.
+# TENANT_IDS (wfm-microservice only) gets the same value. Both are upper-cased
+# (the legacy convention, "HBSS-031"), as the chart's commonEnv TENANT_ID is.
 QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_IDS"}
 
 # wfm-microservice's TENANT_KEY is the fixed string "wfm" in the compose files
@@ -565,7 +566,7 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
             elif k in QRAIE_BRIDGE_SQL_NAME_KEYS:
                 data[k] = tenant_name
             elif k in ("TENANT_ID", "TENANT_IDS"):
-                data[k] = tenant_name
+                data[k] = tenant_name.upper()
             elif k == "TENANT_KEY":
                 data[k] = WFM_TENANT_KEY
             elif k in QRAIE_BRIDGE_TENANT_DERIVED_KEYS:
@@ -714,7 +715,7 @@ def prune_chart_provided_keys(tenant_slug: str, tenant_name: str, tenant_domain:
     if not settings.vault_enabled:
         raise VaultServiceError("VAULT_ENABLED=false -- there is nothing in Vault to change")
     expected = {
-        "TENANT_ID": tenant_name,
+        "TENANT_ID": tenant_name.upper(),
         "VIRTUAL_HOST": tenant_domain,
         "REDIS_HOST": tenant_redis_host(tenant_slug),
         "REDIS_PORT": "6379",

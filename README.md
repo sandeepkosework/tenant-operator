@@ -688,7 +688,7 @@ secret gets `TENANT_ID=<tenant_name>` (e.g. `hbss-010`), matching what the seed
 Job uses for the Mongo database (`<tenant_name>-bridge`) and `tenantObj.tenantId`,
 and what infra-runner used. (It was the slug, `hbss-010-45`, which made the apps
 use a second, unseeded database, `hbss-010-45-bridge`.) `TENANT_IDS`, which only
-`wfm-microservice` carries, is the same bare name. Its `TENANT_KEY` is the fixed string `wfm`
+`wfm-microservice` carries, is the same value, upper-cased (`HBSS-010`). Its `TENANT_KEY` is the fixed string `wfm`
 (`WFM_TENANT_KEY`), as in the compose files. Only
 newly created tenants are affected; an existing tenant's Vault secrets keep the
 slug until changed by hand.
