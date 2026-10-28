@@ -279,7 +279,7 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
 
 # Keys computed deterministically from the tenant, never sourced from
 # platform defaults -- these identify the tenant itself (TENANT_ID/
-# TENANT_KEY/TENANT_IDS) and MUST be unique per tenant. Unlike
+# TENANT_IDS) and MUST be unique per tenant. Unlike
 # QRAIE_BRIDGE_GENERATED_KEYS (a random credential), a platform default
 # here would mean every tenant shares the same identity.
 #
@@ -289,9 +289,13 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
 # bridge meta-builder seeds "<tenant_name>-bridge" under tenantObj.tenantId =
 # the bare name -- so a slug here made the apps use a second, unseeded database
 # ("<slug>-bridge") and miss the seeded data. infra-runner also used the bare name.
-# TENANT_KEY / TENANT_IDS still get the slug (see the loop in
+# TENANT_IDS still gets the slug (see the loop in
 # write_initial_qraie_bridge_tenant_secrets).
-QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_KEY", "TENANT_IDS"}
+QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_IDS"}
+
+# wfm-microservice's TENANT_KEY is the fixed string "wfm" in the compose files
+# (TENANT_IDS is the one that names the tenant), not a per-tenant value.
+WFM_TENANT_KEY = "wfm"
 
 # The tenant's own SQL Server database/login (DB_USER/DB_NAME/DB_SCHEMA) is
 # named after the bare tenant name (the tenantId from the create request,
@@ -563,6 +567,8 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 data[k] = tenant_name
             elif k == "TENANT_ID":
                 data[k] = tenant_name
+            elif k == "TENANT_KEY":
+                data[k] = WFM_TENANT_KEY
             elif k in QRAIE_BRIDGE_TENANT_DERIVED_KEYS:
                 data[k] = tenant_slug
             elif k in QRAIE_BRIDGE_GENERATED_KEYS:

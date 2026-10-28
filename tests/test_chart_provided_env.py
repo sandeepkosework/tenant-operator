@@ -88,3 +88,9 @@ def test_prune_removes_only_chart_provided_keys_and_reports_differences(monkeypa
     # a path that would be left empty is skipped, not written
     assert out["services"]["qraie-redis"]["status"] == "skipped"
     assert store["k8s/hbss-036-45/qraie-redis"] == {"TENANT_ID": "hbss-036"}
+
+
+def test_wfm_microservice_tenant_key_is_the_fixed_string_wfm(vault):
+    written = _run()
+    assert vault["k8s/hbss-036/wfm-microservice"]["TENANT_KEY"] == "wfm"
+    assert written["wfm-microservice"]["TENANT_KEY"] == "wfm"
