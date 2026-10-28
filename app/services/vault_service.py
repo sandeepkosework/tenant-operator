@@ -351,7 +351,7 @@ CHART_PROVIDED_KEYS = frozenset({"TENANT_ID", "VIRTUAL_HOST", "REDIS_HOST", "RED
 # Keys that live only in the tenant's service-common secret, which every service's
 # pod already gets (layer 2). One value per tenant, so there is nothing to gain from
 # a copy in each service's own secret -- and a stale copy there would override it.
-SERVICE_COMMON_ONLY_KEYS = frozenset({"REDIS_PASSWORD", "MONGODB_URI"})
+SERVICE_COMMON_ONLY_KEYS = frozenset({"REDIS_PASSWORD"})
 
 
 def read_qraie_bridge_platform_defaults() -> dict[str, dict]:

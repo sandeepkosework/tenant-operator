@@ -112,8 +112,8 @@ def test_prune_removes_redis_password_from_service_paths_only_when_it_matches_se
     assert out["services"]["qraie-redis-shared"]["status"] == "skipped"
 
 
-def test_mongodb_uri_is_only_in_service_common(vault):
-    written = _run()
-    assert [p for p, d in vault.items() if "MONGODB_URI" in d] == ["k8s/hbss-036/service-common"]
-    # the services that used it still have it in the mapping mirrored to Mongo
-    assert written["erep-server"]["MONGODB_URI"] == written["service-common"]["MONGODB_URI"]
+def test_mongodb_uri_is_in_service_common_and_still_in_the_services_that_had_it(vault):
+    _run()
+    common = vault["k8s/hbss-036/service-common"]["MONGODB_URI"]
+    for svc in ("controlops-server", "erep-server", "iot-broker-config", "tranops-backend"):
+        assert vault[f"k8s/hbss-036/{svc}"]["MONGODB_URI"] == common
