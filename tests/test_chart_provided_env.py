@@ -43,7 +43,7 @@ def test_redis_password_is_only_in_service_common(vault):
     holders = [p for p, d in vault.items() if "REDIS_PASSWORD" in d]
     assert holders == ["k8s/hbss-036/service-common"]
     # the qraie-redis-shared path keeps TENANT_ID so it is not empty
-    assert vault["k8s/hbss-036/qraie-redis-shared"] == {"TENANT_ID": "HBSS-036"}
+    assert vault["k8s/hbss-036/qraie-redis-shared"] == {"TENANT_ID": "hbss-036"}
     # the mapping mirrored to Mongo still has the same password for every service
     assert len({d["REDIS_PASSWORD"] for d in written.values() if "REDIS_PASSWORD" in d}) == 1
 
@@ -93,20 +93,6 @@ def test_prune_removes_only_chart_provided_keys_and_reports_differences(monkeypa
     # a path that would be left empty is skipped, not written
     assert out["services"]["qraie-redis"]["status"] == "skipped"
     assert store["k8s/hbss-036-45/qraie-redis"] == {"TENANT_ID": "hbss-036"}
-
-
-def test_wfm_microservice_tenant_key_is_the_fixed_string_wfm(vault):
-    written = _run()
-    assert vault["k8s/hbss-036/wfm-microservice"]["TENANT_KEY"] == "wfm"
-    assert written["wfm-microservice"]["TENANT_KEY"] == "wfm"
-
-
-def test_wfm_microservice_tenant_ids_is_the_upper_case_tenant_name_not_the_slug(vault):
-    written = vault_service.write_initial_qraie_bridge_tenant_secrets("hbss-036-45", "hbss-036", "hbss-036.qraie.ai")
-    # upper case only in the pod's environment (the Vault payload) ...
-    assert vault["k8s/hbss-036-45/wfm-microservice"]["TENANT_IDS"] == "HBSS-036"
-    # ... not in the mapping mirrored to Mongo
-    assert written["wfm-microservice"]["TENANT_IDS"] == written["wfm-microservice"]["TENANT_ID"] == "hbss-036"
 
 
 def test_prune_removes_redis_password_from_service_paths_only_when_it_matches_service_common(monkeypatch):

@@ -279,7 +279,7 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
 
 # Keys computed deterministically from the tenant, never sourced from
 # platform defaults -- these identify the tenant itself (TENANT_ID/
-# TENANT_IDS) and MUST be unique per tenant. Unlike
+# TENANT_KEY/TENANT_IDS) and MUST be unique per tenant. Unlike
 # QRAIE_BRIDGE_GENERATED_KEYS (a random credential), a platform default
 # here would mean every tenant shares the same identity.
 #
@@ -289,20 +289,9 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
 # bridge meta-builder seeds "<tenant_name>-bridge" under tenantObj.tenantId =
 # the bare name -- so a slug here made the apps use a second, unseeded database
 # ("<slug>-bridge") and miss the seeded data. infra-runner also used the bare name.
-# TENANT_IDS (wfm-microservice only) gets the same value. In the pods' environment
-# both are upper-cased (the legacy convention, "HBSS-031"; the chart's commonEnv
-# TENANT_ID is too), but ONLY there: the Vault payload is upper-cased on write
-# (POD_ENV_UPPER_KEYS) while the name used for databases and the mapping mirrored
-# to Mongo stays the bare name.
-QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_IDS"}
-
-# wfm-microservice's TENANT_KEY is the fixed string "wfm" in the compose files
-# (TENANT_IDS is the one that names the tenant), not a per-tenant value.
-WFM_TENANT_KEY = "wfm"
-
-# Keys whose Vault value is upper-cased as it is written, so only the services'
-# environment sees the upper-case form.
-POD_ENV_UPPER_KEYS = frozenset({"TENANT_ID", "TENANT_IDS"})
+# TENANT_KEY / TENANT_IDS still get the slug (see the loop in
+# write_initial_qraie_bridge_tenant_secrets).
+QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_KEY", "TENANT_IDS"}
 
 # The tenant's own SQL Server database/login (DB_USER/DB_NAME/DB_SCHEMA) is
 # named after the bare tenant name (the tenantId from the create request,
@@ -577,10 +566,8 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 data[k] = str(settings.mssql_admin_port)
             elif k in QRAIE_BRIDGE_SQL_NAME_KEYS:
                 data[k] = tenant_name
-            elif k in ("TENANT_ID", "TENANT_IDS"):
+            elif k == "TENANT_ID":
                 data[k] = tenant_name
-            elif k == "TENANT_KEY":
-                data[k] = WFM_TENANT_KEY
             elif k in QRAIE_BRIDGE_TENANT_DERIVED_KEYS:
                 data[k] = tenant_slug
             elif k in QRAIE_BRIDGE_GENERATED_KEYS:
@@ -613,7 +600,6 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
         payload = {k: v for k, v in data.items() if v != "" and k not in not_here} or {
             k: v for k, v in data.items() if k not in not_here - CHART_PROVIDED_KEYS
         }
-        payload = {k: (v.upper() if k in POD_ENV_UPPER_KEYS else v) for k, v in payload.items()}
         skipped = len(data) - len(payload)
         logger.info(
             "[vault] tenant=%s writing qraie-bridge secret %s/%s%s: %s%s",
@@ -737,7 +723,7 @@ def prune_chart_provided_keys(tenant_slug: str, tenant_name: str, tenant_domain:
     if not settings.vault_enabled:
         raise VaultServiceError("VAULT_ENABLED=false -- there is nothing in Vault to change")
     expected = {
-        "TENANT_ID": tenant_name.upper(),
+        "TENANT_ID": tenant_name,
         "VIRTUAL_HOST": tenant_domain,
         "REDIS_HOST": tenant_redis_host(tenant_slug),
         "REDIS_PORT": "6379",
