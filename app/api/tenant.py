@@ -196,7 +196,7 @@ def sync_shared_vault_keys(tenant_id: uuid.UUID, apply: bool = False, db: Sessio
     summary="Remove the chart-provided keys (TENANT_ID, VIRTUAL_HOST, REDIS_*) from a tenant's Vault secrets",
     description=(
         "For a tenant created before helm-chart-bridge set these keys (TENANT_ID, VIRTUAL_HOST, REDIS_HOST, REDIS_PORT, REDIS_URL) in every service's env itself: removes "
-        "them from each of the tenant's Vault paths (`REDIS_PASSWORD` is not touched; a path that would be left with "
+        "them from each of the tenant's Vault paths (`REDIS_PASSWORD` and `MONGODB_URI` are removed from every path but service-common when they equal service-common's, and first copied there if it lacks them and the service paths agree (see `serviceCommon`); a path that would be left with "
         "no key is skipped). **Dry run by default**; pass `apply=true` to rewrite the secrets. The chart's value wins "
         "over Vault, so nothing changes once the chart is deployed -- but any key whose Vault value differs from the "
         "chart's is listed under `differs` (an older tenant's `TENANT_ID` may still be the slug, and the pods then "

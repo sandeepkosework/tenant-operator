@@ -202,7 +202,7 @@ QRAIE_BRIDGE_SERVICE_KEYS: dict[str, list[str]] = {
     # in-cluster addresses of wfm-microservice and mcp-server) and live HERE, in the layer every service of the tenant
     # shares, not in wfm-api-gateway's own secret -- an own-secret key would sit
     # above this layer and, if empty, override it. See write_initial_*.
-    "service-common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT", "FABREQ_COMMAND_ENDPOINT_MAP", "MCP_SERVER_URL", "NEXT_PUBLIC_SOCKET_URL"],
+    "service-common": ["REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "MONGODB_URI", "GLOBALAPIBASEURL", "ACTIVE_COLOR", "START_PORT", "FABREQ_COMMAND_ENDPOINT_MAP", "MCP_SERVER_URL", "NEXT_PUBLIC_SOCKET_URL"],
     # These two have no custom `env:` block in the chart (raw redis/
     # redisgears images) -- but every enabled service still gets an
     # ExternalSecret (templates/externalsecret.yaml loops over ALL of
@@ -358,6 +358,11 @@ def tenant_redis_host(tenant_slug: str) -> str:
 # win over the envFrom secrets anyway. They are still resolved into the returned
 # per-service mapping (mirrored to Mongo), but not written to Vault.
 CHART_PROVIDED_KEYS = frozenset({"TENANT_ID", "VIRTUAL_HOST", "REDIS_HOST", "REDIS_PORT", "REDIS_URL"})
+
+# Keys that live only in the tenant's service-common secret, which every service's
+# pod already gets (layer 2). One value per tenant, so there is nothing to gain from
+# a copy in each service's own secret -- and a stale copy there would override it.
+SERVICE_COMMON_ONLY_KEYS = frozenset({"REDIS_PASSWORD", "MONGODB_URI"})
 
 
 def read_qraie_bridge_platform_defaults() -> dict[str, dict]:
@@ -603,7 +608,11 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
         # Keys the chart sets in the pod's env itself are left out too. If that leaves
         # nothing (qraie-redis, bridge-cp-conductor-redis only had TENANT_ID), the keys
         # are written anyway, for the same reason as above.
-        payload = {k: v for k, v in data.items() if v != "" and k not in CHART_PROVIDED_KEYS} or data
+        # SERVICE_COMMON_ONLY_KEYS are written to service-common only.
+        not_here = CHART_PROVIDED_KEYS | (SERVICE_COMMON_ONLY_KEYS if service != "service-common" else frozenset())
+        payload = {k: v for k, v in data.items() if v != "" and k not in not_here} or {
+            k: v for k, v in data.items() if k not in not_here - CHART_PROVIDED_KEYS
+        }
         payload = {k: (v.upper() if k in POD_ENV_UPPER_KEYS else v) for k, v in payload.items()}
         skipped = len(data) - len(payload)
         logger.info(
@@ -711,15 +720,20 @@ def prune_empty_tenant_secrets(tenant_slug: str, apply: bool = False) -> dict:
 def prune_chart_provided_keys(tenant_slug: str, tenant_name: str, tenant_domain: str, apply: bool = False) -> dict:
     """For a tenant created before the chart set them in the pods' env: removes
     CHART_PROVIDED_KEYS (TENANT_ID, VIRTUAL_HOST, REDIS_HOST, REDIS_PORT, REDIS_URL) from every
-    one of the tenant's Vault paths. Dry run unless apply=True. REDIS_PASSWORD is not
-    touched. A path left with no keys is skipped (it must keep one, or the pod's
-    ExternalSecret can't sync), e.g. qraie-redis.
+    one of the tenant's Vault paths, and SERVICE_COMMON_ONLY_KEYS (REDIS_PASSWORD, MONGODB_URI)
+    from every path except service-common. Dry run unless apply=True. A path left with no keys
+    is skipped (it must keep one, or the pod's ExternalSecret can't sync), e.g. qraie-redis.
 
-    The chart's value wins over Vault, so removing a key changes nothing once the
-    chart is deployed -- unless Vault held a DIFFERENT value, which the pods then
-    stop seeing. Those are reported under "differs" so it can be checked first;
-    an older tenant's TENANT_ID may still be the slug (see
-    QRAIE_BRIDGE_TENANT_DERIVED_KEYS), where the chart's tenant.name now applies."""
+    A SERVICE_COMMON_ONLY key found in service paths but missing from service-common is first
+    added there, if every service path that has it agrees on the value (reported under
+    "serviceCommon"). If they disagree nothing is added and the copies stay. A copy that differs
+    from service-common's own value is kept and reported, since that service uses it today.
+
+    The chart's value wins over Vault, so removing a chart-provided key changes nothing once the
+    chart is deployed -- unless Vault held a DIFFERENT value, which the pods then stop seeing.
+    Those are reported under "differs" so it can be checked first; an older tenant's TENANT_ID
+    may still be the slug (see QRAIE_BRIDGE_TENANT_DERIVED_KEYS), where the chart's
+    tenant.name now applies."""
     if not settings.vault_enabled:
         raise VaultServiceError("VAULT_ENABLED=false -- there is nothing in Vault to change")
     expected = {
@@ -730,29 +744,59 @@ def prune_chart_provided_keys(tenant_slug: str, tenant_name: str, tenant_domain:
         "REDIS_URL": f"redis://{_k8s_service_slug(tenant_slug)}-qraie-redis:6379",
     }
     base = f"{settings.vault_tenant_secret_prefix}/{tenant_slug}"
+    current = {service: _read(f"{base}/{service}") for service in QRAIE_BRIDGE_SERVICE_KEYS}
+    common = dict(current.get("service-common") or {})
+
+    # SERVICE_COMMON_ONLY keys the service paths have but service-common lacks.
+    common_report: dict[str, dict] = {}
+    for k in sorted(SERVICE_COMMON_ONLY_KEYS):
+        if k in common:
+            continue
+        found = {svc: d[k] for svc, d in current.items() if svc != "service-common" and d and k in d}
+        if not found:
+            continue
+        values = set(found.values())
+        if len(values) == 1:
+            common[k] = next(iter(values))
+            common_report[k] = {"status": "added" if apply else "would_add", "from": sorted(found)}
+        else:
+            common_report[k] = {"status": "conflict", "from": sorted(found),
+                                "note": "the service paths disagree; nothing added, copies kept"}
+    if apply and any(r["status"] == "added" for r in common_report.values()):
+        _write(f"{base}/service-common", common)
+
     services: dict[str, dict] = {}
     total = 0
-    for service in QRAIE_BRIDGE_SERVICE_KEYS:
-        path = f"{base}/{service}"
-        data = _read(path)
+    for service, data in current.items():
         if data is None:
             services[service] = {"status": "missing", "removed": []}
             continue
-        removed = sorted(CHART_PROVIDED_KEYS & data.keys())
-        differs = {k: {"vault": data[k], "chart": expected[k]} for k in removed if data[k] != expected[k]}
-        kept = {k: v for k, v in data.items() if k not in CHART_PROVIDED_KEYS}
+        removable = set(CHART_PROVIDED_KEYS)
+        differs = {}
+        if service != "service-common":
+            for k in SERVICE_COMMON_ONLY_KEYS & data.keys():
+                if k not in common:
+                    continue
+                if data[k] == common[k]:
+                    removable.add(k)
+                else:
+                    differs[k] = {"vault": "<redacted>", "service-common": "<redacted>", "kept": True}
+        removed = sorted(removable & data.keys())
+        differs.update({k: {"vault": data[k], "chart": expected[k]} for k in removed if k in expected and data[k] != expected[k]})
+        kept = {k: v for k, v in data.items() if k not in removed}
         if not removed:
-            services[service] = {"status": "ok", "removed": []}
+            services[service] = {"status": "ok", "removed": [], **({"differs": differs} if differs else {})}
         elif not kept:
             services[service] = {"status": "skipped", "removed": [], "differs": differs,
                                  "note": "every key would be removed; the path must keep at least one key"}
         else:
             if apply:
-                _write(path, kept)
+                _write(f"{base}/{service}", kept)
             services[service] = {"status": "pruned" if apply else "would_prune", "removed": removed, "differs": differs}
             total += len(removed)
     logger.info("[vault] tenant=%s prune-chart-provided-keys %s: %d key(s)", tenant_slug, "APPLIED" if apply else "dry run", total)
-    return {"tenant": tenant_slug, "applied": apply, "totalKeysRemoved" if apply else "totalKeysToRemove": total, "services": services}
+    return {"tenant": tenant_slug, "applied": apply, "serviceCommon": common_report,
+            "totalKeysRemoved" if apply else "totalKeysToRemove": total, "services": services}
 
 
 def sync_service_common_derived_keys(tenant_slug: str, apply: bool = False) -> dict:
