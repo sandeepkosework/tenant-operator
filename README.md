@@ -688,7 +688,7 @@ secret gets `TENANT_ID=<tenant_name>` (e.g. `hbss-010`), matching what the seed
 Job uses for the Mongo database (`<tenant_name>-bridge`) and `tenantObj.tenantId`,
 and what infra-runner used. (It was the slug, `hbss-010-45`, which made the apps
 use a second, unseeded database, `hbss-010-45-bridge`.) `TENANT_IDS`, which only
-`wfm-microservice` carries, is still the slug. Its `TENANT_KEY` is the fixed string `wfm`
+`wfm-microservice` carries, is the same bare name. Its `TENANT_KEY` is the fixed string `wfm`
 (`WFM_TENANT_KEY`), as in the compose files. Only
 newly created tenants are affected; an existing tenant's Vault secrets keep the
 slug until changed by hand.
@@ -710,9 +710,8 @@ the 1h refresh) but not existing tenants' Mongo documents.
 Every key falls into exactly one of three buckets when a new tenant's
 secrets are written (`write_initial_qraie_bridge_tenant_secrets`):
 
-1. **`QRAIE_BRIDGE_TENANT_DERIVED_KEYS`** (`TENANT_ID`,
-   `TENANT_IDS`, `DB_USER`, `DB_NAME`, `DB_SCHEMA`) — set to the tenant's
-   own `slug`. Must be unique per tenant: a shared value here would mean
+1. **`QRAIE_BRIDGE_TENANT_DERIVED_KEYS`** (`DB_USER`, `DB_NAME`, `DB_SCHEMA` and, as the bare tenant name, `TENANT_ID`/`TENANT_IDS`) — set to the tenant's
+   own `slug` (the bare name for those). Must be unique per tenant: a shared value here would mean
    every tenant's seeding Job operates on the *same* database/login,
    silently colliding.
 2. **`QRAIE_BRIDGE_GENERATED_KEYS`** (`REDIS_PASSWORD`, `DB_PASSWORD`,

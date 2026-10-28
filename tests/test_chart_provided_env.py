@@ -94,3 +94,9 @@ def test_wfm_microservice_tenant_key_is_the_fixed_string_wfm(vault):
     written = _run()
     assert vault["k8s/hbss-036/wfm-microservice"]["TENANT_KEY"] == "wfm"
     assert written["wfm-microservice"]["TENANT_KEY"] == "wfm"
+
+
+def test_wfm_microservice_tenant_ids_is_the_bare_tenant_name_not_the_slug(vault):
+    written = vault_service.write_initial_qraie_bridge_tenant_secrets("hbss-036-45", "hbss-036", "hbss-036.qraie.ai")
+    assert vault["k8s/hbss-036-45/wfm-microservice"]["TENANT_IDS"] == "hbss-036"
+    assert written["wfm-microservice"]["TENANT_IDS"] == written["wfm-microservice"]["TENANT_ID"] == "hbss-036"

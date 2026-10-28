@@ -289,8 +289,7 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
 # bridge meta-builder seeds "<tenant_name>-bridge" under tenantObj.tenantId =
 # the bare name -- so a slug here made the apps use a second, unseeded database
 # ("<slug>-bridge") and miss the seeded data. infra-runner also used the bare name.
-# TENANT_IDS still gets the slug (see the loop in
-# write_initial_qraie_bridge_tenant_secrets).
+# TENANT_IDS (wfm-microservice only) gets the same bare name.
 QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_IDS"}
 
 # wfm-microservice's TENANT_KEY is the fixed string "wfm" in the compose files
@@ -565,7 +564,7 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
                 data[k] = str(settings.mssql_admin_port)
             elif k in QRAIE_BRIDGE_SQL_NAME_KEYS:
                 data[k] = tenant_name
-            elif k == "TENANT_ID":
+            elif k in ("TENANT_ID", "TENANT_IDS"):
                 data[k] = tenant_name
             elif k == "TENANT_KEY":
                 data[k] = WFM_TENANT_KEY
