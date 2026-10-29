@@ -42,11 +42,10 @@ async function getTenantConn(tenantId) {
     }
 
     const dbName = `${tenantId}-bridge`;
-    // directConnection=true: the shared Mongo is a replica set that advertises
-    // its members by compose hostnames (mongo1/mongo2/mongo3) which don't
-    // resolve from a pod, so discovery would fail. Override with
-    // MONGO_URI_OPTIONS if the target Mongo needs different options.
-    const mongoOptions = process.env.MONGO_URI_OPTIONS || "authSource=admin&directConnection=true";
+    // Override with MONGO_URI_OPTIONS if the target Mongo needs different
+    // options (e.g. directConnection=true when a replica set advertises
+    // hostnames that don't resolve from a pod).
+    const mongoOptions = process.env.MONGO_URI_OPTIONS || "authSource=admin";
     const uri = `${process.env.QRAIEAI_MONGODB_URI}${dbName}?${mongoOptions}`;
 
     tenantConn = mongoose.createConnection(uri, {
@@ -1930,7 +1929,7 @@ function prepareTenantSchemaSql(tenantId) {
         throw new Error("Invalid tenantId");
     }
 
-    const schemaPath = path.resolve(__dirname, "QRaie-Table-Script-16April26.sql");
+    const schemaPath = path.resolve(__dirname, "QRaie-Table-Script.sql");
     if (!fs.existsSync(schemaPath)) {
         throw new Error(`Schema SQL file not found at ${schemaPath}`);
     }

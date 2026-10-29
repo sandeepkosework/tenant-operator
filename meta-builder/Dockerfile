@@ -12,6 +12,6 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
 COPY tenantBridgeMeta.js bridge-schema-definition.js actor.template.js metaBridgeInfo_template.json ./
-COPY QRaie-Table-Script-16April26.sql QRaie-Database-Default-Inserts.sql ./
+COPY QRaie-Table-Script.sql QRaie-Database-Default-Inserts.sql ./
 
 ENTRYPOINT ["node", "tenantBridgeMeta.js"]
