@@ -279,7 +279,7 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
 
 # Keys computed deterministically from the tenant, never sourced from
 # platform defaults -- these identify the tenant itself (TENANT_ID/
-# TENANT_KEY/TENANT_IDS) and MUST be unique per tenant. Unlike
+# TENANT_IDS) and MUST be unique per tenant. Unlike
 # QRAIE_BRIDGE_GENERATED_KEYS (a random credential), a platform default
 # here would mean every tenant shares the same identity.
 #
@@ -289,9 +289,11 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
 # bridge meta-builder seeds "<tenant_name>-bridge" under tenantObj.tenantId =
 # the bare name -- so a slug here made the apps use a second, unseeded database
 # ("<slug>-bridge") and miss the seeded data. infra-runner also used the bare name.
-# TENANT_KEY / TENANT_IDS still get the slug (see the loop in
-# write_initial_qraie_bridge_tenant_secrets).
-QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_KEY", "TENANT_IDS"}
+# TENANT_IDS still gets the slug (see the loop in
+# write_initial_qraie_bridge_tenant_secrets). TENANT_KEY is NOT derived: it comes
+# from the base secret (k8s/tenant-base/<service>) or the platform defaults, and is
+# left out of the tenant's secret if neither has a value.
+QRAIE_BRIDGE_TENANT_DERIVED_KEYS = {"TENANT_ID", "TENANT_IDS"}
 
 # The tenant's own SQL Server database/login (DB_USER/DB_NAME/DB_SCHEMA) is
 # named after the bare tenant name (the tenantId from the create request,
