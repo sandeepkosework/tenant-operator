@@ -95,6 +95,15 @@ const ERepSchema = new Schema({
   updatedAt: Date
 }, { _id: false });
 
+// erep-server's ConfigLoader copies these keys into its environment at boot.
+// USE_KUBERNETES="true" runs each eRep as a Pod + Service instead of a Docker
+// container; EREP_IMAGE optionally overrides the eRep image. Values are strings
+// like the rest of this document (environment variables).
+const ERepServerSchema = new Schema({
+  USE_KUBERNETES: String,
+  EREP_IMAGE: String,
+}, { _id: false });
+
 const CtrlOpsSchema = new Schema({
   REDIS_HOST: String,
   REDIS_PORT: String,
@@ -141,6 +150,7 @@ const BridgeSchema = new Schema({
   workplace: WorkplaceSchema,
   wfmObj: WfmSchema,
   eRepObj: [ERepSchema],
+  eRepServer: ERepServerSchema,
   ctrlOpsObj: CtrlOpsSchema,
   dlmObj: DlmSchema,
   createdAt: Date,
