@@ -52,6 +52,9 @@
         }
     },
     "eRepObj": [],
+    "eRepServer": {
+        "USE_KUBERNETES": "true"
+    },
     "ctrlOpsObj": {
         "REDIS_HOST": "{{REDIS_IP}}",
         "REDIS_PORT": "{{REDIS_PORT}}",
