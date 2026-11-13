@@ -1,3 +1,4 @@
+import copy
 from pathlib import Path
 
 import yaml
@@ -137,9 +138,18 @@ def carry_over_overrides(rendered: str, existing: str | None) -> str:
 # Chart release that introduced `serviceConfig` (image + resources per service). An older chart
 # ignores the key, so the operator writes the section only for tenants pinned to this or later.
 SERVICE_CONFIG_MIN_VERSION = (0, 1, 2)
+# Chart release that also accepts image.pullPolicy, replicas, autoscaling, probes, plainEnv and
+# command in `serviceConfig`. An older chart fails the render on any of those keys, so tenants
+# pinned below this release keep the image + resources section only.
+SERVICE_CONFIG_FULL_MIN_VERSION = (0, 1, 7)
+# Per-service keys copied (besides image and resources) for a chart that accepts them.
+_FULL_SERVICE_KEYS = ("replicas", "autoscaling", "probes", "plainEnv", "command")
+# A probe's fields (exec / httpGet / tcpSocket) exclude each other, so a probe is merged as one value.
+_ATOMIC_KEYS = frozenset({"startupProbe", "readinessProbe", "livenessProbe"})
 
 _SERVICE_CONFIG_HEADER = (
-    "\n# The image and resources each service runs for THIS tenant, taken from the chart release above.\n"
+    "\n# The settings each service runs with for THIS tenant (image, resources and, on newer charts, replicas,\n"
+    "# autoscaling, probes, plainEnv and command), taken from the chart release above.\n"
     "# Edit a value here (and commit) to change it for this tenant only; the operator keeps your edits\n"
     "# when it rewrites this file. Anything you remove falls back to the chart's own value.\n"
     "# Put a tag in quotes if it looks like a number (tag: '1.10'), or YAML reads it as 1.1.\n"
@@ -154,9 +164,17 @@ def supports_service_config(chart_version: str | None) -> bool:
     return bool(chart_version) and _version_tuple(chart_version) >= SERVICE_CONFIG_MIN_VERSION
 
 
-def chart_service_defaults(chart_values_yaml: str, disabled_services: list[str] | None = None) -> dict:
+def supports_full_service_config(chart_version: str | None) -> bool:
+    return bool(chart_version) and _version_tuple(chart_version) >= SERVICE_CONFIG_FULL_MIN_VERSION
+
+
+def chart_service_defaults(chart_values_yaml: str, disabled_services: list[str] | None = None,
+                           full: bool = False) -> dict:
     """{service: {image: {repository, tag}, resources: {...}}} for every service the chart enables and
-    this tenant does not disable, as found in the chart's values.yaml text."""
+    this tenant does not disable, as found in the chart's values.yaml text.
+
+    With full=True (a chart that accepts them) each entry also carries image.pullPolicy and whichever of
+    replicas, autoscaling, probes, plainEnv and command the service has."""
     disabled = set(disabled_services or [])
     out = {}
     for svc in (yaml.safe_load(chart_values_yaml) or {}).get("services") or []:
@@ -165,8 +183,14 @@ def chart_service_defaults(chart_values_yaml: str, disabled_services: list[str] 
             continue
         image = svc.get("image") or {}
         entry = {"image": {"repository": image.get("repository"), "tag": image.get("tag")}}
+        if full and image.get("pullPolicy"):
+            entry["image"]["pullPolicy"] = image["pullPolicy"]
         if svc.get("resources"):
             entry["resources"] = svc["resources"]
+        if full:
+            for key in _FULL_SERVICE_KEYS:
+                if svc.get(key) not in (None, {}, []):
+                    entry[key] = copy.deepcopy(svc[key])
         out[name] = entry
     return out
 
@@ -174,7 +198,7 @@ def chart_service_defaults(chart_values_yaml: str, disabled_services: list[str] 
 def _flatten(d: dict, prefix: tuple = ()) -> dict:
     flat = {}
     for key, value in (d or {}).items():
-        if isinstance(value, dict):
+        if isinstance(value, dict) and key not in _ATOMIC_KEYS:
             flat.update(_flatten(value, prefix + (key,)))
         else:
             flat[prefix + (key,)] = value

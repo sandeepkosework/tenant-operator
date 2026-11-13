@@ -94,8 +94,9 @@ def _with_service_config(tenant: Tenant, values_yaml: str, existing: str | None,
 
     - Chart older than SERVICE_CONFIG_MIN_VERSION: the chart would ignore it, so none is written
       (the legacy override maps from the earlier release are carried over instead).
-    - Otherwise the section is built from the chart's own values.yaml at the tenant's pinned release,
-      keeping whatever the tenant edited in `existing`. Moving to a new release refreshes the values
+    - Otherwise the section is built from the chart's own values.yaml at the tenant's pinned release
+      (image and resources; from SERVICE_CONFIG_FULL_MIN_VERSION also pullPolicy, replicas, autoscaling,
+      probes, plainEnv and command), keeping whatever the tenant edited in `existing`. Moving to a new release refreshes the values
       that were never edited (compared against the release it moved from).
     - If the chart cannot be read right now, the existing section is kept as it is rather than
       dropped, and a brand-new tenant simply gets no section (it still runs the chart's values).
@@ -105,11 +106,14 @@ def _with_service_config(tenant: Tenant, values_yaml: str, existing: str | None,
         return helm_values.carry_over_overrides(values_yaml, existing)
     kept = helm_values.existing_service_config(existing)      # ValueError on an unreadable file
     try:
-        new_defaults = helm_values.chart_service_defaults(git_service.read_chart_file(version), tenant.disabled_services)
+        new_defaults = helm_values.chart_service_defaults(
+            git_service.read_chart_file(version), tenant.disabled_services,
+            full=helm_values.supports_full_service_config(version))
         old_defaults = None
         if kept and old_chart_version and old_chart_version != version and helm_values.supports_service_config(old_chart_version):
             old_defaults = helm_values.chart_service_defaults(
-                git_service.read_chart_file(old_chart_version), tenant.disabled_services)
+                git_service.read_chart_file(old_chart_version), tenant.disabled_services,
+                full=helm_values.supports_full_service_config(old_chart_version))
         service_config = helm_values.merge_service_config(new_defaults, kept, old_defaults)
     except (git_service.GitServiceError, ValueError, yaml.YAMLError):
         logger.warning("tenant=%s could not read the chart values to build serviceConfig; keeping what the file has",
