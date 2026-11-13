@@ -138,10 +138,10 @@ def carry_over_overrides(rendered: str, existing: str | None) -> str:
 # Chart release that introduced `serviceConfig` (image + resources per service). An older chart
 # ignores the key, so the operator writes the section only for tenants pinned to this or later.
 SERVICE_CONFIG_MIN_VERSION = (0, 1, 2)
-# Chart release that also accepts image.pullPolicy, replicas, autoscaling, probes, plainEnv and
+# Chart release (v0.1.8) that also accepts image.pullPolicy, replicas, autoscaling, probes, plainEnv and
 # command in `serviceConfig`. An older chart fails the render on any of those keys, so tenants
 # pinned below this release keep the image + resources section only.
-SERVICE_CONFIG_FULL_MIN_VERSION = (0, 1, 7)
+SERVICE_CONFIG_FULL_MIN_VERSION = (0, 1, 8)
 # Per-service keys copied (besides image and resources) for a chart that accepts them.
 _FULL_SERVICE_KEYS = ("replicas", "autoscaling", "probes", "plainEnv", "command")
 # A probe's fields (exec / httpGet / tcpSocket) exclude each other, so a probe is merged as one value.

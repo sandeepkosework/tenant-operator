@@ -1,4 +1,4 @@
-"""serviceConfig from chart v0.1.7: also pullPolicy, replicas, autoscaling, probes, plainEnv, command.
+"""serviceConfig from chart v0.1.8: also pullPolicy, replicas, autoscaling, probes, plainEnv, command.
 
 Pure functions only (no Git, Vault or cluster).
 """
@@ -19,7 +19,7 @@ CHART = yaml.safe_dump({"services": [
 ]})
 
 
-@pytest.mark.parametrize("version, expected", [("v0.1.6", False), ("v0.1.7", True), ("v0.1.10", True),
+@pytest.mark.parametrize("version, expected", [("v0.1.7", False), ("v0.1.8", True), ("v0.1.10", True),
                                                ("v0.2.0", True), (None, False)])
 def test_which_releases_accept_the_extra_keys(version, expected):
     assert helm_values.supports_full_service_config(version) is expected
@@ -61,7 +61,7 @@ def test_a_probe_is_merged_as_one_value():
 
 
 def test_a_tenants_edits_survive_and_new_keys_are_added_when_the_chart_moves_up():
-    old_defaults = helm_values.chart_service_defaults(CHART)                  # what a v0.1.6 tenant file holds
+    old_defaults = helm_values.chart_service_defaults(CHART)                  # what a v0.1.7 tenant file holds
     new_defaults = helm_values.chart_service_defaults(CHART, full=True)
     existing = {"bridge": {**old_defaults["bridge"], "resources": {"requests": {"cpu": "500m"}}}}
     out = helm_values.merge_service_config(new_defaults, existing, old_defaults)["bridge"]
