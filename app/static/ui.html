@@ -140,9 +140,26 @@
   .toast{background:var(--text);color:var(--bg);padding:9px 16px;border-radius:10px;box-shadow:var(--shadow);font-size:13px}
   .toast.err{background:var(--bad);color:#fff}
 
+  /* create-tenant form + service toggles */
+  dialog#createDlg{width:min(700px,94vw);max-height:92vh;overflow:auto}
+  .frm{display:grid;grid-template-columns:1fr 1fr;gap:2px 14px}
+  .frm .full{grid-column:1/-1}
+  .frm label{font-size:12px;color:var(--muted);margin-top:8px}
+  .frm input,.frm select{width:100%;padding:9px 11px;margin:4px 0 2px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--text);font:inherit}
+  .frm input:focus,.frm select:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+  .frm .hint{font-size:11.5px;color:var(--muted)}
+  .svchead{display:flex;align-items:center;gap:10px;margin:16px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+  .svchead .lnk{border:0;background:transparent;color:var(--accent);font-size:12px;padding:0;text-transform:none;letter-spacing:0}
+  .svcgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:4px 12px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--soft);max-height:260px;overflow:auto}
+  .svcgrid label{display:flex;align-items:center;gap:8px;margin:0;padding:3px 0;font-size:13px;color:var(--text)}
+  .svcgrid input{width:auto;margin:0}
+  .svcgrid label.off span{color:var(--muted);text-decoration:line-through}
+  .svcgrid label.chg span::after{content:" •";color:var(--warn)}
+  .svcnote{margin:8px 0 0;font-size:12.5px}
   .tablewrap{overflow-x:auto}
   header .btn,.live{white-space:nowrap}
   @media(max-width:900px){
+    .frm{grid-template-columns:1fr}
     .tiles{grid-template-columns:repeat(2,1fr)} header,main{padding-left:14px;padding-right:14px}
     header{gap:10px} header .small{display:none} .live span:last-child{font-size:11px}
     th.hide-m,td.hide-m{display:none} .pwrap{min-width:120px} .pbar{min-width:100px}
@@ -172,6 +189,7 @@
     <div class="spacer"></div>
     <div class="live"><span class="dot" id="liveDot"></span><span id="liveTxt">Live</span></div>
     <a href="/docs" target="_blank" rel="noopener" class="small">API docs</a>
+    <button class="btn primary" id="newTenant">+ New tenant</button>
     <button class="btn" id="logout">Sign out</button>
   </header>
 
@@ -228,6 +246,38 @@
   <input id="cInput" autocomplete="off" aria-label="Type the tenant name to confirm">
   <div class="dlgbtns"><button class="btn" id="cCancel">Cancel</button><button class="btn danger" id="cOk" disabled>Delete permanently</button></div>
 </dialog>
+<dialog id="archiveDlg">
+  <h3>Archive this tenant?</h3>
+  <p class="muted" style="margin:0 0 4px">All its services stop and its ingress is removed. Its data, databases and secrets are kept, and you can restore it at any time.</p>
+  <p class="muted" style="margin:10px 0 0">Type <b id="aName"></b> to confirm.</p>
+  <input id="aInput" autocomplete="off" aria-label="Type the tenant name to confirm">
+  <div class="dlgbtns"><button class="btn" id="aCancel">Cancel</button><button class="btn danger" id="aOk" disabled>Archive</button></div>
+</dialog>
+
+<dialog id="createDlg">
+  <h3>New tenant</h3>
+  <p class="muted small" style="margin:0 0 4px">Creates the tenant and starts provisioning. Follow progress in its details panel.</p>
+  <div id="ntErr" class="alert" hidden style="margin-top:10px"></div>
+  <form id="createForm" autocomplete="off">
+    <div class="frm">
+      <div><label for="ntId">Tenant ID</label><input id="ntId" required minlength="3" maxlength="50" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" placeholder="acme" autocapitalize="off" spellcheck="false">
+        <div class="hint">Lowercase letters, digits and hyphens. Becomes the namespace name.</div></div>
+      <div><label for="ntDisplay">Display name</label><input id="ntDisplay" required maxlength="255" placeholder="Acme Corp"></div>
+      <div><label for="ntEmail">Admin email</label><input id="ntEmail" type="email" required placeholder="admin@acme.com"></div>
+      <div><label for="ntPass">Admin initial password</label><input id="ntPass" type="password" required minlength="8" autocomplete="new-password">
+        <div class="hint">At least 8 characters. Used once, never stored.</div></div>
+      <div><label for="ntDomain">Domain</label><input id="ntDomain" required placeholder="acme.qraie.ai" spellcheck="false">
+        <div class="hint">Filled in from the tenant ID; edit if different.</div></div>
+      <div><label for="ntChart">Chart version</label><select id="ntChart"></select></div>
+      <div><label for="ntUsers">Users</label><input id="ntUsers" type="number" min="0" value="0"></div>
+      <div><label for="ntDb">Database size</label><input id="ntDb" value="10Gi" pattern="\d+[GMT]i" placeholder="10Gi"></div>
+    </div>
+    <div class="svchead"><span>Services</span><button type="button" class="lnk" id="ntAllOn">Enable all</button><button type="button" class="lnk" id="ntAllOff">Disable all</button></div>
+    <div class="svcgrid" id="ntSvc"></div>
+    <div class="muted small svcnote">Untick a service to leave it out. It can be turned on later from the tenant's details panel.</div>
+    <div class="dlgbtns"><button type="button" class="btn" id="ntCancel">Cancel</button><button type="submit" class="btn primary" id="ntSubmit">Create tenant</button></div>
+  </form>
+</dialog>
 <div id="toasts"></div>
 
 <script>
@@ -235,7 +285,7 @@ const API = "/api/v1";
 const $ = id => document.getElementById(id);
 let token = ""; try { token = sessionStorage.getItem("token") || ""; } catch (_) {}
 const authHdr = () => token ? {Authorization: "Bearer " + token} : {};
-const S = { tenants: [], prog: {}, filter: "all", q: "", showDeleted: false, open: null, openProg: null, timer: null, dTimer: null, lastOk: 0 };
+const S = { tenants: [], prog: {}, filter: "all", q: "", showDeleted: false, open: null, openProg: null, draft: null, timer: null, dTimer: null, lastOk: 0 };
 
 /* ---------- helpers ---------- */
 const h = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -347,12 +397,13 @@ $("showDeleted").onchange = e => { S.showDeleted = e.target.checked; render(); }
 function openDrawer(id){
   S.open = id; S.openProg = S.prog[id] || null;
   $("drawer").classList.add("open"); $("scrim").classList.add("open"); $("drawer").setAttribute("aria-hidden","false");
-  renderDrawer(); loadProgress();
+  S.draft = null; renderDrawer(); loadProgress();
+  loadOpts().then(() => { if(S.open === id) renderDrawer(); }).catch(() => {});
   clearInterval(S.dTimer); S.dTimer = setInterval(loadProgress, 2000);
 }
 function closeDrawer(){ S.open = null; clearInterval(S.dTimer); $("drawer").classList.remove("open"); $("scrim").classList.remove("open"); $("drawer").setAttribute("aria-hidden","true"); }
 $("dClose").onclick = closeDrawer; $("scrim").onclick = closeDrawer;
-document.addEventListener("keydown", e => { if(e.key === "Escape"){ if($("confirm").open) $("confirm").close(); else closeDrawer(); } });
+document.addEventListener("keydown", e => { if(e.key === "Escape"){ if($("confirm").open) $("confirm").close(); else if(!$("createDlg").open && !$("archiveDlg").open) closeDrawer(); } });
 
 async function loadProgress(){
   const id = S.open; if(!id) return;
@@ -384,6 +435,8 @@ function renderDrawer(){
     html += `<div class="muted">${p ? "No step history was recorded for this tenant (it was created before step tracking was added)." : "Loading…"}</div>`;
   }
 
+  html += servicesSection(t, g);
+
   const kv = [["Tenant ID", t.id, 1], ["Name", t.tenantName], ["Slug", t.slug], ["Domain", t.domain], ["Environment", t.environment],
     ["Cluster", t.cluster], ["Namespace", t.namespace, 1], ["Version", t.version], ["Users", t.users], ["Git commit", t.gitCommit ? t.gitCommit.slice(0, 10) : ""],
     ["Hub CR", t.hubCrName], ["Disabled services", (t.disabledServices || []).join(", ")], ["Created", t.createdAt ? new Date(t.createdAt).toLocaleString() : ""], ["Updated", t.updatedAt ? new Date(t.updatedAt).toLocaleString() : ""]];
@@ -396,7 +449,16 @@ function renderDrawer(){
   body.scrollTop = top;
   $("dFootTxt").textContent = "Refreshes automatically";
 }
-$("dBody").onclick = e => { const b = e.target.closest("[data-copy]"); if(b){ navigator.clipboard?.writeText(b.dataset.copy).then(() => toast("Copied"), () => {}); } };
+$("dBody").onclick = e => {
+  const b = e.target.closest("[data-copy]"); if(b){ navigator.clipboard?.writeText(b.dataset.copy).then(() => toast("Copied"), () => {}); return; }
+  const a = e.target.closest("[data-act]")?.dataset.act;
+  if(a === "svcSave") saveServices(); else if(a === "svcReset"){ S.draft = null; renderDrawer(); }
+};
+$("dBody").onchange = e => {
+  const c = e.target.closest("input[data-dsvc]"); if(!c || !S.draft) return;
+  if(c.checked) S.draft.set.delete(c.dataset.dsvc); else S.draft.set.add(c.dataset.dsvc);
+  renderDrawer();
+};
 $("dDelete").onclick = () => S.open && askDelete(S.open);
 $("dArchive").onclick = () => S.open && askArchive(S.open);
 $("dRestore").onclick = () => S.open && doRestore(S.open);
@@ -410,11 +472,21 @@ async function lifecycle(id, action, okMsg, failMsg){
   } catch (e) { if(e.message !== "session expired") toast(failMsg + ": " + e.message, true); }
   refresh();
 }
+// Like delete, archiving asks for the tenant's name to be typed first.
+let arcId = null, arcName = "";
 function askArchive(id){
   const t = S.tenants.find(x => x.id === id); if(!t) return;
-  if(confirm(`Archive ${t.slug}?\n\nAll its services stop and its ingress is removed. Its data, databases and secrets are kept, and you can restore it at any time.`))
-    lifecycle(id, "archive", "Archiving started", "Archive failed");
+  arcId = id; arcName = t.tenantName;
+  $("aName").textContent = arcName; $("aInput").value = ""; $("aOk").disabled = true;
+  $("archiveDlg").showModal(); $("aInput").focus();
 }
+$("aInput").oninput = () => { $("aOk").disabled = $("aInput").value !== arcName; };
+$("aInput").onkeydown = e => { if(e.key === "Enter"){ e.preventDefault(); if(!$("aOk").disabled) $("aOk").click(); } };
+$("aCancel").onclick = () => { arcId = null; $("archiveDlg").close(); };
+$("aOk").onclick = () => {
+  const id = arcId; arcId = null; $("archiveDlg").close();
+  if(id) lifecycle(id, "archive", "Archiving started", "Archive failed");
+};
 function doRestore(id){ lifecycle(id, "restore", "Restore started", "Restore failed"); }
 
 /* ---------- delete ---------- */
@@ -473,6 +545,96 @@ $("cOk").onclick = async () => {
     else { toast(purge ? "Deletion started; its data will be removed afterwards" : "Deletion started"); }
   } catch (e) { if(e.message !== "session expired") toast("Delete failed: " + e.message, true); }
   delId = null; $("confirm").close(); refresh();
+};
+
+/* ---------- create options (service list, base domain, chart versions) ---------- */
+let OPTS = null;
+async function loadOpts(){
+  if(OPTS) return OPTS;
+  const r = await api("/meta/create-options");
+  if(!r.ok) throw new Error("HTTP " + r.status);
+  return OPTS = await r.json();
+}
+const setKey = set => [...set].sort().join(",");
+function apiError(body, fallback){
+  const d = body && body.detail;
+  if(Array.isArray(d)) return d.map(x => (x.loc ? x.loc.slice(1).join(".") + ": " : "") + (x.msg || "")).join("; ");
+  return d || fallback;
+}
+
+/* ---------- service toggles in the drawer ---------- */
+function draftFor(t){
+  const cur = new Set(t.disabledServices || []), key = setKey(cur);
+  if(!S.draft || S.draft.id !== t.id) S.draft = {id: t.id, base: key, set: new Set(cur)};
+  else if(setKey(S.draft.set) === S.draft.base && S.draft.base !== key) S.draft = {id: t.id, base: key, set: new Set(cur)};
+  return S.draft;
+}
+function servicesSection(t, g){
+  if(!OPTS) return `<h3>Services</h3><div class="muted">Loading…</div>`;
+  const d = draftFor(t), base = new Set(d.base ? d.base.split(",") : []);
+  const editable = (g === "running" || t.status === "FAILED") && !!t.helmChartVersion;
+  const dirty = setKey(d.set) !== d.base;
+  const note = !t.helmChartVersion ? "This tenant has no pinned chart version, so its services cannot be changed from here. Pin it through the API first (send chartVersion)."
+    : !editable ? "Services can be changed once the tenant is running." : "";
+  return `<h3>Services</h3><div class="svcgrid">` + OPTS.services.map(n => {
+    const off = d.set.has(n), chg = off !== base.has(n);
+    return `<label class="${off ? "off" : ""} ${chg ? "chg" : ""}"><input type="checkbox" data-dsvc="${h(n)}" ${off ? "" : "checked"} ${editable ? "" : "disabled"}><span>${h(n)}</span></label>`;
+  }).join("") + `</div>` + (note ? `<div class="muted svcnote">${h(note)}</div>` : "") +
+  (editable ? `<div class="dlgbtns" style="justify-content:flex-start"><button class="btn primary" data-act="svcSave" ${dirty ? "" : "disabled"}>Apply changes</button><button class="btn" data-act="svcReset" ${dirty ? "" : "disabled"}>Reset</button></div>` : "");
+}
+async function saveServices(){
+  const t = S.tenants.find(x => x.id === S.open), d = S.draft; if(!t || !d || d.id !== t.id) return;
+  const base = new Set(d.base ? d.base.split(",") : []);
+  const off = [...d.set].filter(n => !base.has(n)), on = [...base].filter(n => !d.set.has(n));
+  if(!off.length && !on.length) return;
+  const msg = `Apply service changes to ${t.slug}?\n\n` + (on.length ? "Turn on: " + on.join(", ") + "\n" : "") +
+    (off.length ? "Turn off: " + off.join(", ") + "  (their pods are removed)\n" : "") + "\nThe tenant is redeployed through Argo CD.";
+  if(!confirm(msg)) return;
+  const services = {}; OPTS.services.forEach(n => services[n] = !d.set.has(n));
+  try {
+    const r = await api(`/tenant/${t.id}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({services})});
+    if(!r.ok) toast(apiError(await r.json().catch(() => ({})), "Update failed (HTTP " + r.status + ")"), true);
+    else { toast("Update started"); S.draft = null; }
+  } catch (e) { if(e.message !== "session expired") toast("Update failed: " + e.message, true); }
+  refresh();
+}
+
+/* ---------- create tenant ---------- */
+let domainTouched = false;
+function renderCreateSvc(allOn){
+  $("ntSvc").innerHTML = OPTS.services.map(n => `<label><input type="checkbox" data-nsvc="${h(n)}" ${allOn ? "checked" : ""}><span>${h(n)}</span></label>`).join("");
+}
+$("ntSvc").onchange = e => { const l = e.target.closest("label"); if(l) l.classList.toggle("off", !e.target.checked); };
+function setAllCreateSvc(on){ document.querySelectorAll("#ntSvc input").forEach(c => { c.checked = on; c.closest("label").classList.toggle("off", !on); }); }
+$("ntAllOn").onclick = () => setAllCreateSvc(true);
+$("ntAllOff").onclick = () => setAllCreateSvc(false);
+$("ntId").oninput = () => { if(!domainTouched && OPTS) $("ntDomain").value = $("ntId").value ? $("ntId").value + "." + OPTS.baseDomain : ""; };
+$("ntDomain").oninput = () => { domainTouched = true; };
+$("ntCancel").onclick = () => $("createDlg").close();
+$("newTenant").onclick = async () => {
+  try { await loadOpts(); } catch (e) { if(e.message !== "session expired") toast("Could not load the form options: " + e.message, true); return; }
+  $("createForm").reset(); domainTouched = false; $("ntErr").hidden = true; $("ntSubmit").disabled = false;
+  const ch = $("ntChart"), vs = (OPTS.chartVersions || []).slice().reverse();
+  ch.innerHTML = `<option value="">${vs.length ? "Latest (" + h(vs[0]) + ")" : "Server default (" + h(OPTS.defaultChartVersion) + ")"}</option>` + vs.map(v => `<option value="${h(v)}">${h(v)}</option>`).join("");
+  renderCreateSvc(true); $("createDlg").showModal(); $("ntId").focus();
+};
+$("createForm").onsubmit = async e => {
+  e.preventDefault(); $("ntErr").hidden = true;
+  const services = {}; let off = 0;
+  document.querySelectorAll("#ntSvc input").forEach(c => { if(!c.checked){ services[c.dataset.nsvc] = false; off++; } });
+  if(off === OPTS.services.length){ $("ntErr").textContent = "Leave at least one service enabled."; $("ntErr").hidden = false; return; }
+  const body = {tenantId: $("ntId").value.trim().toLowerCase(), displayName: $("ntDisplay").value.trim(), email: $("ntEmail").value.trim(),
+    password: $("ntPass").value, domain: $("ntDomain").value.trim().toLowerCase(), users: parseInt($("ntUsers").value || "0", 10),
+    database: {size: $("ntDb").value.trim() || "10Gi"}, services};
+  if($("ntChart").value) body.chartVersion = $("ntChart").value;
+  $("ntSubmit").disabled = true;
+  try {
+    const r = await api("/tenant", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const res = await r.json().catch(() => ({}));
+    if(!r.ok){ $("ntErr").textContent = apiError(res, "Create failed (HTTP " + r.status + ")"); $("ntErr").hidden = false; $("ntSubmit").disabled = false; return; }
+    $("ntPass").value = ""; $("createDlg").close(); toast("Tenant creation started");
+    await refresh(); if(res.tenantId) openDrawer(res.tenantId);
+  } catch (e) { if(e.message !== "session expired"){ $("ntErr").textContent = "Create failed: " + e.message; $("ntErr").hidden = false; } $("ntSubmit").disabled = false; }
 };
 
 token ? enter() : show("login");

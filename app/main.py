@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from app.api import auth, cluster, health, tenant, ui, vault
+from app.api import auth, cluster, health, meta, tenant, ui, vault
 from app.auth import require_admin
 from app.config import get_settings
 from app.database import Base, engine, ensure_schema
@@ -76,6 +76,7 @@ app.include_router(health.router)
 app.include_router(tenant.router, prefix=settings.api_prefix, dependencies=[Depends(require_admin)])
 app.include_router(cluster.router, prefix=settings.api_prefix, dependencies=[Depends(require_admin)])
 app.include_router(vault.router, prefix=settings.api_prefix, dependencies=[Depends(require_admin)])
+app.include_router(meta.router, prefix=settings.api_prefix, dependencies=[Depends(require_admin)])
 app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(ui.router)
 
