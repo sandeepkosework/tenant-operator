@@ -341,7 +341,7 @@ is hidden) and shows:
   includes deleted tenants.
 - **New tenant** (header button) — a form for tenant ID, display name, admin
   email and password, domain (filled in as `<tenant id>.<BRIDGE_BASE_DOMAIN>`),
-  chart version, users and database size, plus a tick-box per service (all on by
+  chart version, plus a tick-box per service (all on by
   default; untick to leave one out). It sends `POST /api/v1/tenant`, then opens
   the new tenant's drawer to follow progress. The service list and chart
   versions come from `GET /api/v1/meta/create-options`.

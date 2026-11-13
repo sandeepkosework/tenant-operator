@@ -269,8 +269,6 @@
       <div><label for="ntDomain">Domain</label><input id="ntDomain" required placeholder="acme.qraie.ai" spellcheck="false">
         <div class="hint">Filled in from the tenant ID; edit if different.</div></div>
       <div><label for="ntChart">Chart version</label><select id="ntChart"></select></div>
-      <div><label for="ntUsers">Users</label><input id="ntUsers" type="number" min="0" value="0"></div>
-      <div><label for="ntDb">Database size</label><input id="ntDb" value="10Gi" pattern="\d+[GMT]i" placeholder="10Gi"></div>
     </div>
     <div class="svchead"><span>Services</span><button type="button" class="lnk" id="ntAllOn">Enable all</button><button type="button" class="lnk" id="ntAllOff">Disable all</button></div>
     <div class="svcgrid" id="ntSvc"></div>
@@ -624,8 +622,7 @@ $("createForm").onsubmit = async e => {
   document.querySelectorAll("#ntSvc input").forEach(c => { if(!c.checked){ services[c.dataset.nsvc] = false; off++; } });
   if(off === OPTS.services.length){ $("ntErr").textContent = "Leave at least one service enabled."; $("ntErr").hidden = false; return; }
   const body = {tenantId: $("ntId").value.trim().toLowerCase(), displayName: $("ntDisplay").value.trim(), email: $("ntEmail").value.trim(),
-    password: $("ntPass").value, domain: $("ntDomain").value.trim().toLowerCase(), users: parseInt($("ntUsers").value || "0", 10),
-    database: {size: $("ntDb").value.trim() || "10Gi"}, services};
+    password: $("ntPass").value, domain: $("ntDomain").value.trim().toLowerCase(), services};
   if($("ntChart").value) body.chartVersion = $("ntChart").value;
   $("ntSubmit").disabled = true;
   try {
