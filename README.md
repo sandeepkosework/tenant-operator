@@ -67,13 +67,14 @@ tenant-operator/
 │   ├── vault_bootstrap.py            loads this operator's OWN config from Vault, pre-Settings
 │   ├── socketio_app.py               Socket.IO transport for tenant status push
 │   ├── auth.py                       admin login token + X-API-Key check (guards every API route)
-│   ├── static/ui.html                built-in web UI served at /ui (tenant table, step-by-step creation progress, delete)
+│   ├── static/ui.html                built-in web UI served at /ui (create tenant, service toggles, tenant table, step-by-step creation progress, delete)
 │   ├── database.py                   SQLAlchemy engine/session (works against SQLite or Postgres)
 │   ├── api/
 │   │   ├── auth.py                   POST /api/v1/auth/login
 │   │   ├── ui.py                     GET /ui
 │   │   ├── tenant.py                 POST/GET/PUT/DELETE /api/v1/tenant + GET .../{id}/vault
 │   │   ├── cluster.py                GET /api/v1/cluster[/{name}] -- SpokeCluster CR view
+│   │   ├── meta.py                   GET /api/v1/meta/create-options -- service names, base domain, chart versions (feeds the UI form)
 │   │   ├── vault.py                  PUT/GET /api/v1/vault/qraie-bridge-defaults -- shared per-service config
 │   │   └── health.py                 GET /health (checks DB connectivity)
 │   ├── models/
@@ -338,6 +339,12 @@ is hidden) and shows:
 - **Summary tiles** — total, running, in progress and failed tenants; click one
   to filter. A search box matches name, domain and cluster; "Show deleted"
   includes deleted tenants.
+- **New tenant** (header button) — a form for tenant ID, display name, admin
+  email and password, domain (filled in as `<tenant id>.<BRIDGE_BASE_DOMAIN>`),
+  chart version, users and database size, plus a tick-box per service (all on by
+  default; untick to leave one out). It sends `POST /api/v1/tenant`, then opens
+  the new tenant's drawer to follow progress. The service list and chart
+  versions come from `GET /api/v1/meta/create-options`.
 - **Tenant table** — status badge, a progress bar with the **current step**
   (or "Failed at: <step>" with the bar stopped where it failed), cluster and
   namespace, and how long ago it was created.
@@ -348,7 +355,12 @@ is hidden) and shows:
   step shows its state (done / running / warning / skipped / failed), how long it
   took, and its latest message, such as the cluster it was placed on, the git
   commit, or the Argo CD health while waiting. A failed tenant shows the error
-  and the step that failed. Below are an activity log of every event and the
+  and the step that failed. A **Services** section lists every service with a
+  toggle; changes are applied with `PUT /api/v1/tenant/{id}` (the full
+  service map), only while the tenant is running or failed and pinned to a chart
+  version. Turning a service off removes its pods; turning one on needs its Vault
+  secrets, which are written for every service when the tenant is created.
+  Below are an activity log of every event and the
   tenant's details (ID, namespace, git commit, ...) with copy buttons.
 - **Delete** — asks you to type the tenant name to confirm.
 
