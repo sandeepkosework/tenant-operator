@@ -122,7 +122,8 @@ data:
   # EDGE_SSH_COMMAND: "sudo -n /opt/edge/bin/edge-apply --run"   # only for a normal account (not a forced-command one)
   # EDGE_SSH_HOST_KEY: "ssh-ed25519 AAAA..."          # cat /etc/ssh/ssh_host_ed25519_key.pub ON the edge host; required
   # EDGE_DEFAULT_UPSTREAM: "192.168.85.207:443"       # for a spoke with no edge_upstream in its registry entry
-  # EDGE_REQUIRED: "false"                            # true = a failed route marks the tenant FAILED
+  # EDGE_REQUIRED: "false"                            # true = a failed route (or DNS record) marks the tenant FAILED
+  # EDGE_DNS_ENABLED: "true"                          # also a GoDaddy A record per tenant; the key stays on the edge host
 
   # --- Onboarding server registration (OFF until the URL is set; see README) ---
   # Each new tenant is POSTed to <url>/config as {tenantId, connectionString} so

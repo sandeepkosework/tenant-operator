@@ -905,6 +905,17 @@ user -> *.qraie.ai -> HAProxy (TLS) -> backend host_hbssf.qraie.ai -> spoke ingr
   work, `orphans` = file with no live tenant). `POST /api/v1/edge/sync` adds the missing routes (for
   tenants created before this was switched on, or after rebuilding the edge host); `?prune=true` also
   removes orphans, `?rewrite=true` re-sends every route (after changing a spoke's `edge_upstream`).
+- **DNS record per tenant (`EDGE_DNS_ENABLED`, off by default):** after the route, a `dns` step creates the
+  tenant's own GoDaddy A record, `<tenant>.<domain>  A  <edge address>`, by running `edge-apply dns-add
+  <domain>` on the edge host. The **GoDaddy key stays on the edge host** (`/opt/edge/.env`, root only; the same
+  one certificate renewal uses) and is never given to the operator. The edge host only ever writes records that
+  point at the address in its `dns.conf`, only removes a record that points there, and refuses reserved names
+  (`www`, `mail`, `ns1`, ...), so a stolen operator login cannot rewrite the rest of the zone. Same failure
+  policy as the route (`EDGE_REQUIRED`); removed on delete, kept on archive. Needs a GoDaddy account allowed to
+  use the DNS API (GoDaddy gates it by account: a `403 ACCESS_DENIED` means it is not). `GET /edge/routes` adds
+  a `dns` section (`missing`, `orphans`, `error`); `POST /edge/sync` creates missing records and
+  `?pruneDns=true` deletes orphan ones -- its own flag, because a record pointing at the edge host is not
+  necessarily a tenant's.
 - **Setup:** the edge host side (`bin/edge-apply`, the template, `allowed-upstreams`, the `edge` user,
   `authorized_keys`, `sudoers`) is in the edge folder's README; the operator side is the `EDGE_*` settings
   below, an SSH key Secret (chart value `edge.sshKey.existingSecretName`, mounted at `/secrets/edge`) and
@@ -1121,6 +1132,7 @@ Selected settings worth knowing about explicitly:
 | `EREP_SETUP_ENABLED` / `_REQUIRED` | `true` / `false` | Create the default eRep after a tenant is RUNNING; `_REQUIRED` fails the tenant if it can't — see "Default eRep setup". |
 | `EREP_SETUP_URL_TEMPLATE` | `https://{domain}/galaxy/erepapi/api/ereps` | Where the eRep is POSTed; also `_VERIFY_TLS`, `_ATTEMPTS`, `_RETRY_DELAY_SECONDS`, `_TIMEOUT_SECONDS`. |
 | `EDGE_ENABLED` / `EDGE_REQUIRED` | `false` / `false` | Publish each tenant on the edge HAProxy over SSH; `_REQUIRED` fails the tenant if the route can't be made — see "Edge HAProxy routes". |
+| `EDGE_DNS_ENABLED` | `false` | Also create each tenant's GoDaddy A record through `edge-apply` (needs `EDGE_ENABLED`; the GoDaddy key stays on the edge host) — see "Edge HAProxy routes". |
 | `EDGE_SSH_HOST` / `_PORT` / `_USER` | unset / `22` / `edge` | The edge host and the login whose key is locked to `edge-apply`. |
 | `EDGE_SSH_KEY_PATH` / `EDGE_SSH_PASSWORD` | unset | How to log in: a private key file, or a password (**Secret only**). One of them is required. |
 | `EDGE_SSH_HOST_KEY` | unset | The edge host's public key to pin (required). |
