@@ -158,6 +158,7 @@
   .svcnote{margin:8px 0 0;font-size:12.5px}
   .tablewrap{overflow-x:auto}
   header .btn,.live{white-space:nowrap}
+  #autoRef{padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);font:inherit;font-size:12px}
   @media(max-width:900px){
     .frm{grid-template-columns:1fr}
     .tiles{grid-template-columns:repeat(2,1fr)} header,main{padding-left:14px;padding-right:14px}
@@ -188,6 +189,11 @@
     <div class="brand"><div class="logo">T</div>Tenant Operator</div>
     <div class="spacer"></div>
     <div class="live"><span class="dot" id="liveDot"></span><span id="liveTxt">Live</span></div>
+    <select id="autoRef" aria-label="Auto refresh" title="Auto refresh">
+      <option value="5000">Refresh: 5s</option><option value="10000">Refresh: 10s</option>
+      <option value="30000">Refresh: 30s</option><option value="0">Refresh: None</option>
+    </select>
+    <button class="btn" id="refreshNow" title="Refresh now">&#8635;</button>
     <a href="/docs" target="_blank" rel="noopener" class="small">API docs</a>
     <button class="btn primary" id="newTenant">+ New tenant</button>
     <button class="btn" id="logout">Sign out</button>
@@ -283,7 +289,7 @@ const API = "/api/v1";
 const $ = id => document.getElementById(id);
 let token = ""; try { token = sessionStorage.getItem("token") || ""; } catch (_) {}
 const authHdr = () => token ? {Authorization: "Bearer " + token} : {};
-const S = { tenants: [], prog: {}, filter: "all", q: "", showDeleted: false, open: null, openProg: null, draft: null, timer: null, dTimer: null, lastOk: 0 };
+const S = { tenants: [], prog: {}, filter: "all", q: "", showDeleted: false, open: null, openProg: null, draft: null, timer: null, dTimer: null, lastOk: 0, every: 5000 };
 
 /* ---------- helpers ---------- */
 const h = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -317,7 +323,21 @@ $("loginForm").onsubmit = async e => {
   $("p").value = ""; enter();
 };
 $("logout").onclick = signOut;
-function enter(){ show("app"); refresh(); clearInterval(S.timer); S.timer = setInterval(() => { if(!document.hidden) refresh(); }, 3000); }
+function startAuto(){
+  clearInterval(S.timer); S.timer = null;
+  if(S.every) S.timer = setInterval(() => { if(!document.hidden) refresh(); }, S.every);
+}
+$("autoRef").onchange = () => {
+  S.every = parseInt($("autoRef").value, 10);
+  try { localStorage.setItem("autoRefresh", String(S.every)); } catch (_) {}
+  startAuto(); if(S.lastOk) live(true);
+};
+$("refreshNow").onclick = refresh;
+try {
+  const saved = localStorage.getItem("autoRefresh");
+  if(saved !== null && [...$("autoRef").options].some(o => o.value === saved)){ $("autoRef").value = saved; S.every = parseInt(saved, 10); }
+} catch (_) {}
+function enter(){ show("app"); refresh(); startAuto(); }
 
 /* ---------- list ---------- */
 async function refresh(){
@@ -333,8 +353,8 @@ async function refresh(){
   } catch (e) { if(e.message !== "session expired"){ showErr("Could not reach the operator: " + e.message); live(false); } }
 }
 function showErr(m){ $("loadErr").textContent = m; $("loadErr").hidden = !m; }
-function live(ok){ $("liveDot").classList.toggle("off", !ok); $("liveTxt").textContent = ok ? "Live · updated " + timeAgo(new Date(S.lastOk).toISOString()) : "Disconnected"; }
-setInterval(() => { if(S.lastOk && !$("app").hidden) live(Date.now() - S.lastOk < 12000); }, 1000);
+function live(ok){ $("liveDot").classList.toggle("off", !ok); $("liveTxt").textContent = ok ? (S.every ? "Live" : "Auto-refresh off") + " · updated " + timeAgo(new Date(S.lastOk).toISOString()) : "Disconnected"; }
+setInterval(() => { if(S.lastOk && !$("app").hidden) live(!S.every || Date.now() - S.lastOk < S.every * 2 + 4000); }, 1000);
 
 function visible(){
   const q = S.q.trim().toLowerCase();
