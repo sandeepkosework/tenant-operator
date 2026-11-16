@@ -79,6 +79,11 @@ spec:
               mountPath: /secrets/kube
               readOnly: true
             {{- end }}
+            {{- if .Values.edge.sshKey.existingSecretName }}
+            - name: edge-ssh-key
+              mountPath: /secrets/edge
+              readOnly: true
+            {{- end }}
             {{- if .Values.persistence.enabled }}
             - name: git-repo-cache
               mountPath: /data/tenant-config
@@ -111,6 +116,12 @@ spec:
         - name: kubeconfig
           secret:
             secretName: {{ .Values.kubeconfig.existingSecretName }}
+        {{- end }}
+        {{- if .Values.edge.sshKey.existingSecretName }}
+        - name: edge-ssh-key
+          secret:
+            secretName: {{ .Values.edge.sshKey.existingSecretName }}
+            defaultMode: 0440      # group-read; podSecurityContext.fsGroup lets the non-root user read it
         {{- end }}
         {{- if .Values.persistence.enabled }}
         - name: git-repo-cache

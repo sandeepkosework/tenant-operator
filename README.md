@@ -859,6 +859,57 @@ default** -- set `EREP_SETUP_ENABLED=false` to skip it.
 - **Auth:** infra-runner sent no credentials and neither does this. If the
   erep-server API requires auth, this step needs a header added.
 
+## Edge HAProxy routes (`app/services/edge_service.py`, `app/api/edge.py`)
+
+Gives every tenant `https://<tenant domain>` through the edge HAProxy (a container on the
+edge host, `stg-k8-db01`). HAProxy's shared frontend sends a request to the backend named
+`host_<Host header>`, so a tenant is reachable as soon as **one backend file** exists in the
+edge host's `conf.d/`. The operator makes and removes that file. **Off by default**
+(`EDGE_ENABLED=false`).
+
+```
+tenant RUNNING -> [edge step] ssh edge@205 "add hbssf.qraie.ai 192.168.85.207:443"
+                  edge-apply: validate -> render template -> haproxy -c on a copy -> install -> graceful reload
+user -> *.qraie.ai -> HAProxy (TLS) -> backend host_hbssf.qraie.ai -> spoke ingress VIP -> tenant pods
+```
+
+- **When:** after the tenant is `RUNNING`, before the default eRep (which calls the public URL). Also
+  re-asserted on restore. On delete (`DELETED`) the file is removed; **archive keeps it** (the ingress is
+  gone while archived, so users get the ingress's 404 until restore).
+- **What the operator sends:** only `add <domain> <upstream>`, `remove <domain>` or `list`, validated
+  on both ends. It never sends HAProxy config: the file is rendered by a **template on the edge host**
+  (`/opt/edge/templates/tenant.cfg.tpl`), so a bug or a stolen key cannot put arbitrary config in front
+  of every tenant, and changing a timeout is one edit on the edge host, not an operator release.
+- **The upstream is per spoke:** `edge_upstream` in the cluster registry (`clusters.yaml`), the spoke's
+  ingress-nginx LoadBalancer (MetalLB) address, e.g. `192.168.85.207:443` -- never a node IP. A second
+  spoke gets its own address; its tenants' files point there, and nothing else changes. Add each spoke's
+  address to `/opt/edge/allowed-upstreams` before its first tenant. `EDGE_DEFAULT_UPSTREAM` covers a
+  spoke with no `edge_upstream`; with neither, the step reports an error rather than guess an address.
+- **SSH:** `paramiko`, with a key (`EDGE_SSH_KEY_PATH`) or, for now, a password (`EDGE_SSH_PASSWORD`),
+  and the edge host's key **pinned** (`EDGE_SSH_HOST_KEY`; an unknown or changed key is refused).
+  The password is a credential: it goes in the Secret (chart `secret:` / `existingSecretName`), never the
+  ConfigMap or Git, and is never logged. What the login may do is decided on the edge host:
+  - **Dedicated `edge` user (recommended, even with a password):** sshd `ForceCommand
+    /opt/edge/bin/edge-apply` for that user, so the login can run nothing else. Leave `EDGE_SSH_COMMAND`
+    empty.
+  - **An existing account (stop-gap):** set `EDGE_SSH_USER` to it and `EDGE_SSH_COMMAND` to
+    `sudo -n /opt/edge/bin/edge-apply --run`; the command is then sent as one quoted argument. That
+    account has a shell, so its password is as powerful as the account -- replace it with the dedicated
+    user later (only these settings change).
+
+  Connection failures are retried (`EDGE_ATTEMPTS` x `EDGE_RETRY_DELAY_SECONDS`); a refusal is not.
+- **Failure policy:** a failed route is logged and shown as a warning on the `edge` step and the tenant
+  stays `RUNNING`; `EDGE_REQUIRED=true` marks it `FAILED` instead. A failed removal never fails a delete.
+- **Idempotent:** adding an existing route says `unchanged`, removing a missing one says `absent`.
+- **Repair:** `GET /api/v1/edge/routes` compares the edge host with the tenants (`missing` = URL does not
+  work, `orphans` = file with no live tenant). `POST /api/v1/edge/sync` adds the missing routes (for
+  tenants created before this was switched on, or after rebuilding the edge host); `?prune=true` also
+  removes orphans, `?rewrite=true` re-sends every route (after changing a spoke's `edge_upstream`).
+- **Setup:** the edge host side (`bin/edge-apply`, the template, `allowed-upstreams`, the `edge` user,
+  `authorized_keys`, `sudoers`) is in the edge folder's README; the operator side is the `EDGE_*` settings
+  below, an SSH key Secret (chart value `edge.sshKey.existingSecretName`, mounted at `/secrets/edge`) and
+  `edge_upstream` per spoke.
+
 ## Shared tenant registry (database `qraieai`)
 
 Like infra-runner, which wrote one record per tenant into a shared `qraieai`
@@ -1069,6 +1120,12 @@ Selected settings worth knowing about explicitly:
 | `QRAIEAI_REGISTRY_ENABLED` | `true` | Keep one record per tenant in the shared registry database — see "Shared tenant registry". |
 | `EREP_SETUP_ENABLED` / `_REQUIRED` | `true` / `false` | Create the default eRep after a tenant is RUNNING; `_REQUIRED` fails the tenant if it can't — see "Default eRep setup". |
 | `EREP_SETUP_URL_TEMPLATE` | `https://{domain}/galaxy/erepapi/api/ereps` | Where the eRep is POSTed; also `_VERIFY_TLS`, `_ATTEMPTS`, `_RETRY_DELAY_SECONDS`, `_TIMEOUT_SECONDS`. |
+| `EDGE_ENABLED` / `EDGE_REQUIRED` | `false` / `false` | Publish each tenant on the edge HAProxy over SSH; `_REQUIRED` fails the tenant if the route can't be made — see "Edge HAProxy routes". |
+| `EDGE_SSH_HOST` / `_PORT` / `_USER` | unset / `22` / `edge` | The edge host and the login whose key is locked to `edge-apply`. |
+| `EDGE_SSH_KEY_PATH` / `EDGE_SSH_PASSWORD` | unset | How to log in: a private key file, or a password (**Secret only**). One of them is required. |
+| `EDGE_SSH_HOST_KEY` | unset | The edge host's public key to pin (required). |
+| `EDGE_SSH_COMMAND` | empty | For a normal account not locked to `edge-apply`: `sudo -n /opt/edge/bin/edge-apply --run`. Empty when the login's forced command is `edge-apply`. |
+| `EDGE_DEFAULT_UPSTREAM` | unset | `ip:443` of the spoke ingress, for a spoke with no `edge_upstream` in `clusters.yaml`. Also `EDGE_ATTEMPTS` (3), `_RETRY_DELAY_SECONDS` (3), `_TIMEOUT_SECONDS` (20). |
 | `QRAIEAI_DB_NAME` / `QRAIEAI_REGISTRY_COLLECTION` | `qraieai` / `tenants` | Where the registry records go. |
 | `GIT_REPO_URL` / `GIT_BRANCH` / `GIT_TENANTS_DIR` | — | The GitOps repo and directory tenant manifests are committed into. |
 | `GIT_BRIDGE_TENANTS_DIR` | `bridge-tenants` | **Currently unused by any live code path** — `_tenants_dir_for()` in `provisioner.py` always returns `GIT_TENANTS_DIR` now that there's only one chart/one tenant flow. Kept because `git_service.py`'s functions already accept a `tenants_dir` override and nothing currently calls them with it; harmless to leave set. |

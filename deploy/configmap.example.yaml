@@ -111,6 +111,18 @@ data:
   # EREP_SETUP_REQUIRED: "false"        # true = a failed call marks the tenant FAILED
   # EREP_SETUP_URL_TEMPLATE: "https://{domain}/galaxy/erepapi/api/ereps"
   # EREP_SETUP_VERIFY_TLS: "true"
+  #
+  # Edge HAProxy: one backend file per tenant on the edge host, made over SSH (see README "Edge HAProxy routes").
+  # EDGE_ENABLED: "true"                              # off by default
+  # EDGE_SSH_HOST: "192.168.85.205"
+  # EDGE_SSH_USER: "edge"
+  # Log in with EITHER a key or (for now) a password. The PASSWORD is a credential: EDGE_SSH_PASSWORD goes in the
+  # Secret (see secret.example.yaml), never here.
+  # EDGE_SSH_KEY_PATH: "/secrets/edge/id_ed25519"     # mounted from the Secret named in the chart's edge.sshKey
+  # EDGE_SSH_COMMAND: "sudo -n /opt/edge/bin/edge-apply --run"   # only for a normal account (not a forced-command one)
+  # EDGE_SSH_HOST_KEY: "ssh-ed25519 AAAA..."          # cat /etc/ssh/ssh_host_ed25519_key.pub ON the edge host; required
+  # EDGE_DEFAULT_UPSTREAM: "192.168.85.207:443"       # for a spoke with no edge_upstream in its registry entry
+  # EDGE_REQUIRED: "false"                            # true = a failed route marks the tenant FAILED
 
   # --- Onboarding server registration (OFF until the URL is set; see README) ---
   # Each new tenant is POSTed to <url>/config as {tenantId, connectionString} so

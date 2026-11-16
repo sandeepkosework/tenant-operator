@@ -43,6 +43,15 @@ git:
     privateKey: ""
     keyName: id_rsa
 
+# Edge HAProxy routes (config EDGE_ENABLED=true, see the operator README "Edge HAProxy routes").
+# The operator SSHes to the edge host as a user whose key is locked to the `edge-apply` command.
+# Create the Secret from the PRIVATE key (never the public one):
+#   kubectl -n tenant-operator create secret generic tenant-operator-edge-key --from-file=id_ed25519=./edge_key
+# then set existingSecretName and config.EDGE_SSH_KEY_PATH: /secrets/edge/id_ed25519
+edge:
+  sshKey:
+    existingSecretName: ""
+
 # Only needed when this release's target cluster(s) for tenant workloads
 # are NOT the cluster this operator itself runs on (KUBECONFIG_PATH stays
 # unset / in-cluster otherwise).

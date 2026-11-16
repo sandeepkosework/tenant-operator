@@ -24,6 +24,7 @@ from app.services import (
     argocd_service,
     bridge_meta_builder_job,
     cluster_selector,
+    edge_service,
     erep_setup,
     git_service,
     helm_values,
@@ -292,6 +293,46 @@ def _setup_default_erep(db: Session, tenant: Tenant) -> None:
             progress.record(tenant.id, "erep", "warn", f"Not created (tenant stays running): {e}")
 
 
+def _publish_edge_route(db: Session, tenant: Tenant, cluster) -> None:
+    """Gives the tenant its https://<domain> on the edge HAProxy: one backend file on the edge host,
+    pointing at this spoke's ingress. Idempotent, so it is also run again on restore. A failure only
+    fails the tenant when edge_required is set; otherwise it is logged and the tenant stays RUNNING
+    (POST /edge/sync adds the missing route later)."""
+    if not edge_service.is_enabled():
+        progress.record(tenant.id, "edge", "skip", "Disabled (EDGE_ENABLED=false)")
+        return
+    if not tenant.domain:
+        progress.record(tenant.id, "edge", "skip", "The tenant has no domain")
+        return
+    progress.record(tenant.id, "edge", "start", f"Publishing {tenant.domain} on the edge proxy")
+    try:
+        upstream = edge_service.upstream_for(cluster)
+        result = edge_service.ensure_route(tenant.domain, upstream)
+        progress.record(tenant.id, "edge", "done", f"https://{tenant.domain} -> {upstream} ({result})")
+    except Exception as e:  # noqa: BLE001 -- anything here must follow the failure policy, never reach the generic handler
+        if not isinstance(e, edge_service.EdgeError):
+            logger.exception("tenant=%s unexpected error publishing the edge route", tenant.tenant_name)
+        if settings.edge_required:
+            logger.error("tenant=%s edge route failed: %s", tenant.tenant_name, e)
+            _set_status(db, tenant, TenantStatus.FAILED, error=f"edge route failed: {e}")
+        else:
+            logger.warning("tenant=%s edge route failed (tenant stays RUNNING): %s", tenant.tenant_name, e)
+            progress.record(tenant.id, "edge", "warn", f"Not published (tenant stays running; run POST /edge/sync later): {e}")
+
+
+def _remove_edge_route(tenant: Tenant) -> None:
+    """Takes a deleted tenant's backend file off the edge host. Never fails the delete: a leftover file
+    only makes the name answer with the ingress's 404, and POST /edge/sync?prune=true cleans it up."""
+    if not edge_service.is_enabled() or not tenant.domain:
+        return
+    try:
+        result = edge_service.remove_route(tenant.domain)
+        progress.record(tenant.id, "edge", "done", f"Removed {tenant.domain} from the edge proxy ({result})")
+    except Exception as e:  # noqa: BLE001 -- never fail a delete over a leftover route
+        logger.warning("tenant=%s edge route removal failed (non-fatal): %s", tenant.tenant_name, e)
+        progress.record(tenant.id, "edge", "warn", f"Route not removed (run POST /edge/sync?prune=true later): {e}")
+
+
 def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
     """
     Entry point for a fresh tenant creation. Run as a background task.
@@ -440,6 +481,8 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             _commit_tenant_info(
                 tenant, cluster, message=f"tenant-operator: {tenant.tenant_name} reached {tenant.status.value}",
             )
+            if tenant.status == TenantStatus.RUNNING:
+                _publish_edge_route(db, tenant, cluster)
             if tenant.status == TenantStatus.RUNNING:
                 _setup_default_erep(db, tenant)
             if tenant.status == TenantStatus.RUNNING:
@@ -674,6 +717,8 @@ def restore_tenant(tenant_id: uuid.UUID) -> None:
                                  message=f"tenant-operator: restore {tenant.tenant_name}")
             _wait_for_argocd_and_k8s(db, tenant, cluster.context)
             if tenant.status == TenantStatus.RUNNING:
+                _publish_edge_route(db, tenant, cluster)        # normally already there; idempotent
+            if tenant.status == TenantStatus.RUNNING:
                 spoke_cr.upsert_spoke_cluster_cr(cluster, db)
                 _commit_tenant_info(tenant, cluster, message=f"tenant-operator: restore {tenant.tenant_name}")
                 logger.info("[step] tenant=%s restored", tenant.tenant_name)
@@ -734,6 +779,7 @@ def delete_tenant(tenant_id: uuid.UUID, purge: bool = False) -> None:
                         tenant, cluster, message=f"tenant-operator: delete {tenant.tenant_name}",
                     )
                     logger.info("[step] tenant=%s deletion complete", tenant.tenant_name)
+                    _remove_edge_route(tenant)
                     if purge:
                         _run_purge(db, tenant)
                     return
