@@ -23,3 +23,5 @@ data:
         max_tenants: 1000
         environments: ["prod"]
         region: us-ashburn-1
+        # The spoke's ingress LoadBalancer address for the edge HAProxy (EDGE_ENABLED=true); see the stage example.
+        # edge_upstream: "10.0.0.50:443"

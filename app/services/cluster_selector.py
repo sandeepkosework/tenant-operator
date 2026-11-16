@@ -58,6 +58,10 @@ class ClusterInfo:
     # the chart's generic "nginx" default). None means "leave the chart's
     # own default alone".
     ingress_class_name: str | None = None
+    # Where the edge HAProxy sends this spoke's tenants: the spoke's ingress-nginx LoadBalancer
+    # (MetalLB) address and port, e.g. "192.168.85.207:443" -- never a node IP. None means "use
+    # settings.edge_default_upstream" (see services/edge_service.py).
+    edge_upstream: str | None = None
 
 
 class NoAvailableClusterError(Exception):

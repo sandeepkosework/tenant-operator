@@ -19,3 +19,7 @@ data:
         max_tenants: 1000
         environments: ["dev", "stage"]
         region: us-east-1
+        # The spoke's ingress-nginx LoadBalancer (MetalLB) address -- never a node IP. The edge HAProxy
+        # sends this spoke's tenants there. Add the same address to /opt/edge/allowed-upstreams on the
+        # edge host. Only used when EDGE_ENABLED=true.
+        # edge_upstream: "192.168.85.207:443"

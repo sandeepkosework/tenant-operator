@@ -32,6 +32,7 @@ CREATE_STEPS: list[tuple[str, str]] = [
     ("manifest", "Commit manifest to GitOps"),
     ("database", "Create and seed databases"),
     ("deploy", "Deploy services and wait for pods"),
+    ("edge", "Publish URL on the edge proxy"),
     ("erep", "Create default eRep"),
     ("ready", "Ready"),
 ]

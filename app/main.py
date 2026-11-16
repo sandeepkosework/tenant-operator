@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from app.api import auth, cluster, health, meta, tenant, ui, vault
+from app.api import auth, cluster, edge, health, meta, tenant, ui, vault
 from app.auth import require_admin
 from app.config import get_settings
 from app.database import Base, engine, ensure_schema
@@ -47,6 +47,7 @@ TAGS = [
     {"name": "auth", "description": "Log in to obtain a bearer token."},
     {"name": "tenant", "description": "Create, inspect, update and delete tenants. Create/update/delete are asynchronous (202) - follow progress via `status`/`progress`."},
     {"name": "cluster", "description": "Read-only view of the registered spoke clusters and the tenants placed on each."},
+    {"name": "edge", "description": "The edge HAProxy routes that publish each tenant's URL: compare them with the tenants and repair drift."},
     {"name": "vault", "description": "Platform-wide default config shared by every qraie-bridge service (applies to tenants created afterwards)."},
     {"name": "health", "description": "Probe endpoint (no auth)."},
 ]
@@ -77,6 +78,7 @@ app.include_router(tenant.router, prefix=settings.api_prefix, dependencies=[Depe
 app.include_router(cluster.router, prefix=settings.api_prefix, dependencies=[Depends(require_admin)])
 app.include_router(vault.router, prefix=settings.api_prefix, dependencies=[Depends(require_admin)])
 app.include_router(meta.router, prefix=settings.api_prefix, dependencies=[Depends(require_admin)])
+app.include_router(edge.router, prefix=settings.api_prefix, dependencies=[Depends(require_admin)])
 app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(ui.router)
 

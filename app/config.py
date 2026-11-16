@@ -218,6 +218,39 @@ class Settings(BaseSettings):
     # True: it marks the tenant FAILED (infra-runner failed the whole run).
     erep_setup_required: bool = False
 
+    # --- Edge HAProxy route per tenant (https://<tenant domain> through the edge proxy) ---
+    # When on, a tenant that reaches RUNNING gets one HAProxy backend file on the edge host, created
+    # by SSHing in and running the forced command `edge-apply add <domain> <spoke ingress VIP:443>`;
+    # a deleted tenant's file is removed. The file's content comes from a template that lives ON the
+    # edge host, never from the operator -- see services/edge_service.py. Off by default.
+    edge_enabled: bool = False
+    edge_ssh_host: Optional[str] = None
+    edge_ssh_port: int = 22
+    edge_ssh_user: str = "edge"
+    # Private key file (mounted from a Secret). Its public half is in the edge user's authorized_keys
+    # with restrict,command="/opt/edge/bin/edge-apply".
+    edge_ssh_key_path: Optional[str] = None
+    # Password login, for now (or instead of the key). It is a credential: put EDGE_SSH_PASSWORD in the
+    # Secret (chart `secret:` / existingSecretName), never in the ConfigMap or Git. It is never logged.
+    edge_ssh_password: Optional[str] = None
+    # Prefix put in front of every command, for a normal login that is NOT locked to edge-apply on the
+    # edge host, e.g. "sudo -n /opt/edge/bin/edge-apply --run". The command is then sent as ONE quoted
+    # argument: `sudo -n /opt/edge/bin/edge-apply --run 'add hbssf.qraie.ai 192.168.85.207:443'`.
+    # Leave empty when the login's forced command is edge-apply itself (sshd ForceCommand or an
+    # authorized_keys command=), which is the safer setup.
+    edge_ssh_command: str = ""
+    # The edge host's public key, one line ("ssh-ed25519 AAAA..."), from `cat /etc/ssh/ssh_host_ed25519_key.pub`
+    # on the edge host. REQUIRED: the operator refuses to connect to a host it cannot verify.
+    edge_ssh_host_key: Optional[str] = None
+    # Used for a spoke whose registry entry has no edge_upstream (single-spoke convenience), "ip:443".
+    edge_default_upstream: Optional[str] = None
+    edge_attempts: int = 3
+    edge_retry_delay_seconds: int = 3
+    edge_timeout_seconds: int = 20
+    # False: a failed route is logged and the tenant stays RUNNING (POST /edge/sync repairs it later).
+    # True: it marks the tenant FAILED.
+    edge_required: bool = False
+
     # --- Onboarding server (the "config API" tenant pods read their Mongo connection string from) ---
     # Base URL, e.g. "http://qraie-onboarding-server:3001". Unset = tenants are
     # not registered (one warning). Set = each new tenant is POSTed to
