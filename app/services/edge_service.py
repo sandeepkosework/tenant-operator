@@ -218,6 +218,35 @@ def list_routes() -> list[str]:
     return sorted(str(h) for h in answer.get("hosts", []))
 
 
+# ---- DNS: one GoDaddy A record per tenant, made by edge-apply on the edge host -------------------
+
+def dns_enabled() -> bool:
+    return bool(settings.edge_enabled and settings.edge_dns_enabled)
+
+
+def ensure_dns(host: str) -> str:
+    """Creates (or corrects) the tenant's A record. Returns "added", "updated" or "unchanged"."""
+    host = validate_host(host)
+    answer = _run(f"dns-add {host}")
+    logger.info("[edge] dns %s: %s", host, answer.get("result"))
+    return str(answer.get("result", "added"))
+
+
+def remove_dns(host: str) -> str:
+    """Deletes the tenant's A record. Returns "removed" or "absent" (already gone is success). The edge host
+    refuses to delete a record that does not point at the edge address."""
+    host = validate_host(host)
+    answer = _run(f"dns-remove {host}")
+    logger.info("[edge] dns %s removed: %s", host, answer.get("result"))
+    return str(answer.get("result", "removed"))
+
+
+def list_dns() -> list[str]:
+    """The tenant records that point at the edge address (names the edge host would treat as ours)."""
+    answer = _run("dns-list")
+    return sorted(str(h) for h in answer.get("hosts", []))
+
+
 # ---- reconcile ---------------------------------------------------------------------------
 
 def desired_routes(db: Session, clusters) -> tuple[dict[str, str], list[str]]:

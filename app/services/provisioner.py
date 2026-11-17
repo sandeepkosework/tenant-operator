@@ -333,6 +333,42 @@ def _remove_edge_route(tenant: Tenant) -> None:
         progress.record(tenant.id, "edge", "warn", f"Route not removed (run POST /edge/sync?prune=true later): {e}")
 
 
+def _publish_edge_dns(db: Session, tenant: Tenant) -> None:
+    """Gives the tenant its own A record at GoDaddy (made by edge-apply on the edge host). Same failure
+    policy as the route: a problem only fails the tenant when edge_required is set."""
+    if not edge_service.dns_enabled():
+        progress.record(tenant.id, "dns", "skip", "Disabled (EDGE_DNS_ENABLED=false)")
+        return
+    if not tenant.domain:
+        progress.record(tenant.id, "dns", "skip", "The tenant has no domain")
+        return
+    progress.record(tenant.id, "dns", "start", f"Creating the DNS record for {tenant.domain}")
+    try:
+        result = edge_service.ensure_dns(tenant.domain)
+        progress.record(tenant.id, "dns", "done", f"{tenant.domain} A record ({result})")
+    except Exception as e:  # noqa: BLE001 -- anything here must follow the failure policy
+        if not isinstance(e, edge_service.EdgeError):
+            logger.exception("tenant=%s unexpected error creating the DNS record", tenant.tenant_name)
+        if settings.edge_required:
+            logger.error("tenant=%s DNS record failed: %s", tenant.tenant_name, e)
+            _set_status(db, tenant, TenantStatus.FAILED, error=f"DNS record failed: {e}")
+        else:
+            logger.warning("tenant=%s DNS record failed (tenant stays RUNNING): %s", tenant.tenant_name, e)
+            progress.record(tenant.id, "dns", "warn", f"Not created (tenant stays running; run POST /edge/sync later): {e}")
+
+
+def _remove_edge_dns(tenant: Tenant) -> None:
+    """Deletes a deleted tenant's A record. Never fails the delete."""
+    if not edge_service.dns_enabled() or not tenant.domain:
+        return
+    try:
+        result = edge_service.remove_dns(tenant.domain)
+        progress.record(tenant.id, "dns", "done", f"Removed the DNS record for {tenant.domain} ({result})")
+    except Exception as e:  # noqa: BLE001 -- never fail a delete over a leftover record
+        logger.warning("tenant=%s DNS record removal failed (non-fatal): %s", tenant.tenant_name, e)
+        progress.record(tenant.id, "dns", "warn", f"Record not removed (run POST /edge/sync?pruneDns=true later): {e}")
+
+
 def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
     """
     Entry point for a fresh tenant creation. Run as a background task.
@@ -483,6 +519,8 @@ def provision_tenant(tenant_id: uuid.UUID, admin_password: str) -> None:
             )
             if tenant.status == TenantStatus.RUNNING:
                 _publish_edge_route(db, tenant, cluster)
+            if tenant.status == TenantStatus.RUNNING:
+                _publish_edge_dns(db, tenant)
             if tenant.status == TenantStatus.RUNNING:
                 _setup_default_erep(db, tenant)
             if tenant.status == TenantStatus.RUNNING:
@@ -719,6 +757,8 @@ def restore_tenant(tenant_id: uuid.UUID) -> None:
             if tenant.status == TenantStatus.RUNNING:
                 _publish_edge_route(db, tenant, cluster)        # normally already there; idempotent
             if tenant.status == TenantStatus.RUNNING:
+                _publish_edge_dns(db, tenant)                   # likewise
+            if tenant.status == TenantStatus.RUNNING:
                 spoke_cr.upsert_spoke_cluster_cr(cluster, db)
                 _commit_tenant_info(tenant, cluster, message=f"tenant-operator: restore {tenant.tenant_name}")
                 logger.info("[step] tenant=%s restored", tenant.tenant_name)
@@ -780,6 +820,7 @@ def delete_tenant(tenant_id: uuid.UUID, purge: bool = False) -> None:
                     )
                     logger.info("[step] tenant=%s deletion complete", tenant.tenant_name)
                     _remove_edge_route(tenant)
+                    _remove_edge_dns(tenant)
                     if purge:
                         _run_purge(db, tenant)
                     return

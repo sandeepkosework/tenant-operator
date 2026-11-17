@@ -32,6 +32,8 @@ class FakeEdge:
         self.commands = []
         self.fail_connect = 0            # connection failures to raise before answering
         self.refuse = None               # an error message edge-apply refuses with
+        self.dns = set()                 # the tenants' A records "at GoDaddy"
+        self.dns_error = None            # make dns-list fail (say, GoDaddy refusing the key)
 
     def __call__(self, command):
         self.commands.append(command)
@@ -50,6 +52,18 @@ class FakeEdge:
             return 0, json.dumps({"ok": True, "host": host, "result": result}) + "\n"
         if parts[0] == "remove":
             result = "removed" if self.routes.pop(parts[1], None) else "absent"
+            return 0, json.dumps({"ok": True, "host": parts[1], "result": result}) + "\n"
+        if parts[0] == "dns-list":
+            if self.dns_error:
+                return 1, json.dumps({"ok": False, "error": self.dns_error}) + "\n"
+            return 0, json.dumps({"ok": True, "hosts": sorted(self.dns)}) + "\n"
+        if parts[0] == "dns-add":
+            result = "unchanged" if parts[1] in self.dns else "added"
+            self.dns.add(parts[1])
+            return 0, json.dumps({"ok": True, "host": parts[1], "result": result}) + "\n"
+        if parts[0] == "dns-remove":
+            result = "removed" if parts[1] in self.dns else "absent"
+            self.dns.discard(parts[1])
             return 0, json.dumps({"ok": True, "host": parts[1], "result": result}) + "\n"
         return 1, json.dumps({"ok": False, "error": "unknown command"}) + "\n"
 
@@ -433,6 +447,121 @@ def test_sync_reports_a_failure_per_host_and_carries_on(env):
     env.edge.refuse = "upstream is not in allowed-upstreams"
     r = env.client.post("/api/v1/edge/sync", headers=env.headers)
     assert r.status_code == 200 and r.json()["failed"][0]["host"] == "hbssf.qraie.ai"
+
+
+# ---- DNS records --------------------------------------------------------------------------
+
+@pytest.fixture
+def dns(monkeypatch):
+    monkeypatch.setattr(get_settings(), "edge_dns_enabled", True)
+
+
+def test_dns_needs_both_switches(edge, monkeypatch):
+    s = get_settings()
+    monkeypatch.setattr(s, "edge_dns_enabled", False)
+    assert not edge_service.dns_enabled()
+    monkeypatch.setattr(s, "edge_dns_enabled", True)
+    monkeypatch.setattr(s, "edge_enabled", False)
+    assert not edge_service.dns_enabled()                        # DNS rides on the edge SSH login
+    monkeypatch.setattr(s, "edge_enabled", True)
+    assert edge_service.dns_enabled()
+
+
+def test_dns_commands_are_exactly_the_forced_commands(edge, dns):
+    assert edge_service.ensure_dns("hbssf.qraie.ai") == "added"
+    assert edge_service.ensure_dns("hbssf.qraie.ai") == "unchanged"
+    assert edge_service.list_dns() == ["hbssf.qraie.ai"]
+    assert edge_service.remove_dns("hbssf.qraie.ai") == "removed"
+    assert edge_service.remove_dns("hbssf.qraie.ai") == "absent"
+    assert edge.commands == ["dns-add hbssf.qraie.ai", "dns-add hbssf.qraie.ai", "dns-list",
+                             "dns-remove hbssf.qraie.ai", "dns-remove hbssf.qraie.ai"]
+
+
+@pytest.mark.parametrize("host", ["", "a;id.qraie.ai", "UPPER..qraie.ai"])
+def test_dns_refuses_a_bad_host_before_sending_anything(edge, dns, host):
+    with pytest.raises(edge_service.EdgeError):
+        edge_service.ensure_dns(host)
+    assert edge.commands == []
+
+
+def test_dns_provisioner_step_creates_the_record(edge, dns, steps):
+    provisioner._publish_edge_dns(None, _tenant())
+    assert edge.dns == {"hbssf.qraie.ai"} and steps.events[-1][:2] == ("dns", "done") and steps.statuses == []
+
+
+def test_dns_step_is_skipped_when_off(edge, steps):
+    provisioner._publish_edge_dns(None, _tenant())
+    assert edge.commands == [] and steps.events[-1][:2] == ("dns", "skip")
+
+
+@pytest.mark.parametrize("boom", [edge_service.EdgeError("godaddy refused the API key (HTTP 403)"), RuntimeError("odd")])
+def test_a_dns_problem_leaves_the_tenant_running_by_default(edge, dns, steps, monkeypatch, boom):
+    def raiser(command):
+        raise boom
+    monkeypatch.setattr(edge_service, "_ssh_exec", raiser)
+    provisioner._publish_edge_dns(None, _tenant())
+    assert steps.statuses == [] and steps.events[-1][:2] == ("dns", "warn")
+
+
+def test_a_dns_problem_fails_the_tenant_when_required(edge, dns, steps, monkeypatch):
+    monkeypatch.setattr(get_settings(), "edge_required", True)
+    edge.refuse = "godaddy refused the API key (HTTP 403)"
+    provisioner._publish_edge_dns(None, _tenant())
+    assert steps.statuses and steps.statuses[0][0] == TenantStatus.FAILED and "DNS record failed" in steps.statuses[0][1]
+
+
+def test_deleting_a_tenant_removes_its_dns_record_and_never_fails_over_it(edge, dns, steps):
+    edge.dns.add("hbssf.qraie.ai")
+    provisioner._remove_edge_dns(_tenant())
+    assert edge.dns == set()
+    edge.fail_connect = 99
+    provisioner._remove_edge_dns(_tenant())                     # must not raise
+    assert steps.events[-1][:2] == ("dns", "warn")
+
+
+def test_the_dns_step_follows_the_route_step_and_precedes_the_erep():
+    keys = [k for k, _ in progress.CREATE_STEPS]
+    assert keys.index("edge") < keys.index("dns") < keys.index("erep")
+
+
+def test_routes_report_has_no_dns_section_when_dns_is_off(env):
+    assert env.client.get("/api/v1/edge/routes", headers=env.headers).json()["dns"] is None
+
+
+def test_routes_report_shows_dns_missing_and_orphans(env, dns):
+    _make(env, "hbssf")
+    _make(env, "hbssg")
+    env.edge.routes.update({"hbssf.qraie.ai": VIP, "hbssg.qraie.ai": VIP})
+    env.edge.dns.update({"hbssf.qraie.ai", "old.qraie.ai"})
+    body = env.client.get("/api/v1/edge/routes", headers=env.headers).json()
+    assert body["dns"] == {"missing": ["hbssg.qraie.ai"], "orphans": ["old.qraie.ai"], "error": None}
+
+
+def test_a_dns_error_does_not_hide_the_route_report(env, dns):
+    _make(env, "hbssf")
+    env.edge.dns_error = "godaddy refused the API key (HTTP 403: wrong key, or this account has no API access)"
+    r = env.client.get("/api/v1/edge/routes", headers=env.headers)
+    assert r.status_code == 200 and r.json()["missing"] == ["hbssf.qraie.ai"]
+    assert "refused the API key" in r.json()["dns"]["error"]
+
+
+def test_sync_adds_missing_dns_records_and_leaves_orphans_alone(env, dns):
+    _make(env, "hbssf")
+    env.edge.dns.add("old.qraie.ai")
+    r = env.client.post("/api/v1/edge/sync", headers=env.headers).json()
+    assert r["dnsAdded"] == ["hbssf.qraie.ai"] and r["dnsRemoved"] == []
+    assert env.edge.dns == {"hbssf.qraie.ai", "old.qraie.ai"}
+
+
+def test_orphan_dns_records_go_only_with_the_separate_flag(env, dns):
+    _make(env, "hbssf")
+    env.edge.routes["old.qraie.ai"] = VIP
+    env.edge.dns.update({"hbssf.qraie.ai", "old.qraie.ai"})
+    r = env.client.post("/api/v1/edge/sync?prune=true", headers=env.headers).json()
+    assert r["removed"] == ["old.qraie.ai"] and r["dnsRemoved"] == []          # prune is for routes only
+    assert "old.qraie.ai" in env.edge.dns
+    r = env.client.post("/api/v1/edge/sync?pruneDns=true", headers=env.headers).json()
+    assert r["dnsRemoved"] == ["old.qraie.ai"] and env.edge.dns == {"hbssf.qraie.ai"}
 
 
 def test_the_edge_api_is_off_when_edge_is_disabled(env, monkeypatch):

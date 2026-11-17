@@ -250,6 +250,10 @@ class Settings(BaseSettings):
     # False: a failed route is logged and the tenant stays RUNNING (POST /edge/sync repairs it later).
     # True: it marks the tenant FAILED.
     edge_required: bool = False
+    # Also give each tenant its own GoDaddy A record (<tenant>.<domain> -> the edge address) through the same
+    # SSH login: `edge-apply dns-add <domain>`. The GoDaddy key stays on the edge host, never in the operator.
+    # Needs EDGE_ENABLED. Failures follow EDGE_REQUIRED. Off by default.
+    edge_dns_enabled: bool = False
 
     # --- Onboarding server (the "config API" tenant pods read their Mongo connection string from) ---
     # Base URL, e.g. "http://qraie-onboarding-server:3001". Unset = tenants are

@@ -29,12 +29,19 @@ CLUSTER = cluster_selector.ClusterInfo(name="spoke-1", context="spoke-1-ctx", ar
 class Edge:
     def __init__(self):
         self.commands, self.routes, self.error = [], {}, None
+        self.dns = set()                               # the tenants' A records "at GoDaddy"
 
     def __call__(self, command):
         self.commands.append(command)
         if self.error is not None:
             raise self.error
         p = command.split()
+        if p[0] == "dns-add":
+            self.dns.add(p[1])
+            return 0, '{"ok": true, "host": "%s", "result": "added"}\n' % p[1]
+        if p[0] == "dns-remove":
+            self.dns.discard(p[1])
+            return 0, '{"ok": true, "host": "%s", "result": "removed"}\n' % p[1]
         if p[0] == "add":
             self.routes[p[1]] = p[2]
             return 0, '{"ok": true, "host": "%s", "result": "added"}\n' % p[1]
@@ -57,6 +64,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(s, "erep_setup_enabled", True)
     monkeypatch.setattr(s, "edge_enabled", False)
     monkeypatch.setattr(s, "edge_required", False)
+    monkeypatch.setattr(s, "edge_dns_enabled", False)
     monkeypatch.setattr(s, "edge_attempts", 1)
     monkeypatch.setattr(s, "edge_retry_delay_seconds", 0)
     monkeypatch.setattr(s, "onboarding_server_url", None)
@@ -188,6 +196,47 @@ def test_a_spoke_with_no_upstream_does_not_fail_the_tenant(world):
     assert world.edge.commands == []                                # an address is never guessed
 
 
+def test_create_with_dns_on_makes_the_record_after_the_route_and_before_the_erep(world):
+    world.settings.edge_enabled = True
+    world.settings.edge_dns_enabled = True
+    world.monkeypatch.setattr(edge_service, "_ssh_exec", lambda c: (world.calls.append(c.split()[0]) or world.edge(c)))
+    tid = _new_tenant(world)
+    provisioner.provision_tenant(tid, "pw")
+    status, err, events = _result(world, tid)
+    assert status == TenantStatus.RUNNING and err is None
+    assert world.calls == ["add", "dns-add", "erep"]
+    assert world.edge.routes == {"hbssf.qraie.ai": VIP} and world.edge.dns == {"hbssf.qraie.ai"}
+    assert _step_states(events, "dns") == ["start", "done"]
+
+
+def test_create_with_dns_off_is_unchanged_apart_from_one_skipped_step(world):
+    world.settings.edge_enabled = True                              # routes on, DNS off
+    tid = _new_tenant(world)
+    provisioner.provision_tenant(tid, "pw")
+    status, _err, events = _result(world, tid)
+    assert status == TenantStatus.RUNNING and world.edge.dns == set()
+    assert not any(c.startswith("dns") for c in world.edge.commands)
+    assert _step_states(events, "dns") == ["skip"]
+
+
+@pytest.mark.parametrize("boom", [edge_service.EdgeError("godaddy refused the API key (HTTP 403)"), RuntimeError("odd")])
+def test_a_dns_problem_never_stops_a_tenant_being_created(world, boom):
+    world.settings.edge_enabled = True
+    world.settings.edge_dns_enabled = True
+
+    def ssh(command):
+        if command.startswith("dns"):
+            raise boom
+        return world.edge(command)
+    world.monkeypatch.setattr(edge_service, "_ssh_exec", ssh)
+    tid = _new_tenant(world)
+    provisioner.provision_tenant(tid, "pw")
+    status, err, events = _result(world, tid)
+    assert status == TenantStatus.RUNNING and err is None
+    assert world.edge.routes == {"hbssf.qraie.ai": VIP}             # the route is still there
+    assert _step_states(events, "dns")[-1] == "warn" and world.calls == ["erep"]
+
+
 # ---- delete ------------------------------------------------------------------------------
 
 def test_delete_with_edge_off_is_exactly_as_before(world):
@@ -216,6 +265,35 @@ def test_an_edge_problem_never_stops_a_tenant_being_deleted(world, boom):
     status, err, events = _result(world, tid)
     assert status == TenantStatus.DELETED and err is None
     assert _step_states(events, "edge")[-1] == "warn"
+
+
+def test_delete_with_dns_on_removes_the_route_and_the_record(world):
+    world.settings.edge_enabled = True
+    world.settings.edge_dns_enabled = True
+    world.edge.routes["hbssf.qraie.ai"] = VIP
+    world.edge.dns.add("hbssf.qraie.ai")
+    tid = _new_tenant(world, status=TenantStatus.RUNNING)
+    provisioner.delete_tenant(tid)
+    status, _err, _events = _result(world, tid)
+    assert status == TenantStatus.DELETED and world.edge.routes == {} and world.edge.dns == set()
+
+
+@pytest.mark.parametrize("boom", [edge_service.EdgeError("down"), RuntimeError("odd")])
+def test_a_dns_problem_never_stops_a_tenant_being_deleted(world, boom):
+    world.settings.edge_enabled = True
+    world.settings.edge_dns_enabled = True
+    world.edge.routes["hbssf.qraie.ai"] = VIP
+
+    def ssh(command):
+        if command.startswith("dns"):
+            raise boom
+        return world.edge(command)
+    world.monkeypatch.setattr(edge_service, "_ssh_exec", ssh)
+    tid = _new_tenant(world, status=TenantStatus.RUNNING)
+    provisioner.delete_tenant(tid)
+    status, err, events = _result(world, tid)
+    assert status == TenantStatus.DELETED and err is None and world.edge.routes == {}
+    assert _step_states(events, "dns")[-1] == "warn"
 
 
 def test_delete_with_purge_still_purges_after_the_route_is_removed(world):
