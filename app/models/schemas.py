@@ -54,6 +54,14 @@ class TenantCreateRequest(BaseModel):
     database: DatabaseSpec = DatabaseSpec()
     createdBy: Optional[str] = None
 
+    # Per-tenant switches for the edge, both OFF unless asked for. `haproxy: true` publishes the tenant on the
+    # edge HAProxy (https://<domain> through the edge host); `godaddy: true` also creates its own GoDaddy A
+    # record. Asking for one the operator is not set up for (EDGE_ENABLED / EDGE_DNS_ENABLED) is refused with
+    # a 409 before anything is created. They are remembered on the tenant, so delete, restore and
+    # POST /edge/sync honour the choice.
+    haproxy: bool = False
+    godaddy: bool = False
+
     # Which of the chart's ~30 services this tenant actually gets. Sparse
     # and opt-out by default (onlyListedServices=false) -- any service not
     # mentioned here still gets created (today's default behavior is
@@ -179,6 +187,10 @@ class TenantResponse(BaseModel):
     createdAt: datetime = Field(validation_alias="created_at")
     updatedAt: datetime = Field(validation_alias="updated_at")
     archivedAt: Optional[datetime] = Field(default=None, validation_alias="archived_at")
+    # The per-tenant edge choice made at creation. null = the tenant predates the choice (it follows the
+    # operator-wide switches).
+    haproxy: Optional[bool] = Field(default=None, validation_alias="edge_route")
+    godaddy: Optional[bool] = Field(default=None, validation_alias="edge_dns")
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 

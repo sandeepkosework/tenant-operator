@@ -32,7 +32,8 @@ def _compare(db: Session) -> dict:
         # A DNS problem (say, GoDaddy refusing the key) must not hide the route report, so it is reported beside it.
         try:
             have_dns = set(edge_service.list_dns())
-            out["dns"] = {"missing": sorted(set(want) - have_dns), "orphans": sorted(have_dns - set(want)), "error": None}
+            want_dns = edge_service.desired_dns(db)          # its own list: a tenant can want a route but no record
+            out["dns"] = {"missing": sorted(want_dns - have_dns), "orphans": sorted(have_dns - want_dns), "error": None}
         except edge_service.EdgeError as e:
             out["dns"] = {"missing": [], "orphans": [], "error": str(e)}
     return out
