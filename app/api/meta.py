@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from app.config import get_settings
-from app.services import chart_versions
+from app.services import chart_versions, edge_service
 from app.services.helm_values import QRAIE_BRIDGE_SERVICE_NAMES
 
 router = APIRouter(prefix="/meta", tags=["meta"])
@@ -14,7 +14,9 @@ settings = get_settings()
     description=(
         "The service names a tenant can enable or disable, the base domain tenant hostnames are built under, "
         "and the chart releases a new tenant can be created on. `chartVersions` is null when the chart "
-        "repository cannot be read right now; the form then just leaves the version to the server's default."
+        "repository cannot be read right now; the form then just leaves the version to the server's default. "
+        "`edge` says which per-tenant edge switches this operator can honour (`haproxy`, `godaddy`); both are "
+        "off by default on a new tenant."
     ),
     responses={401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}},
 )
@@ -25,4 +27,5 @@ def create_options():
         "environment": settings.environment,
         "chartVersions": chart_versions.available(),
         "defaultChartVersion": settings.helm_chart_version,
+        "edge": {"haproxy": edge_service.is_enabled(), "godaddy": edge_service.dns_enabled()},
     }

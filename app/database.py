@@ -46,6 +46,8 @@ def ensure_schema() -> None:
     for column, column_type, why in (
         ("archived_at", timestamp, "archive/restore will not work"),
         ("tenant_number", "INTEGER", "tenants will have no number"),
+        ("edge_route", "BOOLEAN", "the per-tenant HAProxy choice cannot be stored"),
+        ("edge_dns", "BOOLEAN", "the per-tenant GoDaddy choice cannot be stored"),
     ):
         try:
             if column not in {c["name"] for c in inspect(engine).get_columns(table)}:

@@ -158,6 +158,7 @@
   .svcnote{margin:8px 0 0;font-size:12.5px}
   .tablewrap{overflow-x:auto}
   header .btn,.live{white-space:nowrap}
+  #ntEdge label:not([hidden]){display:flex;gap:8px;align-items:center;margin:4px 0}
   #autoRef{padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);font:inherit;font-size:12px}
   @media(max-width:900px){
     .frm{grid-template-columns:1fr}
@@ -275,6 +276,12 @@
       <div><label for="ntDomain">Domain</label><input id="ntDomain" required placeholder="acme.qraie.ai" spellcheck="false">
         <div class="hint">Filled in from the tenant ID; edit if different.</div></div>
       <div><label for="ntChart">Chart version</label><select id="ntChart"></select></div>
+    </div>
+    <div id="ntEdge" hidden>
+      <div class="svchead"><span>Edge</span></div>
+      <label id="ntHaproxyRow" hidden><input type="checkbox" id="ntHaproxy"> Publish on the edge HAProxy <span class="muted small">(https://&lt;domain&gt; through the edge host)</span></label>
+      <label id="ntGodaddyRow" hidden><input type="checkbox" id="ntGodaddy"> Create a GoDaddy DNS record <span class="muted small">(its own A record)</span></label>
+      <div class="muted small svcnote">Both are off unless ticked.</div>
     </div>
     <div class="svchead"><span>Services</span><button type="button" class="lnk" id="ntAllOn">Enable all</button><button type="button" class="lnk" id="ntAllOff">Disable all</button></div>
     <div class="svcgrid" id="ntSvc"></div>
@@ -634,6 +641,8 @@ $("newTenant").onclick = async () => {
   $("createForm").reset(); domainTouched = false; $("ntErr").hidden = true; $("ntSubmit").disabled = false;
   const ch = $("ntChart"), vs = (OPTS.chartVersions || []).slice().reverse();
   ch.innerHTML = `<option value="">${vs.length ? "Latest (" + h(vs[0]) + ")" : "Server default (" + h(OPTS.defaultChartVersion) + ")"}</option>` + vs.map(v => `<option value="${h(v)}">${h(v)}</option>`).join("");
+  const ed = OPTS.edge || {};                              // only offer what this operator can actually do
+  $("ntHaproxyRow").hidden = !ed.haproxy; $("ntGodaddyRow").hidden = !ed.godaddy; $("ntEdge").hidden = !(ed.haproxy || ed.godaddy);
   renderCreateSvc(true); $("createDlg").showModal(); $("ntId").focus();
 };
 $("createForm").onsubmit = async e => {
@@ -644,6 +653,8 @@ $("createForm").onsubmit = async e => {
   const body = {tenantId: $("ntId").value.trim().toLowerCase(), displayName: $("ntDisplay").value.trim(), email: $("ntEmail").value.trim(),
     password: $("ntPass").value, domain: $("ntDomain").value.trim().toLowerCase(), services};
   if($("ntChart").value) body.chartVersion = $("ntChart").value;
+  body.haproxy = !$("ntHaproxyRow").hidden && $("ntHaproxy").checked;    // false unless offered and ticked
+  body.godaddy = !$("ntGodaddyRow").hidden && $("ntGodaddy").checked;
   $("ntSubmit").disabled = true;
   try {
     const r = await api("/tenant", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});

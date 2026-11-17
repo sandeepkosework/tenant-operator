@@ -14,7 +14,7 @@ from app.models.schemas import (
     TenantResponse,
     TenantUpdateRequest,
 )
-from app.services import chart_versions, helm_values, preflight, progress, provisioner, purge_service, vault_service
+from app.services import chart_versions, edge_service, helm_values, preflight, progress, provisioner, purge_service, vault_service
 from app.services.validation import ValidationError, validate_create_request
 
 logger = logging.getLogger("tenant-operator.api.tenant")
@@ -34,7 +34,10 @@ settings = get_settings()
         "then seed the tenant database.\n\n"
         "Poll `GET /tenant/{id}` (or subscribe on Socket.IO) to follow progress.\n\n"
         "`chartVersion` is optional: omit it for the newest chart release, or name an older tag (like `v0.1.0`) to stay on it.\n\n"
-        "`password` is the tenant admin's initial password; it is used in memory only and never stored."
+        "`password` is the tenant admin's initial password; it is used in memory only and never stored.\n\n"
+        "`haproxy` and `godaddy` are per-tenant switches, **both false when omitted**. `haproxy: true` publishes the tenant on "
+        "the edge HAProxy (`https://<domain>`); `godaddy: true` also creates its own GoDaddy A record. Asking for one the "
+        "operator is not set up for returns **409** before anything is created."
     ),
     responses={400: {"description": "Validation failed (bad name, duplicate active tenant, unknown service, unknown chartVersion, ...)"}, **{401: {"description": "Missing/invalid token or API key"}, 503: {"description": "Auth not configured on the operator (no ADMIN_PASSWORD/API_KEY)"}}},
 )
@@ -47,6 +50,13 @@ def create_tenant(
         validate_create_request(req, db)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # The edge switches are per tenant and off unless asked for. Asking for one this operator is not set up for
+    # is refused now, before anything is created, rather than skipped silently after the tenant is running.
+    if req.haproxy and not edge_service.is_enabled():
+        raise HTTPException(status_code=409, detail="haproxy=true was requested but edge routing is not enabled on this operator (EDGE_ENABLED=false). Nothing was created.")
+    if req.godaddy and not edge_service.dns_enabled():
+        raise HTTPException(status_code=409, detail="godaddy=true was requested but DNS records are not enabled on this operator (EDGE_ENABLED and EDGE_DNS_ENABLED must both be true). Nothing was created.")
 
     # Look for ANY trace of this tenant id (SQL/Mongo database, namespace on any
     # spoke, Argo CD application, ...) before creating anything -- not even the
@@ -94,6 +104,8 @@ def create_tenant(
         database_size=req.database.size,
         status=TenantStatus.PENDING,
         created_by=req.createdBy,
+        edge_route=req.haproxy,
+        edge_dns=req.godaddy,
     )
     db.add(tenant)
     db.commit()

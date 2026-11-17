@@ -311,7 +311,9 @@ def steps(monkeypatch):
 
 
 def _tenant(domain="hbssf.qraie.ai"):
-    return types.SimpleNamespace(id="t-1", tenant_name="hbssf", domain=domain, status=TenantStatus.RUNNING)
+    # edge_route / edge_dns None = a tenant that predates the per-tenant choice: it follows the operator-wide switches
+    return types.SimpleNamespace(id="t-1", tenant_name="hbssf", domain=domain, status=TenantStatus.RUNNING,
+                                 edge_route=None, edge_dns=None)
 
 
 def test_a_running_tenant_gets_its_route(edge, steps):

@@ -9,7 +9,7 @@ operator commits. (The one deliberate write exception, and the one real,
 non-echoed Kubernetes Job submission, are both called out explicitly below.)
 
 ```
-POST /api/v1/tenant { tenantId, displayName, email, password, domain, services?, onlyListedServices? }
+POST /api/v1/tenant { tenantId, displayName, email, password, domain, services?, onlyListedServices?, haproxy?, godaddy? }
         │
         ▼
 Validate → select spoke (sequential fill; capacity check/scale-out per env)
@@ -873,6 +873,16 @@ tenant RUNNING -> [edge step] ssh edge@205 "add hbssf.qraie.ai 192.168.85.207:44
 user -> *.qraie.ai -> HAProxy (TLS) -> backend host_hbssf.qraie.ai -> spoke ingress VIP -> tenant pods
 ```
 
+- **Per tenant, off by default:** the create request takes `haproxy` and `godaddy`, **both false when
+  omitted**. `haproxy: true` publishes that tenant on the edge HAProxy; `godaddy: true` also creates its own
+  GoDaddy A record. The two are independent (a record with no route points at the edge host, which answers
+  `no such tenant` for it). Asking for one the operator is not set up for (`EDGE_ENABLED`, or
+  `EDGE_DNS_ENABLED`) returns **409** before anything is created. The choice is stored on the tenant
+  (`haproxy` / `godaddy` in `GET /tenant/{id}`), so restore, delete and `POST /edge/sync` honour it: sync never
+  adds what a tenant declined. A tenant created before this existed has `null` and follows the operator-wide
+  switches, so the routes it already has are kept. `GET /meta/create-options` reports which switches are
+  available (`edge`), and the web form shows two unticked checkboxes only for those. The operator-wide
+  settings below are the master switches; the request flags choose per tenant.
 - **When:** after the tenant is `RUNNING`, before the default eRep (which calls the public URL). Also
   re-asserted on restore. On delete (`DELETED`) the file is removed; **archive keeps it** (the ingress is
   gone while archived, so users get the ingress's 404 until restore).
@@ -905,7 +915,7 @@ user -> *.qraie.ai -> HAProxy (TLS) -> backend host_hbssf.qraie.ai -> spoke ingr
   work, `orphans` = file with no live tenant). `POST /api/v1/edge/sync` adds the missing routes (for
   tenants created before this was switched on, or after rebuilding the edge host); `?prune=true` also
   removes orphans, `?rewrite=true` re-sends every route (after changing a spoke's `edge_upstream`).
-- **DNS record per tenant (`EDGE_DNS_ENABLED`, off by default):** after the route, a `dns` step creates the
+- **DNS record per tenant (`EDGE_DNS_ENABLED`, and `godaddy: true` on the request):** after the route, a `dns` step creates the
   tenant's own GoDaddy A record, `<tenant>.<domain>  A  <edge address>`, by running `edge-apply dns-add
   <domain>` on the edge host. The **GoDaddy key stays on the edge host** (`/opt/edge/.env`, root only; the same
   one certificate renewal uses) and is never given to the operator. The edge host only ever writes records that

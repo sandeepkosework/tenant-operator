@@ -1,7 +1,7 @@
 import enum
 import uuid
 
-from sqlalchemy import Column, String, Integer, DateTime, Enum, Text, JSON, func
+from sqlalchemy import Boolean, Column, String, Integer, DateTime, Enum, Text, JSON, func
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.database import Base
@@ -152,6 +152,13 @@ class Tenant(Base):
     # file (update, restore) whether to write `archived: true`. Added to an existing database at
     # startup by database.ensure_schema().
     archived_at = Column(DateTime(timezone=True), nullable=True)
+    # Whether this tenant is published on the edge HAProxy (edge_route) and gets its own GoDaddy A record
+    # (edge_dns). Chosen per tenant when it is created -- the `haproxy` / `godaddy` request fields, both
+    # false when omitted. NULL means a tenant that predates the choice: it follows the operator-wide
+    # switches (EDGE_ENABLED / EDGE_DNS_ENABLED), so the routes it already has are kept and `POST
+    # /edge/sync` still repairs them. Added to an existing database by database.ensure_schema().
+    edge_route = Column(Boolean, nullable=True)
+    edge_dns = Column(Boolean, nullable=True)
 
     @property
     def slug(self) -> str:

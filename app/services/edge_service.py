@@ -256,7 +256,7 @@ def desired_routes(db: Session, clusters) -> tuple[dict[str, str], list[str]]:
     want: dict[str, str] = {}
     problems: list[str] = []
     for t in db.query(Tenant).filter(Tenant.status.in_(ROUTED_STATUSES)).all():
-        if not t.domain:
+        if not t.domain or t.edge_route is False:        # False = the tenant chose not to be published
             continue
         try:
             want[validate_host(t.domain)] = upstream_for(by_name[t.cluster])
@@ -265,3 +265,17 @@ def desired_routes(db: Session, clusters) -> tuple[dict[str, str], list[str]]:
         except EdgeError as e:
             problems.append(f"{t.tenant_name}: {e}")
     return want, problems
+
+
+def desired_dns(db: Session) -> set[str]:
+    """The domains that should have their own A record: routed tenants that did not opt out (edge_dns False).
+    A tenant that predates the per-tenant choice (None) follows the operator-wide switch, so it is included."""
+    out: set[str] = set()
+    for t in db.query(Tenant).filter(Tenant.status.in_(ROUTED_STATUSES)).all():
+        if not t.domain or t.edge_dns is False:
+            continue
+        try:
+            out.add(validate_host(t.domain))
+        except EdgeError:
+            continue
+    return out

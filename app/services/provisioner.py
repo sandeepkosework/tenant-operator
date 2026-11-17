@@ -298,6 +298,9 @@ def _publish_edge_route(db: Session, tenant: Tenant, cluster) -> None:
     pointing at this spoke's ingress. Idempotent, so it is also run again on restore. A failure only
     fails the tenant when edge_required is set; otherwise it is logged and the tenant stays RUNNING
     (POST /edge/sync adds the missing route later)."""
+    if tenant.edge_route is False:
+        progress.record(tenant.id, "edge", "skip", "Not requested for this tenant (haproxy=false)")
+        return
     if not edge_service.is_enabled():
         progress.record(tenant.id, "edge", "skip", "Disabled (EDGE_ENABLED=false)")
         return
@@ -323,8 +326,8 @@ def _publish_edge_route(db: Session, tenant: Tenant, cluster) -> None:
 def _remove_edge_route(tenant: Tenant) -> None:
     """Takes a deleted tenant's backend file off the edge host. Never fails the delete: a leftover file
     only makes the name answer with the ingress's 404, and POST /edge/sync?prune=true cleans it up."""
-    if not edge_service.is_enabled() or not tenant.domain:
-        return
+    if tenant.edge_route is False or not edge_service.is_enabled() or not tenant.domain:
+        return                                       # never published, so nothing to take away
     try:
         result = edge_service.remove_route(tenant.domain)
         progress.record(tenant.id, "edge", "done", f"Removed {tenant.domain} from the edge proxy ({result})")
@@ -336,6 +339,9 @@ def _remove_edge_route(tenant: Tenant) -> None:
 def _publish_edge_dns(db: Session, tenant: Tenant) -> None:
     """Gives the tenant its own A record at GoDaddy (made by edge-apply on the edge host). Same failure
     policy as the route: a problem only fails the tenant when edge_required is set."""
+    if tenant.edge_dns is False:
+        progress.record(tenant.id, "dns", "skip", "Not requested for this tenant (godaddy=false)")
+        return
     if not edge_service.dns_enabled():
         progress.record(tenant.id, "dns", "skip", "Disabled (EDGE_DNS_ENABLED=false)")
         return
@@ -359,8 +365,8 @@ def _publish_edge_dns(db: Session, tenant: Tenant) -> None:
 
 def _remove_edge_dns(tenant: Tenant) -> None:
     """Deletes a deleted tenant's A record. Never fails the delete."""
-    if not edge_service.dns_enabled() or not tenant.domain:
-        return
+    if tenant.edge_dns is False or not edge_service.dns_enabled() or not tenant.domain:
+        return                                       # never created, so nothing to take away
     try:
         result = edge_service.remove_dns(tenant.domain)
         progress.record(tenant.id, "dns", "done", f"Removed the DNS record for {tenant.domain} ({result})")
