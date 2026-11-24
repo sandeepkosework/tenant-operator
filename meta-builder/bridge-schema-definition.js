@@ -156,7 +156,15 @@ const BridgeSchema = new Schema({
   createdAt: Date,
   updatedAt: Date,
   __v: Number,
-  agentObj: AgentSchema
+  agentObj: AgentSchema,
+  // Public hostname of the tenant's bridge, e.g. "<tenant>-bridgestg.<domain>".
+  bridge: {
+    publicHost: String
+  },
+  // Service-to-service credentials, keyed by service name:
+  //   { "<service>": { clientId: "svc:<service>", clientSecret, serviceTokenUrl? } }
+  // Built by tenantBridgeMeta.js (buildServiceClients), not by the template.
+  serviceClients: Schema.Types.Mixed
 }, {
   collection: 'bridgeMetaInfo'
 });
