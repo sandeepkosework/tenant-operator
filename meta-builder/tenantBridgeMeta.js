@@ -109,6 +109,30 @@ function bridgeHost(tenantId, domain, isStaging) {
     return fromEnv || `${tenantId}-bridge${isStaging ? "stg" : ""}.${domain}`;
 }
 
+// Service-to-service clients stored in bridgeMetaInfo.serviceClients. Each
+// service authenticates with clientId "svc:<name>" and a random clientSecret;
+// prism also needs the URL of acl-server's service-token endpoint.
+const SERVICE_CLIENT_NAMES = ["bridge-fe", "tranops-backend", "prism", "ereps", "acl-server"];
+
+// Keeps a secret that already exists (a retry or re-run must not rotate it,
+// or the services that already read it would be locked out) and only creates
+// one for a service that does not have it yet.
+function buildServiceClients(existing, publicHost) {
+    const prev = existing && typeof existing === "object" ? existing : {};
+    const out = {};
+    for (const name of SERVICE_CLIENT_NAMES) {
+        const old = prev[name] || {};
+        const client = {};
+        if (name === "prism") {
+            client.serviceTokenUrl = `https://${publicHost}/acl_server/api/auth/service-token`;
+        }
+        client.clientId = `svc:${name}`;
+        client.clientSecret = old.clientSecret || crypto.randomBytes(32).toString("hex");
+        out[name] = client;
+    }
+    return out;
+}
+
 // In-cluster Service names are "<prefix>-<service>" (the chart names every
 // Service that way, e.g. hbss-031-wfm-microservice), so the compose-style short
 // names (http://wfm-microservice:9001) do not resolve. tenant-operator passes the
@@ -298,6 +322,15 @@ async function bridgeMetaBuilderService(conn, tenantId, tenantName, domain, emai
         // otherwise auto-create the collection without the collation.
         await ensureBridgeMetaInfoCollection(conn);
         const BridgeMetaInfo = conn.model("bridgeMetaInfo", BridgeSchema);
+
+        const existingMeta = await BridgeMetaInfo.findOne(
+            { "tenantObj.tenantId": tenantId.toUpperCase() },
+            { serviceClients: 1 }
+        ).lean();
+        finalJson.serviceClients = buildServiceClients(
+            existingMeta && existingMeta.serviceClients,
+            data.BRIDGE_HOST
+        );
 
         await BridgeMetaInfo.updateOne(
             { "tenantObj.tenantId": tenantId.toUpperCase() },

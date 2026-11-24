@@ -126,6 +126,9 @@
             }
         }
     },
+    "bridge": {
+        "publicHost": "{{BRIDGE_HOST}}"
+    },
     "createdAt": "{{DATE_NOW}}",
     "updatedAt": "{{DATE_NOW}}"
 }
