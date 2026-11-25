@@ -16,7 +16,7 @@ def _render(tenant_name):
     ))
 
 
-@pytest.mark.parametrize("name,login", [("chetan-bridgestg", "chetan"), ("chetan-bridge", "chetan")])
+@pytest.mark.parametrize("name,login", [("hbss-bridgestg", "hbss"), ("hbss-bridge", "hbss")])
 def test_new_style_tenant_gets_its_login_id(name, login):
     tenant = _render(name)["tenant"]
     assert tenant["loginId"] == login

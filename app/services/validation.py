@@ -31,8 +31,8 @@ def validate_create_request(req: TenantCreateRequest, db: Session) -> None:
     if problem:
         raise ValidationError(problem)
 
-    # Two tenants with the same login ID ("chetan-bridgestg" and "chetan-bridge", or "chetan") would both
-    # log in as CHETAN and be told apart only by their host.
+    # Two tenants with the same login ID ("hbss-bridgestg" and "hbss-bridge", or "hbss") would both
+    # log in as HBSS and be told apart only by their host.
     login = tenant_ids.login_id(req.tenantId)
     for other in db.query(Tenant).filter(Tenant.status != TenantStatus.DELETED).all():
         if tenant_ids.login_id(other.tenant_name) == login:

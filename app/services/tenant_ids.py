@@ -1,9 +1,9 @@
 """How a tenant ID turns into the names the platform uses.
 
 A new tenant is named "<name>-bridgestg" on stage and "<name>-bridge" on prod,
-e.g. "chetan-bridgestg". The Bridge frontend takes the tenant ID of a login from
+e.g. "hbss-bridgestg". The Bridge frontend takes the tenant ID of a login from
 the first part of the host name, so what is stored in the databases (SQL username
-and tenant_id, Mongo tenantObj.tenantId, ...) is that first part, "chetan". The
+and tenant_id, Mongo tenantObj.tenantId, ...) is that first part, "hbss". The
 full name stays the name of everything else: the host, namespace, Vault path and
 the Mongo database.
 
@@ -28,8 +28,8 @@ def is_new_style(tenant_name: str) -> bool:
 
 
 def login_id(tenant_name: str) -> str:
-    """The tenant ID the login sends and the databases store: "chetan" for
-    "chetan-bridgestg", the whole name for a tenant without the suffix."""
+    """The tenant ID the login sends and the databases store: "hbss" for
+    "hbss-bridgestg", the whole name for a tenant without the suffix."""
     m = _NEW_STYLE.match(tenant_name)
     return m.group(1) if m else tenant_name
 

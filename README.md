@@ -477,15 +477,15 @@ Notes on the request shape (`app/models/schemas.py::TenantCreateRequest`):
 
 **Tenant names (`app/services/tenant_ids.py`).** The Bridge frontend sends the
 part of the host name before the first hyphen as the tenant ID on login, so for
-`chetan-bridgestg` it sends `CHETAN`. The meta-builder therefore stores that
+`hbss-bridgestg` it sends `HBSS`. The meta-builder therefore stores that
 first part wherever the login compares it, and the full name is used for
 everything else:
 
-| For `chetan-bridgestg` (stage) / `chetan-bridge` (prod) | |
+| For `hbss-bridgestg` (stage) / `hbss-bridge` (prod) | |
 |---|---|
-| Login ID — SQL `MEMBER.username` / `MEMBER.tenant_id` / `TENANT.tenant_id`, Mongo `tenantObj.tenantId` | `chetan` / `CHETAN` |
+| Login ID — SQL `MEMBER.username` / `MEMBER.tenant_id` / `TENANT.tenant_id`, Mongo `tenantObj.tenantId` | `hbss` / `HBSS` |
 | Host, namespace, Vault path, SQL database | the full name |
-| Mongo database (and the `MONGODB_URI` in Vault) | the full name, e.g. `chetan-bridgestg` |
+| Mongo database (and the `MONGODB_URI` in Vault) | the full name, e.g. `hbss-bridgestg` |
 
 A tenant without a hyphen (`hbssf`) is unchanged: the whole name is the login
 ID and its Mongo database is `<name>-bridge`. Any other hyphenated name

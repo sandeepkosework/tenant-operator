@@ -287,7 +287,7 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
 # TENANT_ID is the exception to "from tenant_slug": it is the tenant's login ID
 # (tenant_ids.login_id): the bare tenant name for an older tenant ("hbss-010",
 # not the slug "hbss-010-45"), the part before the first hyphen for a new-style
-# one ("chetan" for "chetan-bridgestg"). The apps look the tenant up by it, and
+# one ("hbss" for "hbss-bridgestg"). The apps look the tenant up by it, and
 # the bridge meta-builder seeds the same value as tenantObj.tenantId -- so a slug
 # here made the apps use a second, unseeded database ("<slug>-bridge") and miss
 # the seeded data. infra-runner also used the bare name.
@@ -409,7 +409,7 @@ def _tenant_mongodb_uri(tenant_name: str) -> str:
     Database name is tenant_ids.mongo_db_name(tenant_name) -- tenant_name (the
     bare, human-chosen name), NOT tenant_slug (the sequence-suffixed "hbss-15"
     used for namespace/Vault-path/git-filename collision avoidance elsewhere).
-    That is the full name for a new-style tenant ("chetan-bridgestg"), and
+    That is the full name for a new-style tenant ("hbss-bridgestg"), and
     "{tenant_name}-bridge" for an older one ("hbssf-bridge"), matching the legacy
     bridge-meta-builder system's convention for those. It must agree with
     bridge_meta_builder_job.py's seeded collections (bridgeMetaInfo,

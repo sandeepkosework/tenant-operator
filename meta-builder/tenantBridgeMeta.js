@@ -33,7 +33,7 @@ let connectedTenant = null;
 
 
 // The tenant's Mongo database. tenant-operator passes its name as MONGO_DB_NAME (the full tenant
-// name for a new-style tenant such as "chetan-bridgestg", "<name>-bridge" for an older one). Without
+// name for a new-style tenant such as "hbss-bridgestg", "<name>-bridge" for an older one). Without
 // it (an older operator) it is "<tenantId>-bridge", as before.
 function mongoDbName(tenantId) {
     return (process.env.MONGO_DB_NAME || "").trim() || `${tenantId}-bridge`;
@@ -2147,7 +2147,7 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
 
         // Canonical tenant (infra-safe). This is the tenant ID that is STORED (SQL MEMBER.username and
         // tenant_id, Mongo tenantObj.tenantId, ...). tenant-operator passes it as TENANT_LOGIN_ID: for
-        // "chetan-bridgestg" that is "chetan", the part of the host name the frontend sends on login.
+        // "hbss-bridgestg" that is "hbss", the part of the host name the frontend sends on login.
         // Without it (an older operator) it is the whole TENANT_ID, as before. The Mongo database name
         // does not come from here: see mongoDbName().
         const tenantId = (process.env.TENANT_LOGIN_ID || TENANT_ID).toLowerCase();

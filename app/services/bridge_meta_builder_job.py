@@ -184,7 +184,7 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
         {"name": "TENANT_DOMAIN", "value": tenant.domain or ""},
         # What the seed stores as the tenant ID in SQL and Mongo (MEMBER.username, TENANT.tenant_id,
         # tenantObj.tenantId, ...): the part of the name before the first hyphen for a new-style tenant
-        # ("chetan" for "chetan-bridgestg"), because the frontend sends that on login. And the name of the
+        # ("hbss" for "hbss-bridgestg"), because the frontend sends that on login. And the name of the
         # tenant's Mongo database, which the Vault MONGODB_URI uses too. See tenant_ids.py.
         {"name": "TENANT_LOGIN_ID", "value": tenant_ids.login_id(tenant.tenant_name)},
         {"name": "MONGO_DB_NAME", "value": tenant_ids.mongo_db_name(tenant.tenant_name)},

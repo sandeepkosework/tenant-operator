@@ -5,8 +5,8 @@ from app.services import tenant_ids as t
 
 
 @pytest.mark.parametrize("name,login,db", [
-    ("chetan-bridgestg", "chetan", "chetan-bridgestg"),
-    ("chetan-bridge", "chetan", "chetan-bridge"),
+    ("hbss-bridgestg", "hbss", "hbss-bridgestg"),
+    ("hbss-bridge", "hbss", "hbss-bridge"),
     ("tenant-bridgestg", "tenant", "tenant-bridgestg"),
     ("hbssf", "hbssf", "hbssf-bridge"),                      # older tenant: unchanged
     ("acme-corp", "acme-corp", "acme-corp-bridge"),          # hyphenated but no suffix: unchanged
@@ -26,19 +26,19 @@ def test_environment_suffix():
 
 @pytest.mark.parametrize("name,env", [
     ("hbssf", "stage"), ("hbssf", "prod"),                   # no hyphen: always allowed
-    ("chetan-bridgestg", "stage"), ("chetan-bridge", "prod"),
-    ("chetan-bridgestg", "dev"), ("chetan-bridge", "dev"),   # other environments take either suffix
+    ("hbss-bridgestg", "stage"), ("hbss-bridge", "prod"),
+    ("hbss-bridgestg", "dev"), ("hbss-bridge", "dev"),   # other environments take either suffix
 ])
 def test_names_that_are_allowed(name, env):
     assert t.check_tenant_name(name, env) is None
 
 
 def test_the_other_environments_suffix_is_refused_with_the_right_one_named():
-    assert "-bridgestg" in t.check_tenant_name("chetan-bridge", "stage")
-    assert "chetan-bridge'" in t.check_tenant_name("chetan-bridgestg", "prod")
+    assert "-bridgestg" in t.check_tenant_name("hbss-bridge", "stage")
+    assert "hbss-bridge'" in t.check_tenant_name("hbss-bridgestg", "prod")
 
 
-@pytest.mark.parametrize("name", ["acme-corp", "my-co-bridgestg", "chetan-bridgex", "-bridgestg", "a-b-bridge"])
+@pytest.mark.parametrize("name", ["acme-corp", "my-co-bridgestg", "hbss-bridgex", "-bridgestg", "a-b-bridge"])
 def test_other_hyphenated_names_are_refused(name):
     assert t.check_tenant_name(name, "stage")
     assert t.check_tenant_name(name, "prod")
