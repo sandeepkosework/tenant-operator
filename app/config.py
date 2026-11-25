@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     # The first chart release that reads `tenant.loginId` (the value the pods get as TENANT_ID). A
     # "<name>-bridgestg" / "<name>-bridge" tenant needs it: on an older chart its pods would get the full
     # name as TENANT_ID while the databases hold "<name>", and every lookup by TENANT_ID would miss.
-    login_id_min_chart_version: str = "v0.1.9"
+    login_id_min_chart_version: str = "v0.1.12"
 
     @field_validator("login_id_min_chart_version")
     @classmethod
