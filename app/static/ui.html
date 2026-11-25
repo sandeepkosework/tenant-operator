@@ -267,8 +267,8 @@
   <div id="ntErr" class="alert" hidden style="margin-top:10px"></div>
   <form id="createForm" autocomplete="off">
     <div class="frm">
-      <div><label for="ntId">Tenant ID</label><input id="ntId" required minlength="3" maxlength="50" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" placeholder="acme" autocapitalize="off" spellcheck="false">
-        <div class="hint">Lowercase letters, digits and hyphens. Becomes the namespace name.</div></div>
+      <div><label for="ntId">Tenant ID</label><input id="ntId" required minlength="3" maxlength="50" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" placeholder="acme-bridgestg" autocapitalize="off" spellcheck="false">
+        <div class="hint" id="ntIdHint">Lowercase letters and digits. Becomes the namespace name.</div></div>
       <div><label for="ntDisplay">Display name</label><input id="ntDisplay" required maxlength="255" placeholder="Acme Corp"></div>
       <div><label for="ntEmail">Admin email</label><input id="ntEmail" type="email" required placeholder="admin@acme.com"></div>
       <div><label for="ntPass">Admin initial password</label><input id="ntPass" type="password" required minlength="8" autocomplete="new-password">
@@ -633,7 +633,22 @@ $("ntSvc").onchange = e => { const l = e.target.closest("label"); if(l) l.classL
 function setAllCreateSvc(on){ document.querySelectorAll("#ntSvc input").forEach(c => { c.checked = on; c.closest("label").classList.toggle("off", !on); }); }
 $("ntAllOn").onclick = () => setAllCreateSvc(true);
 $("ntAllOff").onclick = () => setAllCreateSvc(false);
-$("ntId").oninput = () => { if(!domainTouched && OPTS) $("ntDomain").value = $("ntId").value ? $("ntId").value + "." + OPTS.baseDomain : ""; };
+// A hyphenated ID must be "<name>-<suffix>" with this environment's suffix (bridgestg on stage, bridge on
+// prod): the login ID is the part before the first hyphen. Same rule as the server's tenant_ids.py.
+function idCheck(id){
+  const sfx = OPTS && OPTS.tenantIdSuffix;
+  if(!id.includes("-")) return {ok: true, text: "Lowercase letters and digits. Becomes the namespace name."};
+  const m = /^([a-z0-9]+)-(bridgestg|bridge)$/.exec(id);
+  if(!m) return {ok: false, text: `Use <name>-${sfx || "bridgestg"}, with letters and digits only in <name>.`};
+  if(sfx && m[2] !== sfx) return {ok: false, text: `This operator serves ${OPTS.environment}: the ID must end with -${sfx}.`};
+  return {ok: true, text: `Login ID: ${m[1]} · Mongo database: ${id}`};
+}
+$("ntId").oninput = () => {
+  const id = $("ntId").value.trim().toLowerCase(), c = idCheck(id);
+  $("ntIdHint").textContent = c.text; $("ntIdHint").style.color = c.ok ? "" : "var(--bad)";
+  $("ntId").setCustomValidity(c.ok ? "" : c.text);
+  if(!domainTouched && OPTS) $("ntDomain").value = $("ntId").value ? $("ntId").value + "." + OPTS.baseDomain : "";
+};
 $("ntDomain").oninput = () => { domainTouched = true; };
 $("ntCancel").onclick = () => $("createDlg").close();
 $("newTenant").onclick = async () => {

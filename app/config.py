@@ -115,6 +115,16 @@ class Settings(BaseSettings):
     # the ingress). A tenant pinned to an older release cannot be archived until it is updated to one.
     archive_min_chart_version: str = "v0.1.3"
 
+    # The first chart release that reads `tenant.loginId` (the value the pods get as TENANT_ID). A
+    # "<name>-bridgestg" / "<name>-bridge" tenant needs it: on an older chart its pods would get the full
+    # name as TENANT_ID while the databases hold "<name>", and every lookup by TENANT_ID would miss.
+    login_id_min_chart_version: str = "v0.1.9"
+
+    @field_validator("login_id_min_chart_version")
+    @classmethod
+    def _check_login_id_min_chart_version(cls, value: str) -> str:
+        return validate_chart_version(value)
+
     @field_validator("archive_min_chart_version")
     @classmethod
     def _check_archive_min_chart_version(cls, value: str) -> str:

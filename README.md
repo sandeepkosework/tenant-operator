@@ -472,6 +472,33 @@ Notes on the request shape (`app/models/schemas.py::TenantCreateRequest`):
 - `tenantId` becomes a Kubernetes namespace suffix — lowercase alphanumeric
   with optional hyphens (RFC-1123 label), max 50 chars (so
   `tenant-<tenantId>-<seq>` stays under Kubernetes' 63-char namespace cap).
+  A name with a hyphen must be `<name>-bridgestg` (stage operator) or
+  `<name>-bridge` (prod operator) — see **Tenant names** below.
+
+**Tenant names (`app/services/tenant_ids.py`).** The Bridge frontend sends the
+part of the host name before the first hyphen as the tenant ID on login, so for
+`chetan-bridgestg` it sends `CHETAN`. The meta-builder therefore stores that
+first part wherever the login compares it, and the full name is used for
+everything else:
+
+| For `chetan-bridgestg` (stage) / `chetan-bridge` (prod) | |
+|---|---|
+| Login ID — SQL `MEMBER.username` / `MEMBER.tenant_id` / `TENANT.tenant_id`, Mongo `tenantObj.tenantId` | `chetan` / `CHETAN` |
+| Host, namespace, Vault path, SQL database | the full name |
+| Mongo database (and the `MONGODB_URI` in Vault) | the full name, e.g. `chetan-bridgestg` |
+
+A tenant without a hyphen (`hbssf`) is unchanged: the whole name is the login
+ID and its Mongo database is `<name>-bridge`. Any other hyphenated name
+(`acme-corp`, `my-co-bridgestg`) and the other environment's suffix are
+refused with a 400, as is a name whose login ID an existing tenant already
+has. The Job gets `TENANT_LOGIN_ID` and `MONGO_DB_NAME` for this; without them
+(an older operator) the meta-builder behaves as before.
+
+The services' `TENANT_ID` env (and `wfm-microservice`'s `TENANT_IDS`) is the login
+ID too: the operator writes `tenant.loginId` into the tenant's values file and the
+chart uses it in place of `tenant.name`. That needs chart release `LOGIN_ID_MIN_CHART_VERSION`
+or later (default `v0.1.9` — set it to the release that carries the chart change); creating or updating a `<name>-bridgestg` tenant on an older
+chart is refused with a 400. Older tenants get no `loginId` line and are unchanged.
 - `services` (`dict[str, bool]`) + `onlyListedServices` (`bool`) control
   which of qraie-bridge's ~32 services this tenant gets — see next section.
 - `password` is used only in-memory, to pass an admin credential through to
@@ -697,7 +724,8 @@ slug, and the pods then move to the bare tenant name. Deploy the chart change fi
 
 **`TENANT_ID` is the bare tenant name, not the slug.** Every service's Vault
 secret gets `TENANT_ID=<tenant_name>` (e.g. `hbss-010`), matching what the seed
-Job uses for the Mongo database (`<tenant_name>-bridge`) and `tenantObj.tenantId`,
+Job uses for the Mongo database (`tenant_ids.mongo_db_name`) and `tenantObj.tenantId`
+(the login ID — which differs from `TENANT_ID` for a `<name>-bridgestg` tenant),
 and what infra-runner used. (It was the slug, `hbss-010-45`, which made the apps
 use a second, unseeded database, `hbss-010-45-bridge`.) `TENANT_IDS`,
 which only `wfm-microservice` carries, is still the slug. `TENANT_KEY` is no longer
@@ -1003,7 +1031,9 @@ script, and matters if this Job is ever touched again:
   etc.) — matching Mongo's own `bridgeMetaInfo.tenantObj.tenantId`
   convention, not the SQL identifier convention. `runTenantDefaultInserts()`
   takes both values separately (`tenantId` for data, `dbName` for
-  identifiers) specifically so these two never get conflated again.
+  identifiers) specifically so these two never get conflated again. `tenantId`
+  for data is the login ID (`TENANT_LOGIN_ID`), the part of a
+  `<name>-bridgestg` name before the first hyphen.
 
 **SQL identifiers built from `DB_NAME` must stay bracketed.** A tenant
 slug always contains a hyphen (the sequence suffix), and SQL Server parses
@@ -1156,6 +1186,7 @@ Selected settings worth knowing about explicitly:
 | `BRIDGE_META_BUILDER_IMAGE_REPOSITORY` / `..._TAG` | `sandeepkosework/bridge-meta-builder` / `0.1.17` | The Node.js Job image built from `meta-builder/` (see "Bridge meta-builder Job"). Bump the tag here whenever that image is rebuilt/repushed. |
 | `HELM_CHART_VERSION` | `v0.1.0` | The released chart version (a tag, `vMAJOR.MINOR.PATCH`) **new** tenants are created on. Existing tenants keep the version they are pinned to; see `helm_chart_version` above. An invalid value stops the operator from starting. |
 | `ARCHIVE_MIN_CHART_VERSION` | `v0.1.3` | The first chart release that understands `archived: true`. A tenant pinned to an older release cannot be archived. An invalid value stops the operator from starting. |
+| `LOGIN_ID_MIN_CHART_VERSION` | `v0.1.9` | The first chart release that reads `tenant.loginId`. A `<name>-bridgestg` / `<name>-bridge` tenant cannot be created or moved onto an older one. An invalid value stops the operator from starting. |
 | `BRIDGE_BASE_DOMAIN` | `qraie.ai` | The public domain every tenant's hostname is built under, matching the legacy convention (`<tenant_name>-bridge<stg-suffix>.<this>`). |
 | `BRIDGE_DLM_SECRET_KEY` / `BRIDGE_SLM_KB_AUTH_PASSWORD` | unset | Shared (not per-tenant) secrets for the Mongo seed's `dlmObj` block — **functionally required, not optional**: the Job's `requireEnv()` throws if either is empty, failing the Job for every tenant, not skipping it. Set both before relying on this Job in any real deployment. |
 | `ARGOCD_UNREACHABLE_FAIL_AFTER` | `5` | Consecutive unreachable polls before a rollout fails fast — see "Argo CD failure monitoring". |
@@ -1347,7 +1378,8 @@ contents are environment-specific credentials.
 
 A tenant's SQL Server database/login is named after the bare tenant name
 (`DB_NAME`/`DB_USER` = the `tenantId`, no sequence number) and its MongoDB
-database is `<tenantId>-bridge`. Tenant deletion removes the namespace but
+database is `tenant_ids.mongo_db_name(tenantId)` (`<tenantId>-bridge`, or the full
+name for a `<name>-bridgestg` / `<name>-bridge` tenant). Tenant deletion removes the namespace but
 never drops those databases, so a reused `tenantId` would collide with the
 earlier tenant's data -- or, worse, overwrite a live tenant's namespace,
 secrets and git file.
@@ -1357,7 +1389,7 @@ anything** (not even the tenant's row in the operator's own database), whether
 any trace of that `tenantId` exists:
 
 - SQL Server: a database or login named `<tenantId>`
-- MongoDB: the database `<tenantId>-bridge` already has collections
+- MongoDB: the tenant's database (see above) already has collections
 - Argo CD: an Application named `<tenantId>` (what runs the tenant's services)
 - every spoke of this operator's environment: a namespace `tenant-<tenantId>`
   (or an older `tenant-<tenantId>-<n>`) with its PVCs, or a PersistentVolume

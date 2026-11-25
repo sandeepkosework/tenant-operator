@@ -28,6 +28,11 @@ chartVersion: {{ chart_version }}
 tenant:
   id: {{ tenant_slug }}
   name: {{ tenant_name }}
+{% if login_id %}
+  # What the pods get as TENANT_ID: the part of the name before the first hyphen, which is also the
+  # tenant ID stored in the databases (see app/services/tenant_ids.py). Needs chart v0.1.9 or later.
+  loginId: {{ login_id }}
+{% endif %}
   namespace: {{ namespace }}
   domain: {{ domain }}
 

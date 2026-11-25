@@ -26,7 +26,7 @@ import httpx
 
 from app.config import get_settings
 from app.models.tenant import Tenant
-from app.services import vault_service
+from app.services import tenant_ids, vault_service
 
 logger = logging.getLogger("tenant-operator.onboarding")
 settings = get_settings()
@@ -62,10 +62,10 @@ def register_tenant(tenant: Tenant) -> None:
         logger.warning("[onboarding] tenant=%s skipped: ONBOARDING_SERVER_URL is not set", tenant.tenant_name)
         return
 
-    # tenant_name, not slug: it is what the tenant's pods send as TENANT_ID and
-    # the database is named "<tenant_name>-bridge" (see vault_service).
-    tenant_id = tenant.tenant_name
-    connection_string = vault_service._tenant_mongodb_uri(tenant_id)
+    # The login ID, not the slug: it is what the tenant's pods send as TENANT_ID. The database is
+    # named from the full tenant name (tenant_ids.mongo_db_name, see vault_service).
+    tenant_id = tenant_ids.login_id(tenant.tenant_name)
+    connection_string = vault_service._tenant_mongodb_uri(tenant.tenant_name)
     if not connection_string:
         raise OnboardingRegistrationError("MONGO_ENV_CONFIG_URI is not configured, so there is no connection string to register")
 
@@ -111,7 +111,7 @@ def delete_tenant_record(tenant: Tenant, dry_run: bool = False) -> str:
     OnboardingRegistrationError if the server cannot be reached or refuses."""
     if not settings.onboarding_server_url:
         return "skipped"
-    tenant_id = tenant.tenant_name
+    tenant_id = tenant_ids.login_id(tenant.tenant_name)
     try:
         if dry_run:
             return "would_delete" if _existing_connection_string(tenant_id) is not None else "absent"

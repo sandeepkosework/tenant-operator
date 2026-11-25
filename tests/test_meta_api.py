@@ -30,3 +30,11 @@ def test_lists_every_service_sorted_with_domain_and_versions(client, monkeypatch
 def test_chart_versions_is_null_when_the_repository_cannot_be_read(client, monkeypatch):
     monkeypatch.setattr(chart_versions, "available", lambda: None)
     assert client.get("/meta/create-options").json()["chartVersions"] is None
+
+
+def test_tenant_id_suffix_follows_the_environment(client, monkeypatch):
+    monkeypatch.setattr(chart_versions, "available", lambda: None)
+    monkeypatch.setattr(meta_api.settings, "environment", "stage")
+    assert client.get("/meta/create-options").json()["tenantIdSuffix"] == "bridgestg"
+    monkeypatch.setattr(meta_api.settings, "environment", "prod")
+    assert client.get("/meta/create-options").json()["tenantIdSuffix"] == "bridge"

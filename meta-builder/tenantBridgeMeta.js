@@ -32,6 +32,13 @@ let tenantConn = null;
 let connectedTenant = null;
 
 
+// The tenant's Mongo database. tenant-operator passes its name as MONGO_DB_NAME (the full tenant
+// name for a new-style tenant such as "chetan-bridgestg", "<name>-bridge" for an older one). Without
+// it (an older operator) it is "<tenantId>-bridge", as before.
+function mongoDbName(tenantId) {
+    return (process.env.MONGO_DB_NAME || "").trim() || `${tenantId}-bridge`;
+}
+
 async function getTenantConn(tenantId) {
     if (
         tenantConn &&
@@ -41,7 +48,7 @@ async function getTenantConn(tenantId) {
         return tenantConn;
     }
 
-    const dbName = `${tenantId}-bridge`;
+    const dbName = mongoDbName(tenantId);
     // Override with MONGO_URI_OPTIONS if the target Mongo needs different
     // options (e.g. directConnection=true when a replica set advertises
     // hostnames that don't resolve from a pod).
@@ -272,6 +279,7 @@ async function bridgeMetaBuilderService(conn, tenantId, tenantName, domain, emai
         const data = {
             TENANT_ID: tenantId,
             TENANT_ID_UPPER: tenantId.toUpperCase(),
+            MONGO_DB_NAME: mongoDbName(tenantId),
             DISPLAY_NAME: tenantName,
             TENANT_EMAIL: email,
             DOMAIN_NAME: domain,
@@ -503,7 +511,7 @@ async function seedAclData(conn, tenantId) {
 }
 
 async function tenantDatabaseInitializer(conn, tenantId, tenantName, password, email, domain, qraieBotPassword, isStaging, sqlConfig = {}) {
-    const dbName = `${tenantId}-bridge`;
+    const dbName = mongoDbName(tenantId);
 
     const AuthColl = conn.model("wfm_auth", AuthSchema);
 
@@ -2137,8 +2145,12 @@ node tenantBridgeMeta.js <tenantId> <domain> <email> <displayName> <password> <t
         console.log("🌍 Environment:", isStaging ? "STAGING" : "PRODUCTION");
 
 
-        // Canonical tenant (infra-safe)
-        const tenantId = TENANT_ID.toLowerCase();
+        // Canonical tenant (infra-safe). This is the tenant ID that is STORED (SQL MEMBER.username and
+        // tenant_id, Mongo tenantObj.tenantId, ...). tenant-operator passes it as TENANT_LOGIN_ID: for
+        // "chetan-bridgestg" that is "chetan", the part of the host name the frontend sends on login.
+        // Without it (an older operator) it is the whole TENANT_ID, as before. The Mongo database name
+        // does not come from here: see mongoDbName().
+        const tenantId = (process.env.TENANT_LOGIN_ID || TENANT_ID).toLowerCase();
 
         /* =========================
            STEP 0b: Is this tenant's SQL database already seeded?
