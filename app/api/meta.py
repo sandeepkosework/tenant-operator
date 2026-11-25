@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from app.config import get_settings
-from app.services import chart_versions, edge_service
+from app.services import chart_versions, edge_service, tenant_ids
 from app.services.helm_values import QRAIE_BRIDGE_SERVICE_NAMES
 
 router = APIRouter(prefix="/meta", tags=["meta"])
@@ -25,6 +25,7 @@ def create_options():
         "services": sorted(QRAIE_BRIDGE_SERVICE_NAMES),
         "baseDomain": settings.bridge_base_domain,
         "environment": settings.environment,
+        "tenantIdSuffix": tenant_ids.environment_suffix(settings.environment),
         "chartVersions": chart_versions.available(),
         "defaultChartVersion": settings.helm_chart_version,
         "edge": {"haproxy": edge_service.is_enabled(), "godaddy": edge_service.dns_enabled()},

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models.tenant import Tenant, TenantStatus
 from app.models.schemas import TenantCreateRequest
+from app.services import tenant_ids
 
 settings = get_settings()
 
@@ -24,6 +25,21 @@ def validate_create_request(req: TenantCreateRequest, db: Session) -> None:
     )
     if existing is not None:
         raise ValidationError(f"tenant '{req.tenantId}' already exists (status={existing.status})")
+
+    # A hyphenated name must be "<name>-bridgestg" (stage) / "<name>-bridge" (prod); see tenant_ids.py.
+    problem = tenant_ids.check_tenant_name(req.tenantId, settings.environment)
+    if problem:
+        raise ValidationError(problem)
+
+    # Two tenants with the same login ID ("hbss-bridgestg" and "hbss-bridge", or "hbss") would both
+    # log in as HBSS and be told apart only by their host.
+    login = tenant_ids.login_id(req.tenantId)
+    for other in db.query(Tenant).filter(Tenant.status != TenantStatus.DELETED).all():
+        if tenant_ids.login_id(other.tenant_name) == login:
+            raise ValidationError(
+                f"tenantId '{req.tenantId}' has the same login ID ('{login}') as the existing tenant "
+                f"'{other.tenant_name}' -- choose a different name"
+            )
 
     # New tenants have no sequence suffix, so their slug IS their name. It must
     # not equal the slug of an older tenant that still exists -- e.g. a new

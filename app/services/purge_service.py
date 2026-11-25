@@ -12,7 +12,7 @@ POST /tenant/{id}/purge) and only if PURGE_ENABLED=true and the tenant's
 environment is in PURGE_ALLOWED_ENVIRONMENTS. Steps, in order:
 
   1. onboarding-server record   DELETE <ONBOARDING_SERVER_URL>/config/<tenant name>
-  2. Mongo databases            "<tenant name>-bridge" and the env-config mirror
+  2. Mongo databases            the tenant's database (tenant_ids.mongo_db_name) and the env-config mirror
   3. SQL database + login       a Job on the hub, same pattern as preflight
   4. Vault secrets              secret/<prefix>/<slug>/*, every version
 

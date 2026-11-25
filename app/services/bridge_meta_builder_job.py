@@ -34,7 +34,7 @@ from kubernetes.client import ApiException
 
 from app.config import get_settings
 from app.models.tenant import Tenant
-from app.services import meta_builder_job, vault_service
+from app.services import meta_builder_job, tenant_ids, vault_service
 
 logger = logging.getLogger("tenant-operator.bridge_meta_builder_job")
 settings = get_settings()
@@ -182,6 +182,12 @@ def build_bridge_meta_builder_job(tenant: Tenant, admin_password: str) -> dict |
         # writes it into every URL it seeds (bridgeMetaInfo, controlops_actors)
         # instead of composing "<tenant>-bridge[stg].<base domain>" itself.
         {"name": "TENANT_DOMAIN", "value": tenant.domain or ""},
+        # What the seed stores as the tenant ID in SQL and Mongo (MEMBER.username, TENANT.tenant_id,
+        # tenantObj.tenantId, ...): the part of the name before the first hyphen for a new-style tenant
+        # ("hbss" for "hbss-bridgestg"), because the frontend sends that on login. And the name of the
+        # tenant's Mongo database, which the Vault MONGODB_URI uses too. See tenant_ids.py.
+        {"name": "TENANT_LOGIN_ID", "value": tenant_ids.login_id(tenant.tenant_name)},
+        {"name": "MONGO_DB_NAME", "value": tenant_ids.mongo_db_name(tenant.tenant_name)},
         # Prefix of this tenant's in-cluster Service names ("<prefix>-wfm-microservice"),
         # the same one the Vault-derived URLs use. The seed writes service URLs with it.
         {"name": "K8S_SERVICE_PREFIX", "value": vault_service._k8s_service_slug(tenant.slug)},

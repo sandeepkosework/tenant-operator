@@ -2,7 +2,7 @@
 Pre-provisioning checks -- run before anything is created for a new tenant.
 
 A tenant's SQL Server database/login is named after the bare tenant name
-(no sequence number), and its MongoDB database is "<tenant_name>-bridge", so
+(no sequence number), and its MongoDB database is named from it (tenant_ids.mongo_db_name), so
 two tenants created with the same tenantId end up on the same databases.
 Tenant deletion removes the namespace but never drops those databases, so a
 re-used tenantId would silently collide with the earlier tenant's data (the
@@ -45,7 +45,7 @@ from kubernetes.client import ApiException
 
 from app.config import get_settings
 from app.models.tenant import Tenant
-from app.services import argocd_service, cluster_selector, kubernetes_service
+from app.services import argocd_service, cluster_selector, kubernetes_service, tenant_ids
 from app.services.meta_builder_job import _SQLCMD_BIN, _SQLCMD_IMAGE, _get_hub_api_client
 
 logger = logging.getLogger("tenant-operator.preflight")
@@ -180,7 +180,7 @@ def _check_mongo(tenant_name: str) -> list[str]:
     from pymongo import MongoClient
     from pymongo.errors import PyMongoError
 
-    db_name = f"{tenant_name}-bridge"
+    db_name = tenant_ids.mongo_db_name(tenant_name)
     mongo = None
     try:
         mongo = MongoClient(uri, serverSelectionTimeoutMS=5000)

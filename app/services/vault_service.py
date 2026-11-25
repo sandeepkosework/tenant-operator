@@ -20,6 +20,7 @@ import secrets as pysecrets
 import string
 
 from app.config import get_settings
+from app.services import tenant_ids
 
 logger = logging.getLogger("tenant-operator.vault_service")
 settings = get_settings()
@@ -283,12 +284,13 @@ QRAIE_BRIDGE_GENERATED_KEYS = {
 # QRAIE_BRIDGE_GENERATED_KEYS (a random credential), a platform default
 # here would mean every tenant shares the same identity.
 #
-# TENANT_ID is the exception to "from tenant_slug": it is the BARE tenant name
-# (e.g. "hbss-010"), not the slug ("hbss-010-45"). The apps derive their Mongo
-# database ("<TENANT_ID>-bridge") and look the tenant up by it, and the
-# bridge meta-builder seeds "<tenant_name>-bridge" under tenantObj.tenantId =
-# the bare name -- so a slug here made the apps use a second, unseeded database
-# ("<slug>-bridge") and miss the seeded data. infra-runner also used the bare name.
+# TENANT_ID is the exception to "from tenant_slug": it is the tenant's login ID
+# (tenant_ids.login_id): the bare tenant name for an older tenant ("hbss-010",
+# not the slug "hbss-010-45"), the part before the first hyphen for a new-style
+# one ("hbss" for "hbss-bridgestg"). The apps look the tenant up by it, and
+# the bridge meta-builder seeds the same value as tenantObj.tenantId -- so a slug
+# here made the apps use a second, unseeded database ("<slug>-bridge") and miss
+# the seeded data. infra-runner also used the bare name.
 # TENANT_IDS still gets the slug (see the loop in
 # write_initial_qraie_bridge_tenant_secrets). TENANT_KEY is NOT derived: it comes
 # from the base secret (k8s/tenant-base/<service>) or the platform defaults, and is
@@ -404,13 +406,13 @@ def _tenant_mongodb_uri(tenant_name: str) -> str:
     service. Built from mongo_env_config_uri (the same shared instance/root
     credentials mongo_service.py's env mirror already uses).
 
-    Database name is "{tenant_name}-bridge" -- tenant_name (the bare,
-    human-chosen name, e.g. "hbss"), NOT tenant_slug (the sequence-suffixed
-    "hbss-15" used for namespace/Vault-path/git-filename collision
-    avoidance elsewhere). This matches the legacy bridge-meta-builder
-    system's own convention exactly (its Mongo DB name and public hostname
-    were both built from the bare tenant name, never a sequence number),
-    which bridge_meta_builder_job.py's seeded collections (bridgeMetaInfo,
+    Database name is tenant_ids.mongo_db_name(tenant_name) -- tenant_name (the
+    bare, human-chosen name), NOT tenant_slug (the sequence-suffixed "hbss-15"
+    used for namespace/Vault-path/git-filename collision avoidance elsewhere).
+    That is the full name for a new-style tenant ("hbss-bridgestg"), and
+    "{tenant_name}-bridge" for an older one ("hbssf-bridge"), matching the legacy
+    bridge-meta-builder system's convention for those. It must agree with
+    bridge_meta_builder_job.py's seeded collections (bridgeMetaInfo,
     auth, users, wfm_*, controlops_actors, ...) and this MONGODB_URI must
     agree with -- otherwise controlops-server and the meta-builder's own
     seeded data would end up looking at two different databases.
@@ -420,7 +422,7 @@ def _tenant_mongodb_uri(tenant_name: str) -> str:
     if not settings.mongo_env_config_uri:
         return ""
     base, sep, query = settings.mongo_env_config_uri.partition("?")
-    uri = f"{base.rstrip('/')}/{tenant_name}-bridge"
+    uri = f"{base.rstrip('/')}/{tenant_ids.mongo_db_name(tenant_name)}"
     return f"{uri}{sep}{query}" if sep else uri
 
 
@@ -564,7 +566,7 @@ def write_initial_qraie_bridge_tenant_secrets(tenant_slug: str, tenant_name: str
             elif k in QRAIE_BRIDGE_SQL_NAME_KEYS:
                 data[k] = tenant_name
             elif k == "TENANT_ID":
-                data[k] = tenant_name
+                data[k] = tenant_ids.login_id(tenant_name)
             elif k in QRAIE_BRIDGE_TENANT_DERIVED_KEYS:
                 data[k] = tenant_slug
             elif k in QRAIE_BRIDGE_GENERATED_KEYS:
@@ -711,7 +713,7 @@ def prune_chart_provided_keys(tenant_slug: str, tenant_name: str, tenant_domain:
     if not settings.vault_enabled:
         raise VaultServiceError("VAULT_ENABLED=false -- there is nothing in Vault to change")
     expected = {
-        "TENANT_ID": tenant_name,
+        "TENANT_ID": tenant_ids.login_id(tenant_name),
         "VIRTUAL_HOST": tenant_domain,
         "REDIS_HOST": tenant_redis_host(tenant_slug),
         "REDIS_PORT": "6379",

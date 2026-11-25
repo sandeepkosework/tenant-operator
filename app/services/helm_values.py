@@ -4,6 +4,8 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from app.services import tenant_ids
+
 _TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
 
 _env = Environment(
@@ -85,6 +87,8 @@ def render_qraie_bridge_values_yaml(
     template = _env.get_template("qraie_bridge_values.yaml.j2")
     return template.render(
         tenant_name=tenant_name,
+        # Only for a name whose login ID differs from it, so an older tenant's file is unchanged.
+        login_id=tenant_ids.login_id(tenant_name) if tenant_ids.is_new_style(tenant_name) else "",
         tenant_slug=tenant_slug,
         environment=environment,
         namespace=namespace,
@@ -96,6 +100,11 @@ def render_qraie_bridge_values_yaml(
         chart_version=chart_version,
         archived=archived,
     )
+
+
+def supports_login_id(chart_version: str | None, minimum: str) -> bool:
+    """True when the chart release reads `tenant.loginId` (see tenant_ids.py). An older one ignores it."""
+    return bool(chart_version) and _version_tuple(chart_version) >= _version_tuple(minimum)
 
 
 def supports_archive(chart_version: str | None, minimum: str) -> bool:

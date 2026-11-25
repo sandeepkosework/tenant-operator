@@ -14,7 +14,7 @@ from app.models.schemas import (
     TenantResponse,
     TenantUpdateRequest,
 )
-from app.services import chart_versions, edge_service, helm_values, preflight, progress, provisioner, purge_service, vault_service
+from app.services import chart_versions, edge_service, helm_values, preflight, progress, provisioner, purge_service, tenant_ids, vault_service
 from app.services.validation import ValidationError, validate_create_request
 
 logger = logging.getLogger("tenant-operator.api.tenant")
@@ -79,6 +79,14 @@ def create_tenant(
         chart_version = chart_versions.resolve_for_create(req.chartVersion)
     except chart_versions.ChartVersionError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
+    if tenant_ids.is_new_style(req.tenantId) and not helm_values.supports_login_id(
+            chart_version, settings.login_id_min_chart_version):
+        raise HTTPException(
+            status_code=400,
+            detail=f"tenant '{req.tenantId}' needs chart {settings.login_id_min_chart_version} or later "
+                   f"(it would be created on {chart_version or 'an unpinned chart'}), which does not set the "
+                   f"pods' TENANT_ID to '{tenant_ids.login_id(req.tenantId)}'. Pick a newer chartVersion.",
+        )
 
     # No sequence number is allocated any more: tenant_seq stays NULL, so the
     # tenant's slug (namespace, Vault path, git file, ...) is just its bare name.
@@ -300,6 +308,13 @@ def update_tenant(
             chart_versions.check_exists(req.chartVersion)
         except chart_versions.ChartVersionError as e:
             raise HTTPException(status_code=e.status_code, detail=str(e))
+        if tenant_ids.is_new_style(tenant.tenant_name) and not helm_values.supports_login_id(
+                req.chartVersion, settings.login_id_min_chart_version):
+            raise HTTPException(
+                status_code=400,
+                detail=f"tenant '{tenant.tenant_name}' needs chart {settings.login_id_min_chart_version} or "
+                       f"later (its pods' TENANT_ID would be the full name): {req.chartVersion} is older.",
+            )
     new_disabled_services = None
     if req.services is not None:
         new_disabled_services = helm_values.compute_disabled_services(req.services, req.onlyListedServices)

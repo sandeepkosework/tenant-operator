@@ -21,6 +21,7 @@ import time
 from datetime import datetime, timezone
 
 from app.config import get_settings
+from app.services import tenant_ids
 
 logger = logging.getLogger("tenant-operator.mongo_service")
 settings = get_settings()
@@ -261,13 +262,13 @@ def _drop_if_allowed(client, name: str, dry_run: bool, allowed_collections: set[
 
 
 def purge_tenant_databases(tenant_name: str, tenant_slug: str, dry_run: bool = False) -> list[dict]:
-    """Drops the tenant's data database "<tenant_name>-bridge" and removes its
+    """Drops the tenant's data database (tenant_ids.mongo_db_name) and removes its
     env-config mirror (the database named after the slug, or, when
     mongo_env_config_shared_db is set, just this tenant's documents in that shared
     database -- the shared database itself is never dropped). Returns one result
     dict per target. Raises MongoServiceError if Mongo is unavailable."""
     client = _get_client()
-    results = [_drop_if_allowed(client, f"{tenant_name}-bridge", dry_run)]
+    results = [_drop_if_allowed(client, tenant_ids.mongo_db_name(tenant_name), dry_run)]
 
     if not settings.mongo_env_config_enabled:
         results.append({"database": tenant_slug, "action": "skipped",
