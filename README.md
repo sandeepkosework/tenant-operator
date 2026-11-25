@@ -497,7 +497,7 @@ has. The Job gets `TENANT_LOGIN_ID` and `MONGO_DB_NAME` for this; without them
 The services' `TENANT_ID` env (and `wfm-microservice`'s `TENANT_IDS`) is the login
 ID too: the operator writes `tenant.loginId` into the tenant's values file and the
 chart uses it in place of `tenant.name`. That needs chart release `LOGIN_ID_MIN_CHART_VERSION`
-or later (default `v0.1.9` — set it to the release that carries the chart change); creating or updating a `<name>-bridgestg` tenant on an older
+or later (default `v0.1.12` — set it to the release that carries the chart change); creating or updating a `<name>-bridgestg` tenant on an older
 chart is refused with a 400. Older tenants get no `loginId` line and are unchanged.
 - `services` (`dict[str, bool]`) + `onlyListedServices` (`bool`) control
   which of qraie-bridge's ~32 services this tenant gets — see next section.
@@ -1186,7 +1186,7 @@ Selected settings worth knowing about explicitly:
 | `BRIDGE_META_BUILDER_IMAGE_REPOSITORY` / `..._TAG` | `sandeepkosework/bridge-meta-builder` / `0.1.17` | The Node.js Job image built from `meta-builder/` (see "Bridge meta-builder Job"). Bump the tag here whenever that image is rebuilt/repushed. |
 | `HELM_CHART_VERSION` | `v0.1.0` | The released chart version (a tag, `vMAJOR.MINOR.PATCH`) **new** tenants are created on. Existing tenants keep the version they are pinned to; see `helm_chart_version` above. An invalid value stops the operator from starting. |
 | `ARCHIVE_MIN_CHART_VERSION` | `v0.1.3` | The first chart release that understands `archived: true`. A tenant pinned to an older release cannot be archived. An invalid value stops the operator from starting. |
-| `LOGIN_ID_MIN_CHART_VERSION` | `v0.1.9` | The first chart release that reads `tenant.loginId`. A `<name>-bridgestg` / `<name>-bridge` tenant cannot be created or moved onto an older one. An invalid value stops the operator from starting. |
+| `LOGIN_ID_MIN_CHART_VERSION` | `v0.1.12` | The first chart release that reads `tenant.loginId`. A `<name>-bridgestg` / `<name>-bridge` tenant cannot be created or moved onto an older one. An invalid value stops the operator from starting. |
 | `BRIDGE_BASE_DOMAIN` | `qraie.ai` | The public domain every tenant's hostname is built under, matching the legacy convention (`<tenant_name>-bridge<stg-suffix>.<this>`). |
 | `BRIDGE_DLM_SECRET_KEY` / `BRIDGE_SLM_KB_AUTH_PASSWORD` | unset | Shared (not per-tenant) secrets for the Mongo seed's `dlmObj` block — **functionally required, not optional**: the Job's `requireEnv()` throws if either is empty, failing the Job for every tenant, not skipping it. Set both before relying on this Job in any real deployment. |
 | `ARGOCD_UNREACHABLE_FAIL_AFTER` | `5` | Consecutive unreachable polls before a rollout fails fast — see "Argo CD failure monitoring". |
